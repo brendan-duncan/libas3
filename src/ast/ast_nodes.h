@@ -168,11 +168,14 @@ class MemberExpression : public Expression {
 public:
     ExpressionPtr object;
     IdentifierPtr property;
+    ExpressionPtr computedProperty;  // For bracket notation
     bool computed;
     bool optional;
 
     MemberExpression(ExpressionPtr obj, IdentifierPtr prop, bool comp = false, bool opt = false)
         : Expression(ExpressionKind::Member), object(std::move(obj)), property(std::move(prop)), computed(comp), optional(opt) {}
+    MemberExpression(ExpressionPtr obj, ExpressionPtr compProp, bool opt = false)
+        : Expression(ExpressionKind::Member), object(std::move(obj)), computedProperty(std::move(compProp)), computed(true), optional(opt) {}
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -295,12 +298,22 @@ public:
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
+class CaseClause : public Statement {
+public:
+    ExpressionPtr test;  // null for default case
+    std::vector<StatementPtr> consequent;
+
+    CaseClause(ExpressionPtr t, std::vector<StatementPtr> c)
+        : test(std::move(t)), consequent(std::move(c)) {}
+    AstNodeType getType() const override { return AstNodeType::Statement; }
+};
+
 class SwitchStatement : public Statement {
 public:
     ExpressionPtr discriminant;
-    std::vector<StatementPtr> cases;
+    std::vector<std::unique_ptr<CaseClause>> cases;
 
-    SwitchStatement(ExpressionPtr d, std::vector<StatementPtr> c)
+    SwitchStatement(ExpressionPtr d, std::vector<std::unique_ptr<CaseClause>> c)
         : discriminant(std::move(d)), cases(std::move(c)) {}
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
@@ -472,7 +485,7 @@ public:
     AstNodeType getType() const override { return AstNodeType::ClassDefinition; }
 };
 
-class NamespaceDefinition : public AstNode {
+class NamespaceDefinition : public Statement {
 public:
     IdentifierPtr name;
     IdentifierPtr uri;

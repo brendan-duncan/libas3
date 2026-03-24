@@ -8,6 +8,8 @@ Parser::Parser(const std::string& source)
     : _lexer(source)
     , _position(0) {
     _tokens = _lexer.tokenize();
+    _eofToken.type = TokenType::EndOfFile;
+    _eofToken.keyword = KeywordType::None;
 }
 
 Parser::~Parser() {
@@ -17,9 +19,7 @@ const Token& Parser::currentToken() const {
     if (_position < _tokens.size()) {
         return _tokens[_position];
     }
-    static Token eof;
-    eof.type = TokenType::EndOfFile;
-    return eof;
+    return _eofToken;
 }
 
 const Token& Parser::peek(int offset) const {
@@ -27,9 +27,7 @@ const Token& Parser::peek(int offset) const {
     if (idx < _tokens.size()) {
         return _tokens[idx];
     }
-    static Token eof;
-    eof.type = TokenType::EndOfFile;
-    return eof;
+    return _eofToken;
 }
 
 void Parser::advance() {
@@ -112,132 +110,128 @@ void Parser::expectKeyword(KeywordType keyword, const std::string& message) {
 
 void Parser::addError(const std::string& message) {
     std::ostringstream oss;
-    oss << "Parse error at line " << currentToken().start.line 
+    oss << "Parse error at line " << currentToken().start.line
         << ", column " << currentToken().start.column << ": " << message;
+    if (currentToken().type != TokenType::EndOfFile) {
+        oss << " but found '" << currentToken().text << "'";
+    } else {
+        oss << " but found end of file";
+    }
     _errors += oss.str() + "\n";
 }
 
-static StatementPtr toStatementPtr(BlockStatement* ptr) {
-    return StatementPtr(ptr);
+void Parser::synchronize() {
+    while (!check(TokenType::EndOfFile)) {
+        if (check(TokenType::SemiColon)) {
+            advance();
+            return;
+        }
+
+        switch (currentToken().keyword) {
+            case KeywordType::Class:
+            case KeywordType::Function:
+            case KeywordType::Var:
+            case KeywordType::Const:
+            case KeywordType::Let:
+            case KeywordType::For:
+            case KeywordType::If:
+            case KeywordType::While:
+            case KeywordType::Return:
+            case KeywordType::Try:
+            case KeywordType::Import:
+            case KeywordType::Package:
+            case KeywordType::Namespace:
+                return;
+            default:
+                break;
+        }
+
+        if (check(TokenType::RBrace) || check(TokenType::RBracket) || check(TokenType::RParen)) {
+            return;
+        }
+
+        advance();
+    }
 }
 
-static StatementPtr toStatementPtr(EmptyStatement* ptr) {
-    return StatementPtr(ptr);
-}
+std::string Parser::parseQualifiedName() {
+    if (!check(TokenType::Identifier)) {
+        addError("Expected identifier in qualified name");
+        return "";
+    }
 
-static StatementPtr toStatementPtr(ExpressionStatement* ptr) {
-    return StatementPtr(ptr);
-}
+    std::string name = currentToken().text;
+    advance();
 
-static StatementPtr toStatementPtr(IfStatement* ptr) {
-    return StatementPtr(ptr);
-}
+    while (match(TokenType::Dot)) {
+        if (!check(TokenType::Identifier)) {
+            addError("Expected identifier after '.' in qualified name");
+            return name;
+        }
+        name += "." + currentToken().text;
+        advance();
+    }
 
-static StatementPtr toStatementPtr(SwitchStatement* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(WhileStatement* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(DoWhileStatement* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(ForStatement* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(ForInStatement* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(BreakStatement* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(ContinueStatement* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(ReturnStatement* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(ThrowStatement* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(TryStatement* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(WithStatement* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(LabeledStatement* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(VariableDefinition* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(FunctionDefinition* ptr) {
-    return StatementPtr(ptr);
-}
-
-static StatementPtr toStatementPtr(ClassDefinition* ptr) {
-    return StatementPtr(ptr);
+    return name;
 }
 
 std::unique_ptr<Program> Parser::parse() {
     auto program = std::make_unique<Program>();
-    program->imports = parseImports();
-    
+
     while (!check(TokenType::EndOfFile)) {
         auto stmt = parseTopLevel();
         if (stmt) {
             program->statements.push_back(std::move(stmt));
+        } else {
+            synchronize();
         }
     }
-    
+
     return program;
 }
 
 std::vector<std::unique_ptr<ImportDirective>> Parser::parseImports() {
     std::vector<std::unique_ptr<ImportDirective>> imports;
-    
+
     while (match(KeywordType::Import)) {
-        std::string path;
-        while (!check(TokenType::SemiColon) && !check(TokenType::EndOfFile)) {
-            path += currentToken().text;
-            advance();
-        }
-        
-        if (check(TokenType::SemiColon)) {
-            advance();
-        }
-        
+        std::string path = parseQualifiedName();
+
         std::string name;
-        bool isPackage = false;
-        
-        if (!path.empty()) {
+        bool isWildcard = false;
+
+        // Check for wildcard import: import com.example.*;
+        if (match(TokenType::Dot)) {
+            if (match(TokenType::Multiply)) {
+                isWildcard = true;
+                name = "*";
+            } else {
+                addError("Expected '*' after '.' in import");
+            }
+        }
+
+        // TODO: Handle 'as' alias for imports
+        // if (match(KeywordType::As)) {
+        //     name = parseIdentifier()->name;
+        // }
+
+        if (!isWildcard && !path.empty()) {
             size_t lastDot = path.rfind('.');
             if (lastDot != std::string::npos) {
                 name = path.substr(lastDot + 1);
                 path = path.substr(0, lastDot);
+            } else {
+                name = path;
+                path = "";
             }
-            isPackage = path.find('.') != std::string::npos;
         }
-        
+
+        expectToken(TokenType::SemiColon, "Expected ';' after import");
+
         auto id = std::make_unique<Identifier>(name);
-        auto import = std::make_unique<ImportDirective>(path, std::move(id), isPackage);
+        auto import = std::make_unique<ImportDirective>(path, std::move(id), isWildcard);
         imports.push_back(std::move(import));
     }
-    
+
     return imports;
 }
 
@@ -245,26 +239,38 @@ std::unique_ptr<AstNode> Parser::parseTopLevel() {
     if (match(KeywordType::Package)) {
         return parsePackage();
     }
-    
+
+    if (check(KeywordType::Import)) {
+        // Parse single import as a statement-like node
+        auto imports = parseImports();
+        if (!imports.empty()) {
+            // Return the first import (there should only be one)
+            return std::move(imports[0]);
+        }
+    }
+
     return parseStatement();
 }
 
 std::unique_ptr<PackageDefinition> Parser::parsePackage() {
-    auto name = parseIdentifier();
-    
+    std::string packageName = parseQualifiedName();
+    auto name = std::make_unique<Identifier>(packageName);
+
     expectToken(TokenType::LBrace, "Expected '{' after package name");
-    
+
     auto package = std::make_unique<PackageDefinition>(std::move(name), parseImports(), std::vector<AstNodePtr>());
-    
+
     while (!check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
         auto member = parseTopLevel();
         if (member) {
             package->members.push_back(std::move(member));
+        } else {
+            synchronize();
         }
     }
-    
+
     expectToken(TokenType::RBrace, "Expected '}' after package body");
-    
+
     return package;
 }
 
@@ -314,6 +320,9 @@ std::unique_ptr<Statement> Parser::parseStatement() {
     if (check(KeywordType::Class)) {
         return parseClassDeclaration();
     }
+    if (check(KeywordType::Namespace)) {
+        return parseNamespaceDeclaration();
+    }
     if (check(TokenType::SemiColon)) {
         return parseEmptyStatement();
     }
@@ -322,112 +331,153 @@ std::unique_ptr<Statement> Parser::parseStatement() {
             return parseLabeledStatement();
         }
     }
-    
+
     return parseExpressionStatement();
 }
 
 std::unique_ptr<Statement> Parser::parseBlockStatement() {
     std::vector<StatementPtr> statements;
-    
+
     expectToken(TokenType::LBrace, "Expected '{'");
-    
+
     while (!check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
         auto stmt = parseStatement();
         if (stmt) {
             statements.push_back(std::move(stmt));
+        } else {
+            synchronize();
         }
     }
-    
+
     expectToken(TokenType::RBrace, "Expected '}'");
-    
-    return toStatementPtr(new BlockStatement(std::move(statements)));
+
+    return std::make_unique<BlockStatement>(std::move(statements));
 }
 
 std::unique_ptr<Statement> Parser::parseEmptyStatement() {
     expectToken(TokenType::SemiColon, "Expected ';'");
-    return toStatementPtr(new EmptyStatement());
+    return std::make_unique<EmptyStatement>();
 }
 
 std::unique_ptr<Statement> Parser::parseExpressionStatement() {
     auto expr = parseExpression();
+    if (!expr) {
+        addError("Failed to parse expression");
+        return nullptr;
+    }
     expectToken(TokenType::SemiColon, "Expected ';' after expression");
-    return toStatementPtr(new ExpressionStatement(std::move(expr)));
+    return std::make_unique<ExpressionStatement>(std::move(expr));
 }
 
 std::unique_ptr<Statement> Parser::parseIfStatement() {
     expectKeyword(KeywordType::If, "Expected 'if'");
     expectToken(TokenType::LParen, "Expected '(' after 'if'");
     auto test = parseExpression();
+    if (!test) {
+        addError("Failed to parse if condition");
+        return nullptr;
+    }
     expectToken(TokenType::RParen, "Expected ')'");
     auto consequent = parseStatement();
-    
+    if (!consequent) {
+        return nullptr;
+    }
+
     StatementPtr alternate = nullptr;
     if (match(KeywordType::Else)) {
         alternate = parseStatement();
     }
-    
-    return toStatementPtr(new IfStatement(std::move(test), std::move(consequent), std::move(alternate)));
+
+    return std::make_unique<IfStatement>(std::move(test), std::move(consequent), std::move(alternate));
 }
 
 std::unique_ptr<Statement> Parser::parseSwitchStatement() {
     expectKeyword(KeywordType::Switch, "Expected 'switch'");
     expectToken(TokenType::LParen, "Expected '(' after 'switch'");
     auto discriminant = parseExpression();
+    if (!discriminant) {
+        addError("Failed to parse switch discriminant");
+        return nullptr;
+    }
     expectToken(TokenType::RParen, "Expected ')'");
     expectToken(TokenType::LBrace, "Expected '{'");
-    
-    std::vector<StatementPtr> cases;
-    
+
+    std::vector<std::unique_ptr<CaseClause>> cases;
+
     while (!check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
         if (match(KeywordType::Default)) {
             expectToken(TokenType::Colon, "Expected ':'");
-            while (!check(KeywordType::Case) && !check(KeywordType::Default) && 
+            std::vector<StatementPtr> consequent;
+            while (!check(KeywordType::Case) && !check(KeywordType::Default) &&
                    !check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
                 auto stmt = parseStatement();
                 if (stmt) {
-                    cases.push_back(std::move(stmt));
+                    consequent.push_back(std::move(stmt));
                 }
             }
+            cases.push_back(std::make_unique<CaseClause>(nullptr, std::move(consequent)));
         } else if (match(KeywordType::Case)) {
             auto caseExpr = parseExpression();
+            if (!caseExpr) {
+                addError("Failed to parse case expression");
+                continue;
+            }
             expectToken(TokenType::Colon, "Expected ':'");
-            while (!check(KeywordType::Case) && !check(KeywordType::Default) && 
+            std::vector<StatementPtr> consequent;
+            while (!check(KeywordType::Case) && !check(KeywordType::Default) &&
                    !check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
                 auto stmt = parseStatement();
                 if (stmt) {
-                    cases.push_back(std::move(stmt));
+                    consequent.push_back(std::move(stmt));
                 }
             }
+            cases.push_back(std::make_unique<CaseClause>(std::move(caseExpr), std::move(consequent)));
         } else {
-            advance();
+            addError("Expected 'case' or 'default' in switch body");
+            synchronize();
+            break;
         }
     }
-    
+
     expectToken(TokenType::RBrace, "Expected '}'");
-    
-    return toStatementPtr(new SwitchStatement(std::move(discriminant), std::move(cases)));
+
+    return std::make_unique<SwitchStatement>(std::move(discriminant), std::move(cases));
 }
 
 std::unique_ptr<Statement> Parser::parseWhileStatement() {
     expectKeyword(KeywordType::While, "Expected 'while'");
     expectToken(TokenType::LParen, "Expected '(' after 'while'");
     auto test = parseExpression();
+    if (!test) {
+        addError("Failed to parse while condition");
+        return nullptr;
+    }
     expectToken(TokenType::RParen, "Expected ')'");
     auto body = parseStatement();
-    
-    return toStatementPtr(new WhileStatement(std::move(test), std::move(body)));
+    if (!body) {
+        return nullptr;
+    }
+
+    return std::make_unique<WhileStatement>(std::move(test), std::move(body));
 }
 
 std::unique_ptr<Statement> Parser::parseDoWhileStatement() {
     expectKeyword(KeywordType::Do, "Expected 'do'");
     auto body = parseStatement();
+    if (!body) {
+        return nullptr;
+    }
     expectKeyword(KeywordType::While, "Expected 'while' after do-statement");
     expectToken(TokenType::LParen, "Expected '(' after 'while'");
     auto test = parseExpression();
+    if (!test) {
+        addError("Failed to parse while condition");
+        return nullptr;
+    }
     expectToken(TokenType::RParen, "Expected ')'");
     expectToken(TokenType::SemiColon, "Expected ';'");
-    
-    return toStatementPtr(new DoWhileStatement(std::move(body), std::move(test)));
+
+    return std::make_unique<DoWhileStatement>(std::move(body), std::move(test));
 }
 
 std::unique_ptr<Statement> Parser::parseForStatement() {
@@ -454,38 +504,65 @@ std::unique_ptr<Statement> Parser::parseForStatement() {
     StatementPtr init = nullptr;
     if (!check(TokenType::SemiColon)) {
         if (check(KeywordType::Var) || check(KeywordType::Const) || check(KeywordType::Let)) {
-            init = parseVariableStatement();
+            // Parse variable declaration without expecting semicolon
+            bool isConst = false;
+            if (check(KeywordType::Const)) {
+                isConst = true;
+                advance();
+            } else if (match(KeywordType::Var) || match(KeywordType::Let)) {
+            }
+
+            VariableDeclarationList declarations;
+            do {
+                auto id = parseIdentifier();
+                IdentifierPtr type = nullptr;
+                if (match(TokenType::Colon)) {
+                    type = parseIdentifier();
+                }
+                ExpressionPtr initExpr = nullptr;
+                if (match(TokenType::Assign)) {
+                    initExpr = parseAssignmentExpression();
+                }
+                declarations.push_back(std::make_unique<VariableDeclaration>(std::move(id), std::move(type), std::move(initExpr)));
+            } while (match(TokenType::Comma));
+
+            init = std::make_unique<VariableDefinition>(std::vector<AttributePtr>(), std::move(declarations), isConst);
         } else {
-            init = toStatementPtr(new ExpressionStatement(parseExpression()));
+            auto expr = parseExpression();
+            if (expr) {
+                init = std::make_unique<ExpressionStatement>(std::move(expr));
+            }
         }
     }
-    
+
     expectToken(TokenType::SemiColon, "Expected ';'");
-    
+
     ExpressionPtr test = nullptr;
     if (!check(TokenType::SemiColon)) {
         test = parseExpression();
     }
     expectToken(TokenType::SemiColon, "Expected ';'");
-    
+
     ExpressionPtr update = nullptr;
     if (!check(TokenType::RParen)) {
         update = parseExpression();
     }
     expectToken(TokenType::RParen, "Expected ')'");
-    
+
     auto body = parseStatement();
-    
-    return toStatementPtr(new ForStatement(std::move(init), std::move(test), std::move(update), std::move(body)));
+    if (!body) {
+        return nullptr;
+    }
+
+    return std::make_unique<ForStatement>(std::move(init), std::move(test), std::move(update), std::move(body));
 }
 
 std::unique_ptr<Statement> Parser::parseForInOrOfStatement(bool isForEach) {
-    if (isForEach) {
-        match(KeywordType::Each);
-    }
-    
     StatementPtr init = nullptr;
     if (check(KeywordType::Var) || check(KeywordType::Const) || check(KeywordType::Let)) {
+        bool isConst = check(KeywordType::Const);
+        advance();  // consume var/const/let
+
         auto id = parseIdentifier();
         IdentifierPtr type = nullptr;
         if (match(TokenType::Colon)) {
@@ -498,11 +575,14 @@ std::unique_ptr<Statement> Parser::parseForInOrOfStatement(bool isForEach) {
         auto decl = std::make_unique<VariableDeclaration>(std::move(id), std::move(type), std::move(initExpr));
         VariableDeclarationList decls;
         decls.push_back(std::move(decl));
-        init = toStatementPtr(new VariableDefinition(std::vector<AttributePtr>(), std::move(decls), false));
+        init = std::make_unique<VariableDefinition>(std::vector<AttributePtr>(), std::move(decls), isConst);
     } else {
-        init = toStatementPtr(new ExpressionStatement(parseExpression()));
+        auto expr = parseExpression();
+        if (expr) {
+            init = std::make_unique<ExpressionStatement>(std::move(expr));
+        }
     }
-    
+
     ExpressionPtr right = nullptr;
     if (match(KeywordType::In)) {
         right = parseExpression();
@@ -511,12 +591,15 @@ std::unique_ptr<Statement> Parser::parseForInOrOfStatement(bool isForEach) {
     } else {
         addError("Expected 'in' or 'of' in for-in/for-each statement");
     }
-    
+
     expectToken(TokenType::RParen, "Expected ')'");
-    
+
     auto body = parseStatement();
-    
-    return toStatementPtr(new ForInStatement(std::move(init), std::move(right), std::move(body)));
+    if (!body) {
+        return nullptr;
+    }
+
+    return std::make_unique<ForInStatement>(std::move(init), std::move(right), std::move(body));
 }
 
 std::unique_ptr<Statement> Parser::parseBreakStatement() {
@@ -526,7 +609,7 @@ std::unique_ptr<Statement> Parser::parseBreakStatement() {
         label = parseIdentifier();
     }
     expectToken(TokenType::SemiColon, "Expected ';'");
-    return toStatementPtr(new BreakStatement(std::move(label)));
+    return std::make_unique<BreakStatement>(std::move(label));
 }
 
 std::unique_ptr<Statement> Parser::parseContinueStatement() {
@@ -536,7 +619,7 @@ std::unique_ptr<Statement> Parser::parseContinueStatement() {
         label = parseIdentifier();
     }
     expectToken(TokenType::SemiColon, "Expected ';'");
-    return toStatementPtr(new ContinueStatement(std::move(label)));
+    return std::make_unique<ContinueStatement>(std::move(label));
 }
 
 std::unique_ptr<Statement> Parser::parseReturnStatement() {
@@ -546,61 +629,78 @@ std::unique_ptr<Statement> Parser::parseReturnStatement() {
         argument = parseExpression();
     }
     expectToken(TokenType::SemiColon, "Expected ';'");
-    return toStatementPtr(new ReturnStatement(std::move(argument)));
+    return std::make_unique<ReturnStatement>(std::move(argument));
 }
 
 std::unique_ptr<Statement> Parser::parseThrowStatement() {
     expectKeyword(KeywordType::Throw, "Expected 'throw'");
     auto argument = parseExpression();
+    if (!argument) {
+        addError("Failed to parse throw expression");
+        return nullptr;
+    }
     expectToken(TokenType::SemiColon, "Expected ';'");
-    return toStatementPtr(new ThrowStatement(std::move(argument)));
+    return std::make_unique<ThrowStatement>(std::move(argument));
 }
 
 std::unique_ptr<Statement> Parser::parseTryStatement() {
     expectKeyword(KeywordType::Try, "Expected 'try'");
     auto block = parseBlockStatement();
-    
+    if (!block) {
+        return nullptr;
+    }
+
     IdentifierPtr catchVar = nullptr;
     StatementPtr catchBody = nullptr;
-    
+
     if (match(KeywordType::Catch)) {
         expectToken(TokenType::LParen, "Expected '(' after 'catch'");
         catchVar = parseIdentifier();
-        
+
         if (check(TokenType::Colon)) {
             advance();
             parseIdentifier();
         }
-        
+
         expectToken(TokenType::RParen, "Expected ')'");
         catchBody = parseBlockStatement();
     }
-    
+
     StatementPtr finallyBody = nullptr;
     if (match(KeywordType::Finally)) {
         finallyBody = parseBlockStatement();
     }
-    
-    return toStatementPtr(new TryStatement(std::move(block), std::move(catchVar), 
-                                          std::move(catchBody), std::move(finallyBody)));
+
+    return std::make_unique<TryStatement>(std::move(block), std::move(catchVar),
+                                          std::move(catchBody), std::move(finallyBody));
 }
 
 std::unique_ptr<Statement> Parser::parseWithStatement() {
     expectKeyword(KeywordType::With, "Expected 'with'");
     expectToken(TokenType::LParen, "Expected '(' after 'with'");
     auto object = parseExpression();
+    if (!object) {
+        addError("Failed to parse with expression");
+        return nullptr;
+    }
     expectToken(TokenType::RParen, "Expected ')'");
     auto body = parseStatement();
-    
-    return toStatementPtr(new WithStatement(std::move(object), std::move(body)));
+    if (!body) {
+        return nullptr;
+    }
+
+    return std::make_unique<WithStatement>(std::move(object), std::move(body));
 }
 
 std::unique_ptr<Statement> Parser::parseLabeledStatement() {
     auto label = parseIdentifier();
     expectToken(TokenType::Colon, "Expected ':'");
     auto body = parseStatement();
-    
-    return toStatementPtr(new LabeledStatement(std::move(label), std::move(body)));
+    if (!body) {
+        return nullptr;
+    }
+
+    return std::make_unique<LabeledStatement>(std::move(label), std::move(body));
 }
 
 std::unique_ptr<Statement> Parser::parseVariableStatement() {
@@ -632,69 +732,118 @@ std::unique_ptr<Statement> Parser::parseVariableStatement() {
 
     expectToken(TokenType::SemiColon, "Expected ';'");
 
-    return toStatementPtr(new VariableDefinition(std::vector<AttributePtr>(), std::move(declarations), isConst));
+    return std::make_unique<VariableDefinition>(std::vector<AttributePtr>(), std::move(declarations), isConst);
 }
 
 std::unique_ptr<Statement> Parser::parseFunctionDeclaration() {
     expectKeyword(KeywordType::Function, "Expected 'function'");
-    
+
     auto name = parseIdentifier();
     expectToken(TokenType::LParen, "Expected '('");
-    
+
     auto params = parseParameters();
-    
+
     IdentifierPtr returnType = nullptr;
     if (match(TokenType::Colon)) {
         returnType = parseIdentifier();
     }
-    
+
     auto body = parseBlockStatement();
-    
-    return toStatementPtr(new FunctionDefinition(
+    if (!body) {
+        return nullptr;
+    }
+
+    return std::make_unique<FunctionDefinition>(
         std::vector<AttributePtr>(),
         std::move(name),
         std::move(params),
         std::move(returnType),
         std::move(body)
-    ));
+    );
 }
 
 std::unique_ptr<Statement> Parser::parseClassDeclaration() {
     expectKeyword(KeywordType::Class, "Expected 'class'");
-    
+
     auto name = parseIdentifier();
-    
+
     IdentifierPtr superClass = nullptr;
     if (match(KeywordType::Extends)) {
         superClass = parseIdentifier();
     }
-    
+
     std::vector<IdentifierPtr> interfaces;
     if (match(KeywordType::Implements)) {
         do {
             interfaces.push_back(parseIdentifier());
         } while (match(TokenType::Comma));
     }
-    
+
     expectToken(TokenType::LBrace, "Expected '{'");
-    
+
     std::vector<AstNodePtr> members;
     while (!check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
-        auto member = parseStatement();
-        if (member) {
-            members.push_back(std::move(member));
+        auto attrs = parseAttributes();
+
+        if (check(KeywordType::Function)) {
+            auto func = parseFunctionDefinitionWithAttributes(std::move(attrs));
+            if (func) {
+                members.push_back(std::move(func));
+            }
+        } else if (check(KeywordType::Var) || check(KeywordType::Const) || check(KeywordType::Let)) {
+            auto var = parseVariableStatementWithAttributes(std::move(attrs));
+            if (var) {
+                members.push_back(std::move(var));
+            }
+        } else if (check(KeywordType::Get) || check(KeywordType::Set)) {
+            auto prop = parsePropertyWithAttributes(std::move(attrs));
+            if (prop) {
+                members.push_back(std::move(prop));
+            }
+        } else if (attrs.empty()) {
+            // Try parsing as a regular statement if no attributes
+            auto member = parseStatement();
+            if (member) {
+                members.push_back(std::move(member));
+            } else {
+                synchronize();
+            }
+        } else {
+            addError("Expected function, variable, or property after attributes");
+            synchronize();
         }
     }
-    
+
     expectToken(TokenType::RBrace, "Expected '}'");
-    
-    return toStatementPtr(new ClassDefinition(
+
+    return std::make_unique<ClassDefinition>(
         std::vector<AttributePtr>(),
         std::move(name),
         std::move(superClass),
         std::move(interfaces),
         std::move(members)
-    ));
+    );
+}
+
+std::unique_ptr<Statement> Parser::parseNamespaceDeclaration() {
+    expectKeyword(KeywordType::Namespace, "Expected 'namespace'");
+
+    auto name = parseIdentifier();
+
+    expectToken(TokenType::Assign, "Expected '=' after namespace name");
+
+    IdentifierPtr uri = nullptr;
+    if (check(TokenType::String)) {
+        uri = std::make_unique<Identifier>(currentToken().stringValue);
+        advance();
+    } else {
+        addError("Expected string literal for namespace URI");
+        return nullptr;
+    }
+
+    expectToken(TokenType::SemiColon, "Expected ';' after namespace declaration");
+
+    return std::make_unique<NamespaceDefinition>(std::move(name), std::move(uri));
 }
 
 std::unique_ptr<Expression> Parser::parseExpression() {
@@ -703,172 +852,252 @@ std::unique_ptr<Expression> Parser::parseExpression() {
 
 std::unique_ptr<Expression> Parser::parseAssignmentExpression() {
     auto left = parseConditionalExpression();
-    
-    if (check(TokenType::Assign) || check(TokenType::PlusAssign) || 
+    if (!left) {
+        return nullptr;
+    }
+
+    if (check(TokenType::Assign) || check(TokenType::PlusAssign) ||
         check(TokenType::MinusAssign) || check(TokenType::MultiplyAssign) ||
-        check(TokenType::DivideAssign) || check(TokenType::RemainderAssign)) {
-        
+        check(TokenType::DivideAssign) || check(TokenType::RemainderAssign) ||
+        check(TokenType::LeftShiftAssign) || check(TokenType::RightShiftAssign) ||
+        check(TokenType::UnsignedRightShiftAssign) ||
+        check(TokenType::AmpersandAssign) || check(TokenType::PipeAssign) ||
+        check(TokenType::CaretAssign) || check(TokenType::PowerAssign) ||
+        check(TokenType::NullCoalescingAssign) || check(TokenType::AndAssign) ||
+        check(TokenType::OrAssign)) {
+
         TokenType op = currentToken().type;
         advance();
         auto right = parseAssignmentExpression();
-        
+        if (!right) {
+            addError("Failed to parse right side of assignment");
+            return nullptr;
+        }
+
         return std::make_unique<AssignmentExpression>(
             getBinaryOperator(op),
             std::move(left),
             std::move(right)
         );
     }
-    
+
     return left;
 }
 
 std::unique_ptr<Expression> Parser::parseConditionalExpression() {
     auto test = parseNullCoalescingExpression();
-    
+    if (!test) {
+        return nullptr;
+    }
+
     if (match(TokenType::Question)) {
         auto consequent = parseAssignmentExpression();
+        if (!consequent) {
+            addError("Failed to parse consequent of conditional expression");
+            return nullptr;
+        }
         expectToken(TokenType::Colon, "Expected ':'");
         auto alternate = parseAssignmentExpression();
-        
+        if (!alternate) {
+            addError("Failed to parse alternate of conditional expression");
+            return nullptr;
+        }
+
         return std::make_unique<ConditionalExpression>(
             std::move(test),
             std::move(consequent),
             std::move(alternate)
         );
     }
-    
+
     return test;
 }
 
 std::unique_ptr<Expression> Parser::parseNullCoalescingExpression() {
     auto left = parseLogicalOrExpression();
-    
+    if (!left) {
+        return nullptr;
+    }
+
     if (match(TokenType::NullCoalescing)) {
         auto right = parseNullCoalescingExpression();
-        
+        if (!right) {
+            addError("Failed to parse right operand of null coalescing expression");
+            return nullptr;
+        }
+
         return std::make_unique<BinaryExpression>(
             OperatorType::NullCoalescing,
             std::move(left),
             std::move(right)
         );
     }
-    
+
     return left;
 }
 
 std::unique_ptr<Expression> Parser::parseLogicalOrExpression() {
     auto left = parseLogicalAndExpression();
-    
+    if (!left) {
+        return nullptr;
+    }
+
     while (match(TokenType::LogicalOr)) {
         auto right = parseLogicalAndExpression();
-        
+        if (!right) {
+            addError("Failed to parse right operand of logical OR expression");
+            return nullptr;
+        }
+
         left = std::make_unique<BinaryExpression>(
             OperatorType::LogicalOr,
             std::move(left),
             std::move(right)
         );
     }
-    
+
     return left;
 }
 
 std::unique_ptr<Expression> Parser::parseLogicalAndExpression() {
     auto left = parseBitwiseOrExpression();
-    
+    if (!left) {
+        return nullptr;
+    }
+
     while (match(TokenType::LogicalAnd)) {
         auto right = parseBitwiseOrExpression();
-        
+        if (!right) {
+            addError("Failed to parse right operand of logical AND expression");
+            return nullptr;
+        }
+
         left = std::make_unique<BinaryExpression>(
             OperatorType::LogicalAnd,
             std::move(left),
             std::move(right)
         );
     }
-    
+
     return left;
 }
 
 std::unique_ptr<Expression> Parser::parseBitwiseOrExpression() {
     auto left = parseBitwiseXorExpression();
-    
+    if (!left) {
+        return nullptr;
+    }
+
     while (match(TokenType::Pipe)) {
         auto right = parseBitwiseXorExpression();
-        
+        if (!right) {
+            addError("Failed to parse right operand of bitwise OR expression");
+            return nullptr;
+        }
+
         left = std::make_unique<BinaryExpression>(
             OperatorType::BitwiseOr,
             std::move(left),
             std::move(right)
         );
     }
-    
+
     return left;
 }
 
 std::unique_ptr<Expression> Parser::parseBitwiseXorExpression() {
     auto left = parseBitwiseAndExpression();
-    
+    if (!left) {
+        return nullptr;
+    }
+
     while (match(TokenType::Caret)) {
         auto right = parseBitwiseAndExpression();
-        
+        if (!right) {
+            addError("Failed to parse right operand of bitwise XOR expression");
+            return nullptr;
+        }
+
         left = std::make_unique<BinaryExpression>(
             OperatorType::BitwiseXor,
             std::move(left),
             std::move(right)
         );
     }
-    
+
     return left;
 }
 
 std::unique_ptr<Expression> Parser::parseBitwiseAndExpression() {
     auto left = parseEqualityExpression();
-    
+    if (!left) {
+        return nullptr;
+    }
+
     while (match(TokenType::Ampersand)) {
         auto right = parseEqualityExpression();
-        
+        if (!right) {
+            addError("Failed to parse right operand of bitwise AND expression");
+            return nullptr;
+        }
+
         left = std::make_unique<BinaryExpression>(
             OperatorType::BitwiseAnd,
             std::move(left),
             std::move(right)
         );
     }
-    
+
     return left;
 }
 
 std::unique_ptr<Expression> Parser::parseEqualityExpression() {
     auto left = parseRelationalExpression();
-    
+    if (!left) {
+        return nullptr;
+    }
+
     while (check(TokenType::Equals) || check(TokenType::NotEquals) ||
            check(TokenType::StrictEquals) || check(TokenType::StrictNotEquals)) {
-        
+
         TokenType op = currentToken().type;
         advance();
         auto right = parseRelationalExpression();
-        
+        if (!right) {
+            addError("Failed to parse right operand of equality expression");
+            return nullptr;
+        }
+
         left = std::make_unique<BinaryExpression>(
             getBinaryOperator(op),
             std::move(left),
             std::move(right)
         );
     }
-    
+
     return left;
 }
 
 std::unique_ptr<Expression> Parser::parseRelationalExpression() {
     auto left = parseShiftExpression();
-    
+    if (!left) {
+        return nullptr;
+    }
+
     while (check(TokenType::LessThan) || check(TokenType::GreaterThan) ||
            check(TokenType::LessThanOrEqual) || check(TokenType::GreaterThanOrEqual) ||
-           check(KeywordType::Instanceof) || check(KeywordType::In) || 
+           check(KeywordType::Instanceof) || check(KeywordType::In) ||
            check(KeywordType::Is) || check(KeywordType::As)) {
-        
+
         TokenType op = currentToken().type;
         KeywordType kw = currentToken().keyword;
         advance();
         auto right = parseShiftExpression();
-        
+        if (!right) {
+            addError("Failed to parse right operand of relational expression");
+            return nullptr;
+        }
+
         if (kw == KeywordType::Instanceof) {
             left = std::make_unique<BinaryExpression>(
                 OperatorType::Instanceof,
@@ -901,64 +1130,86 @@ std::unique_ptr<Expression> Parser::parseRelationalExpression() {
             );
         }
     }
-    
+
     return left;
 }
 
 std::unique_ptr<Expression> Parser::parseShiftExpression() {
     auto left = parseAdditiveExpression();
-    
+    if (!left) {
+        return nullptr;
+    }
+
     while (check(TokenType::LeftShift) || check(TokenType::RightShift) ||
            check(TokenType::UnsignedRightShift)) {
-        
+
         TokenType op = currentToken().type;
         advance();
         auto right = parseAdditiveExpression();
-        
+        if (!right) {
+            addError("Failed to parse right operand of shift expression");
+            return nullptr;
+        }
+
         left = std::make_unique<BinaryExpression>(
             getBinaryOperator(op),
             std::move(left),
             std::move(right)
         );
     }
-    
+
     return left;
 }
 
 std::unique_ptr<Expression> Parser::parseAdditiveExpression() {
     auto left = parseMultiplicativeExpression();
-    
-    while (match(TokenType::Plus) || match(TokenType::Minus)) {
+    if (!left) {
+        return nullptr;
+    }
+
+    while (check(TokenType::Plus) || check(TokenType::Minus)) {
         TokenType op = currentToken().type;
+        advance();
         auto right = parseMultiplicativeExpression();
-        
+        if (!right) {
+            addError("Failed to parse right operand of additive expression");
+            return nullptr;
+        }
+
         left = std::make_unique<BinaryExpression>(
             getBinaryOperator(op),
             std::move(left),
             std::move(right)
         );
     }
-    
+
     return left;
 }
 
 std::unique_ptr<Expression> Parser::parseMultiplicativeExpression() {
     auto left = parseUnaryExpression();
-    
-    while (check(TokenType::Multiply) || check(TokenType::Divide) || 
+    if (!left) {
+        return nullptr;
+    }
+
+    while (check(TokenType::Multiply) || check(TokenType::Divide) ||
            check(TokenType::Remainder)) {
-        
+
         TokenType op = currentToken().type;
         advance();
         auto right = parseUnaryExpression();
-        
+        if (!right) {
+            addError("Failed to parse right operand of multiplicative expression");
+            return nullptr;
+        }
+
         left = std::make_unique<BinaryExpression>(
             getBinaryOperator(op),
             std::move(left),
             std::move(right)
         );
     }
-    
+
     return left;
 }
 
@@ -967,29 +1218,36 @@ std::unique_ptr<Expression> Parser::parseUnaryExpression() {
         check(TokenType::Plus) || check(TokenType::Minus) || check(TokenType::Tilde) ||
         check(TokenType::Exclamation) || check(KeywordType::Delete) ||
         check(KeywordType::Void) || check(KeywordType::Typeof)) {
-        
+
         TokenType op = currentToken().type;
         advance();
         auto operand = parseUnaryExpression();
-        
+        if (!operand) {
+            addError("Failed to parse operand of unary expression");
+            return nullptr;
+        }
+
         return std::make_unique<UnaryExpression>(
             getBinaryOperator(op),
             std::move(operand),
             false
         );
     }
-    
+
     return parsePostfixExpression();
 }
 
 std::unique_ptr<Expression> Parser::parsePostfixExpression() {
     auto expr = parseCallMemberExpression();
-    
+    if (!expr) {
+        return nullptr;
+    }
+
     if (check(TokenType::Increment) || check(TokenType::Decrement)) {
         if (!check(TokenType::EndOfFile)) {
             TokenType op = currentToken().type;
             advance();
-            
+
             if (op == TokenType::Increment) {
                 return std::make_unique<UnaryExpression>(OperatorType::PostIncrement, std::move(expr), true);
             } else {
@@ -997,7 +1255,7 @@ std::unique_ptr<Expression> Parser::parsePostfixExpression() {
             }
         }
     }
-    
+
     return expr;
 }
 
@@ -1005,20 +1263,29 @@ std::unique_ptr<Expression> Parser::parseCallMemberExpression() {
     if (check(KeywordType::New)) {
         return parseNewExpression();
     }
-    
+
     auto expr = parsePrimaryExpression();
-    
-    while (check(TokenType::Dot) || check(TokenType::LParen) || 
+    if (!expr) {
+        return nullptr;
+    }
+
+    while (check(TokenType::Dot) || check(TokenType::LParen) ||
            check(TokenType::LBracket) || check(TokenType::QuestionDot)) {
-        
+
         if (match(TokenType::LParen)) {
             ExpressionList args;
             while (!check(TokenType::RParen) && !check(TokenType::EndOfFile)) {
-                args.push_back(parseAssignmentExpression());
+                auto arg = parseAssignmentExpression();
+                if (!arg) {
+                    addError("Failed to parse function argument");
+                    synchronize();
+                    break;
+                }
+                args.push_back(std::move(arg));
                 if (!match(TokenType::Comma)) break;
             }
             expectToken(TokenType::RParen, "Expected ')'");
-            
+
             auto call = std::make_unique<CallExpression>(std::move(expr), std::move(args));
             expr = std::move(call);
         } else if (match(TokenType::Dot) || match(TokenType::QuestionDot)) {
@@ -1032,46 +1299,55 @@ std::unique_ptr<Expression> Parser::parseCallMemberExpression() {
             expr = std::move(member);
         } else if (match(TokenType::LBracket)) {
             auto index = parseExpression();
+            if (!index) {
+                addError("Failed to parse computed property expression");
+                return nullptr;
+            }
             expectToken(TokenType::RBracket, "Expected ']'");
-            
-            auto id = std::make_unique<Identifier>("[computed]");
+
             auto member = std::make_unique<MemberExpression>(
                 std::move(expr),
-                std::move(id),
-                true,
-                false
+                std::move(index),
+                false  // optional
             );
             expr = std::move(member);
         } else {
             break;
         }
     }
-    
+
     return expr;
 }
 
 std::unique_ptr<Expression> Parser::parseNewExpression() {
     expectKeyword(KeywordType::New, "Expected 'new'");
     auto callee = parsePrimaryExpression();
-    
+    if (!callee) {
+        addError("Failed to parse new expression callee");
+        return nullptr;
+    }
+
     ExpressionList args;
     if (match(TokenType::LParen)) {
         while (!check(TokenType::RParen) && !check(TokenType::EndOfFile)) {
-            args.push_back(parseAssignmentExpression());
+            auto arg = parseAssignmentExpression();
+            if (!arg) {
+                addError("Failed to parse constructor argument");
+                synchronize();
+                break;
+            }
+            args.push_back(std::move(arg));
             if (!match(TokenType::Comma)) break;
         }
         expectToken(TokenType::RParen, "Expected ')'");
     }
-    
+
     return std::make_unique<NewExpression>(std::move(callee), std::move(args));
 }
 
 std::unique_ptr<Expression> Parser::parsePrimaryExpression() {
     if (check(TokenType::Identifier)) {
         auto id = parseIdentifier();
-        if (check(TokenType::LParen)) {
-            return parseCallMemberExpression();
-        }
         return id;
     }
     
@@ -1348,33 +1624,34 @@ std::unique_ptr<Statement> Parser::parseVariableStatementWithAttributes(std::vec
     if (check(KeywordType::Const)) {
         isConst = true;
         advance();
-    } else {
-        match(KeywordType::Var);
+    } else if (match(KeywordType::Var)) {
+        // var keyword matched
+    } else if (match(KeywordType::Let)) {
+        // let keyword matched
     }
-    match(KeywordType::Let);
-    
+
     VariableDeclarationList declarations;
-    
+
     do {
         auto id = parseIdentifier();
         IdentifierPtr type = nullptr;
-        
+
         if (match(TokenType::Colon)) {
             type = parseIdentifier();
         }
-        
+
         ExpressionPtr init = nullptr;
-        
+
         if (match(TokenType::Assign)) {
             init = parseAssignmentExpression();
         }
-        
+
         declarations.push_back(std::make_unique<VariableDeclaration>(std::move(id), std::move(type), std::move(init)));
     } while (match(TokenType::Comma));
-    
+
     expectToken(TokenType::SemiColon, "Expected ';'");
-    
-    return toStatementPtr(new VariableDefinition(std::move(attrs), std::move(declarations), isConst));
+
+    return std::make_unique<VariableDefinition>(std::move(attrs), std::move(declarations), isConst);
 }
 
 std::unique_ptr<AstNode> Parser::parsePropertyWithAttributes(std::vector<AttributePtr> attrs) {
@@ -1459,6 +1736,28 @@ OperatorType Parser::getBinaryOperator(TokenType type) const {
         case TokenType::LogicalXor: return OperatorType::LogicalXor;
         case TokenType::Power: return OperatorType::Power;
         case TokenType::NullCoalescing: return OperatorType::NullCoalescing;
+        case TokenType::Assign: return OperatorType::Add;  // Assignment uses Add for simple =
+        case TokenType::PlusAssign: return OperatorType::Add;
+        case TokenType::MinusAssign: return OperatorType::Subtract;
+        case TokenType::MultiplyAssign: return OperatorType::Multiply;
+        case TokenType::DivideAssign: return OperatorType::Divide;
+        case TokenType::RemainderAssign: return OperatorType::Remainder;
+        case TokenType::LeftShiftAssign: return OperatorType::ShiftLeft;
+        case TokenType::RightShiftAssign: return OperatorType::ShiftRight;
+        case TokenType::UnsignedRightShiftAssign: return OperatorType::ShiftRightUnsigned;
+        case TokenType::AmpersandAssign: return OperatorType::BitwiseAnd;
+        case TokenType::PipeAssign: return OperatorType::BitwiseOr;
+        case TokenType::CaretAssign: return OperatorType::BitwiseXor;
+        case TokenType::PowerAssign: return OperatorType::Power;
+        case TokenType::NullCoalescingAssign: return OperatorType::NullCoalescing;
+        case TokenType::AndAssign: return OperatorType::LogicalAnd;
+        case TokenType::OrAssign: return OperatorType::LogicalOr;
+        case TokenType::Increment: return OperatorType::PostIncrement;
+        case TokenType::Decrement: return OperatorType::PostDecrement;
+        case TokenType::PreIncrement: return OperatorType::PreIncrement;
+        case TokenType::PreDecrement: return OperatorType::PreDecrement;
+        case TokenType::Exclamation: return OperatorType::LogicalNot;
+        case TokenType::Tilde: return OperatorType::BitwiseNot;
         default: return OperatorType::Add;
     }
 }

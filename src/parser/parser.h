@@ -27,6 +27,7 @@ private:
     std::vector<Token> _tokens;
     size_t _position;
     std::string _errors;
+    Token _eofToken;
 
     const Token& currentToken() const;
     const Token& peek(int offset = 0) const;
@@ -41,6 +42,8 @@ private:
     void expectKeyword(KeywordType keyword, const std::string& message);
 
     void addError(const std::string& message);
+    void synchronize();
+    std::string parseQualifiedName();
 
     std::unique_ptr<Program> parseProgram();
     std::vector<std::unique_ptr<ImportDirective>> parseImports();
@@ -67,6 +70,7 @@ private:
     std::unique_ptr<Statement> parseVariableStatement();
     std::unique_ptr<Statement> parseFunctionDeclaration();
     std::unique_ptr<Statement> parseClassDeclaration();
+    std::unique_ptr<Statement> parseNamespaceDeclaration();
 
     std::unique_ptr<Expression> parseExpression();
     std::unique_ptr<Expression> parseAssignmentExpression();
