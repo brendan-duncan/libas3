@@ -11,19 +11,39 @@ add_library(as3_parser
     src/ast/ast_nodes.cpp
     src/lexer/lexer.cpp
     src/parser/parser.cpp
+    src/runtime/value.cpp
+    src/runtime/environment.cpp
+    src/executor/executor.cpp
+    src/bytecode/opcode.cpp
+    src/bytecode/chunk.cpp
+    src/bytecode/compiler.cpp
+    src/bytecode/vm.cpp
 )
 
 target_include_directories(as3_parser PUBLIC
     ${CMAKE_SOURCE_DIR}/src/ast
     ${CMAKE_SOURCE_DIR}/src/lexer
     ${CMAKE_SOURCE_DIR}/src/parser
+    ${CMAKE_SOURCE_DIR}/src/runtime
+    ${CMAKE_SOURCE_DIR}/src/executor
+    ${CMAKE_SOURCE_DIR}/src/bytecode
 )
 
-add_executable(as3_parser_test
-    src/main.cpp
+# Unified test executable
+add_executable(as3_tests
+    test/main.cpp
+    test/parser_tests.cpp
+    test/interpreter_tests.cpp
+    test/bytecode_tests.cpp
+    test/vm_tests.cpp
+    test/benchmark_tests.cpp
 )
 
-target_link_libraries(as3_parser_test as3_parser)
+target_include_directories(as3_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/test
+)
+
+target_link_libraries(as3_tests as3_parser)
 
 enable_testing()
-add_test(NAME ParserTest COMMAND as3_parser_test)
+add_test(NAME AllTests COMMAND as3_tests)
