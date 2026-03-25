@@ -84,8 +84,10 @@ enum class OpCode : uint8_t {
 
     // Functions
     OP_CALL,            // Call function [u8 arg_count]
+    OP_CALL_METHOD,     // Call method with 'this' binding [u8 arg_count]
     OP_CLOSURE,         // Create closure [u16 function_index] [upvalue_count]
     OP_RETURN,          // Return from function
+    OP_THIS,            // Push 'this' value
 
     // Objects & Arrays
     OP_NEW_ARRAY,       // Create array [u16 element_count]

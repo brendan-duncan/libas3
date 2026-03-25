@@ -406,8 +406,7 @@ void Compiler::compileExpression(Expression* expr, Chunk& chunk) {
     } else if (auto* funcExpr = dynamic_cast<FunctionExpression*>(expr)) {
         compileFunctionExpression(funcExpr, chunk);
     } else if (auto* thisExpr = dynamic_cast<ThisExpression*>(expr)) {
-        // TODO: Implement this
-        emitOpCode(OpCode::OP_UNDEFINED, chunk);
+        emitOpCode(OpCode::OP_THIS, chunk);
     }
 }
 
@@ -538,17 +537,49 @@ void Compiler::compileAssignmentExpression(AssignmentExpression* expr, Chunk& ch
 }
 
 void Compiler::compileCallExpression(CallExpression* expr, Chunk& chunk) {
-    // Compile callee
-    compileExpression(expr->callee.get(), chunk);
+    // Check if this is a method call (callee is MemberExpression)
+    if (auto* memberExpr = dynamic_cast<MemberExpression*>(expr->callee.get())) {
+        // Method call: obj.method(args)
+        // Compile object (receiver)
+        compileExpression(memberExpr->object.get(), chunk);
 
-    // Compile arguments
-    for (auto& arg : expr->arguments) {
-        compileExpression(arg.get(), chunk);
+        // Duplicate receiver for 'this' binding
+        emitOpCode(OpCode::OP_DUP, chunk);
+
+        // Get the method
+        if (memberExpr->computed && memberExpr->computedProperty) {
+            // Computed access: obj[prop]
+            compileExpression(memberExpr->computedProperty.get(), chunk);
+            emitOpCode(OpCode::OP_GET_INDEX, chunk);
+        } else if (memberExpr->property) {
+            // Dot access: obj.prop
+            uint16_t name = identifierConstant(memberExpr->property->name, chunk);
+            emitOpCode(OpCode::OP_GET_PROPERTY, chunk);
+            chunk.writeU16(name);
+        }
+
+        // Compile arguments
+        for (auto& arg : expr->arguments) {
+            compileExpression(arg.get(), chunk);
+        }
+
+        // Emit method call (receiver is already on stack)
+        emitOpCode(OpCode::OP_CALL_METHOD, chunk);
+        emitByte(static_cast<uint8_t>(expr->arguments.size()), chunk);
+    } else {
+        // Regular function call
+        // Compile callee
+        compileExpression(expr->callee.get(), chunk);
+
+        // Compile arguments
+        for (auto& arg : expr->arguments) {
+            compileExpression(arg.get(), chunk);
+        }
+
+        // Emit call
+        emitOpCode(OpCode::OP_CALL, chunk);
+        emitByte(static_cast<uint8_t>(expr->arguments.size()), chunk);
     }
-
-    // Emit call
-    emitOpCode(OpCode::OP_CALL, chunk);
-    emitByte(static_cast<uint8_t>(expr->arguments.size()), chunk);
 }
 
 void Compiler::compileMemberExpression(MemberExpression* expr, Chunk& chunk) {
@@ -597,8 +628,40 @@ void Compiler::compileObjectExpression(ObjectExpression* expr, Chunk& chunk) {
 }
 
 void Compiler::compileFunctionExpression(FunctionExpression* expr, Chunk& chunk) {
-    // TODO: Similar to compileFunctionDefinition but for expressions
-    error("Function expressions not yet implemented in bytecode compiler");
+    // Create new compiler context for function
+    CompilerContext functionContext(current);
+
+    // Function expressions can be anonymous or named
+    std::string funcName = expr->name ? expr->name->name : "<anonymous>";
+    auto func = std::make_shared<BytecodeFunction>(funcName, static_cast<int>(expr->parameters.size()));
+    functionContext.function = func.get();
+
+    CompilerContext* previousCurrent = current;
+    current = &functionContext;
+
+    current->beginScope();
+
+    // Compile parameters
+    for (auto& param : expr->parameters) {
+        current->addLocal(param->name->name);
+        current->markInitialized();
+    }
+
+    // Compile body
+    compileStatement(expr->body.get(), func->chunk);
+
+    // Implicit return undefined
+    emitOpCode(OpCode::OP_UNDEFINED, func->chunk);
+    emitReturn(func->chunk);
+
+    current = previousCurrent;
+
+    // Store the compiled function as a constant and push onto stack
+    uint16_t constant = makeConstant(Value::makeFunction(func), chunk);
+    emitOpCode(OpCode::OP_CLOSURE, chunk);
+    chunk.writeU16(constant);
+
+    // Function is now on the stack (not defined as a variable)
 }
 
 // Helper methods

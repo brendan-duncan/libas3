@@ -103,6 +103,30 @@ static void init_vm_tests() {
     suite.addTest("Function Call - Nested", []() {
         executeAndVerify("function double(n) { return n * 2; } function quad(n) { return double(double(n)); } trace('Quad 5:', quad(5));");
     });
+
+    suite.addTest("Method Call - Basic", []() {
+        executeAndVerify("var obj = { value: 42, getValue: function() { return this.value; } }; trace('Value:', obj.getValue());");
+    });
+
+    suite.addTest("Method Call - String Property", []() {
+        executeAndVerify("var obj = { name: 'Test', getName: function() { return this.name; } }; trace('Name:', obj.getName());");
+    });
+
+    suite.addTest("Method Call - With Parameters", []() {
+        executeAndVerify("var obj = { x: 10, add: function(a, b) { return a + b + this.x; } }; trace('Sum:', obj.add(5, 3));");
+    });
+
+    suite.addTest("Method Call - Multiple Methods", []() {
+        executeAndVerify("var obj = { val: 5, double: function() { return this.val * 2; }, triple: function() { return this.val * 3; } }; trace('Double:', obj.double()); trace('Triple:', obj.triple());");
+    });
+
+    suite.addTest("Method Call - Nested Object", []() {
+        executeAndVerify("var outer = { inner: { data: 42, getData: function() { return this.data; } } }; trace('Data:', outer.inner.getData());");
+    });
+
+    suite.addTest("Method Call - this.property Access", []() {
+        executeAndVerify("var person = { firstName: 'John', lastName: 'Doe', fullName: function() { return this.firstName; } }; trace('Name:', person.fullName());");
+    });
 }
 
 // Auto-initialize tests

@@ -316,6 +316,17 @@ void VM::run() {
                 break;
             }
 
+            case OpCode::OP_THIS: {
+                // Push the 'this' value from current call frame
+                if (!frames.empty()) {
+                    ValuePtr thisValue = currentFrame().thisBinding;
+                    push(thisValue ? thisValue : Value::makeUndefined());
+                } else {
+                    push(Value::makeUndefined());
+                }
+                break;
+            }
+
             case OpCode::OP_CALL: {
                 uint8_t argCount = readByte();
                 // Get function
@@ -352,6 +363,77 @@ void VM::run() {
                     // stackOffset points to arg0 (first local/parameter)
                     size_t stackOffset = stack.size() - argCount;
                     frames.emplace_back(func, stackOffset);
+
+                    // Execution continues in the new frame
+                } else {
+                    runtimeError("Can only call functions");
+                    return;
+                }
+                break;
+            }
+
+            case OpCode::OP_CALL_METHOD: {
+                uint8_t argCount = readByte();
+                // Stack layout: [... receiver function arg0 arg1 ...]
+                // Get function at peek(argCount)
+                ValuePtr callee = peek(argCount);
+                // Get receiver at peek(argCount + 1)
+                ValuePtr receiver = peek(argCount + 1);
+
+                if (callee->type == ValueType::NativeFunction) {
+                    // Native function call
+                    std::vector<ValuePtr> args;
+                    for (int i = argCount - 1; i >= 0; i--) {
+                        args.push_back(peek(i));
+                    }
+
+                    ValuePtr result = callee->nativeFunc(args);
+
+                    // Pop arguments, function, and receiver
+                    for (uint8_t i = 0; i <= argCount + 1; i++) {
+                        pop();
+                    }
+
+                    push(result);
+                } else if (callee->type == ValueType::Function) {
+                    // Bytecode function call with 'this' binding
+                    BytecodeFunction* func = callee->bytecodeFunc.get();
+
+                    // Check arity
+                    if (argCount != func->arity) {
+                        runtimeError("Expected " + std::to_string(func->arity) +
+                                   " arguments but got " + std::to_string(argCount));
+                        return;
+                    }
+
+                    // Need to reorganize stack to remove receiver from under the arguments
+                    // Current: [... receiver function arg0 arg1 ...]
+                    // Need: [... function arg0 arg1 ...] with receiver saved in thisBinding
+
+                    // Save arguments temporarily
+                    std::vector<ValuePtr> args;
+                    for (int i = 0; i < argCount; i++) {
+                        args.push_back(pop());
+                    }
+                    // Now stack is: [... receiver function]
+
+                    // Pop and save function
+                    ValuePtr funcValue = pop();
+                    // Pop receiver (we already have it saved)
+                    pop();
+
+                    // Push function back
+                    push(funcValue);
+
+                    // Push arguments back in reverse order
+                    for (int i = argCount - 1; i >= 0; i--) {
+                        push(args[i]);
+                    }
+
+                    // Now stack is: [... function arg0 arg1 ...]
+                    // stackOffset points to arg0 (first local/parameter)
+                    size_t stackOffset = stack.size() - argCount;
+                    frames.emplace_back(func, stackOffset, receiver);
 
                     // Execution continues in the new frame
                 } else {

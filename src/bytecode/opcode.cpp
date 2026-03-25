@@ -69,8 +69,10 @@ const char* getOpCodeName(OpCode op) {
         case OpCode::OP_LOOP: return "OP_LOOP";
 
         case OpCode::OP_CALL: return "OP_CALL";
+        case OpCode::OP_CALL_METHOD: return "OP_CALL_METHOD";
         case OpCode::OP_CLOSURE: return "OP_CLOSURE";
         case OpCode::OP_RETURN: return "OP_RETURN";
+        case OpCode::OP_THIS: return "OP_THIS";
 
         case OpCode::OP_NEW_ARRAY: return "OP_NEW_ARRAY";
         case OpCode::OP_NEW_OBJECT: return "OP_NEW_OBJECT";
@@ -141,6 +143,7 @@ int getOpCodeOperandCount(OpCode op) {
         case OpCode::OP_POST_INCREMENT:
         case OpCode::OP_POST_DECREMENT:
         case OpCode::OP_RETURN:
+        case OpCode::OP_THIS:
         case OpCode::OP_GET_INDEX:
         case OpCode::OP_SET_INDEX:
         case OpCode::OP_INHERIT:
@@ -159,6 +162,7 @@ int getOpCodeOperandCount(OpCode op) {
         case OpCode::OP_GET_UPVALUE:
         case OpCode::OP_SET_UPVALUE:
         case OpCode::OP_CALL:
+        case OpCode::OP_CALL_METHOD:
             return 1;
 
         // 2 byte operand

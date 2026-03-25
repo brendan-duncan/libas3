@@ -14,9 +14,10 @@ struct CallFrame {
     BytecodeFunction* function;
     size_t ip;                  // Instruction pointer (offset into chunk)
     size_t stackOffset;         // Where this frame's locals start on stack
+    ValuePtr thisBinding;       // 'this' value for this call
 
-    CallFrame(BytecodeFunction* func, size_t offset)
-        : function(func), ip(0), stackOffset(offset) {}
+    CallFrame(BytecodeFunction* func, size_t offset, ValuePtr thisVal = nullptr)
+        : function(func), ip(0), stackOffset(offset), thisBinding(thisVal) {}
 };
 
 // Virtual Machine for bytecode execution
