@@ -87,6 +87,22 @@ static void init_vm_tests() {
     suite.addTest("Ternary Operator", []() {
         executeAndVerify("var x = 10; var result = x > 5 ? 100 : 200; trace('Result:', result);");
     });
+
+    suite.addTest("Function Call - Simple", []() {
+        executeAndVerify("function add(a, b) { return a + b; } var result = add(10, 20); trace('Result:', result);");
+    });
+
+    suite.addTest("Function Call - No Args", []() {
+        executeAndVerify("function getFortyTwo() { return 42; } trace('Answer:', getFortyTwo());");
+    });
+
+    suite.addTest("Function Call - Multiple", []() {
+        executeAndVerify("function square(n) { return n * n; } trace('3^2:', square(3)); trace('4^2:', square(4));");
+    });
+
+    suite.addTest("Function Call - Nested", []() {
+        executeAndVerify("function double(n) { return n * 2; } function quad(n) { return double(double(n)); } trace('Quad 5:', quad(5));");
+    });
 }
 
 // Auto-initialize tests

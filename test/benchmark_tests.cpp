@@ -1,6 +1,5 @@
 #include "test_runner.h"
 #include "../src/parser/parser.h"
-#include "../src/executor/executor.h"
 #include "../src/bytecode/compiler.h"
 #include "../src/bytecode/vm.h"
 #include <chrono>
@@ -26,29 +25,19 @@ static void benchmark(const std::string& code, int iterations) {
     Compiler compiler;
     auto bytecode = compiler.compile(program.get());
 
-    // Benchmark tree-walking interpreter
-    auto start = high_resolution_clock::now();
-    for (int i = 0; i < iterations; i++) {
-        Executor executor;
-        executor.execute(program.get());
-    }
-    auto end = high_resolution_clock::now();
-    auto interpreter_duration = duration_cast<microseconds>(end - start).count();
-
     // Benchmark bytecode VM
-    start = high_resolution_clock::now();
+    auto start = high_resolution_clock::now();
     for (int i = 0; i < iterations; i++) {
         VM vm;
         vm.execute(bytecode);
     }
-    end = high_resolution_clock::now();
+    auto end = high_resolution_clock::now();
     auto vm_duration = duration_cast<microseconds>(end - start).count();
 
     // Results
-    double speedup = static_cast<double>(interpreter_duration) / vm_duration;
-    std::cout << "    Interpreter: " << interpreter_duration << " μs, "
-              << "VM: " << vm_duration << " μs, "
-              << "Speedup: " << speedup << "x" << std::endl;
+    double per_iteration = static_cast<double>(vm_duration) / iterations;
+    std::cout << "    Total: " << vm_duration << " μs, "
+              << "Per iteration: " << per_iteration << " μs" << std::endl;
 }
 
 static void init_benchmark_tests() {

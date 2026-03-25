@@ -9,7 +9,7 @@
 namespace as3 {
 
 class Value;
-class Environment;
+class BytecodeFunction;
 
 using ValuePtr = std::shared_ptr<Value>;
 using NativeFunction = std::function<ValuePtr(const std::vector<ValuePtr>&)>;
@@ -42,12 +42,11 @@ public:
     std::vector<ValuePtr> elements;
 
     // Function data
-    class FunctionDefinition* functionDef;
-    std::shared_ptr<Environment> closure;
+    std::shared_ptr<class BytecodeFunction> bytecodeFunc;
     NativeFunction nativeFunc;
 
     // Constructors
-    Value() : type(ValueType::Undefined), boolValue(false), numberValue(0), functionDef(nullptr) {}
+    Value() : type(ValueType::Undefined), boolValue(false), numberValue(0), bytecodeFunc(nullptr) {}
 
     static ValuePtr makeUndefined();
     static ValuePtr makeNull();
@@ -56,7 +55,7 @@ public:
     static ValuePtr makeString(const std::string& value);
     static ValuePtr makeObject();
     static ValuePtr makeArray();
-    static ValuePtr makeFunction(class FunctionDefinition* def, std::shared_ptr<Environment> env);
+    static ValuePtr makeFunction(std::shared_ptr<BytecodeFunction> func);
     static ValuePtr makeNativeFunction(NativeFunction func);
 
     // Type checking

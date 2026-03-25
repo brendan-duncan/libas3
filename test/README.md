@@ -13,27 +13,23 @@ All tests run from a single executable (`as3_tests`) using a shared test runner 
    - Statements, expressions, declarations
    - Error handling and edge cases
 
-2. **Interpreter** (12 tests) - `interpreter_tests.cpp`
-   - Tree-walking interpreter execution
-   - Functions, loops, conditionals
-   - Arrays, objects, closures
-
-3. **Bytecode** (18 tests) - `bytecode_tests.cpp`
+2. **Bytecode** (18 tests) - `bytecode_tests.cpp`
    - AST → Bytecode compilation
    - All operations and control flow
    - Optimization verification
 
-4. **VM** (14 tests) - `vm_tests.cpp`
+3. **VM** (18 tests) - `vm_tests.cpp`
    - Bytecode execution
    - All VM operations
    - Native function integration
+   - User-defined function calls (with/without args, nested calls)
 
-5. **Benchmark** (8 tests) - `benchmark_tests.cpp`
-   - Performance comparison (Interpreter vs VM)
+4. **Benchmark** (8 tests) - `benchmark_tests.cpp`
+   - VM performance benchmarks
    - Various workload types
-   - Speedup measurements
+   - Execution time measurements
 
-**Total: 104 tests**
+**Total: 92 tests**
 
 ## Test Runner API
 
@@ -86,7 +82,7 @@ cmake --build . --config Release
 
 ```
 ===== ActionScript 3 Test Suite =====
-Running 5 test suites
+Running 4 test suites
 
 ========================================
 Test Suite: Parser
@@ -97,19 +93,37 @@ Test Suite: Parser
 Suite: Parser - 52/52 passed
 
 ========================================
-Test Suite: Interpreter
+Test Suite: Bytecode
 ========================================
-x + y = 30
-x * y = 200
-[PASS] Arithmetic
+[PASS] Simple Arithmetic
+[PASS] Constant Optimization
 ...
-Suite: Interpreter - 12/12 passed
+Suite: Bytecode - 18/18 passed
 
+========================================
+Test Suite: VM
+========================================
+Result: 30
+[PASS] Simple Arithmetic
 ...
+Result: 30
+[PASS] Function Call - Simple
+Answer: 42
+[PASS] Function Call - No Args
+...
+Suite: VM - 18/18 passed
+
+========================================
+Test Suite: Benchmark
+========================================
+    Total: 18973 μs, Per iteration: 1.8973 μs
+[PASS] Simple Arithmetic (10k)
+...
+Suite: Benchmark - 8/8 passed
 
 ===== Summary =====
-Total Tests: 104
-Passed: 104
+Total Tests: 96
+Passed: 96
 Failed: 0
 
 ✓ All tests passed!
@@ -164,19 +178,19 @@ add_executable(as3_tests
 ## Benchmark Notes
 
 - Benchmarks run many iterations (1k-10k)
-- Results are printed with speedup comparisons
+- Results show total time and per-iteration time
 - **Always use Release builds for accurate benchmarks**
-- Debug builds have ~10x slower performance
+- Debug builds have ~5-10x slower performance
 
 ## Test Coverage
 
 | Component | Tests | Coverage |
 |-----------|-------|----------|
 | Parser | 52 | Full language support |
-| Interpreter | 12 | All core features |
 | Bytecode Compiler | 18 | All operations |
-| VM | 14 | Full instruction set |
-| Benchmarks | 8 | Representative workloads |
+| VM | 18 | Full instruction set + function calls |
+| Benchmarks | 8 | VM performance tests |
+| **Total** | **96** | **Comprehensive** |
 
 ## Future Enhancements
 

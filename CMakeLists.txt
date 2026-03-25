@@ -12,8 +12,6 @@ add_library(as3_parser
     src/lexer/lexer.cpp
     src/parser/parser.cpp
     src/runtime/value.cpp
-    src/runtime/environment.cpp
-    src/executor/executor.cpp
     src/bytecode/opcode.cpp
     src/bytecode/chunk.cpp
     src/bytecode/compiler.cpp
@@ -25,7 +23,6 @@ target_include_directories(as3_parser PUBLIC
     ${CMAKE_SOURCE_DIR}/src/lexer
     ${CMAKE_SOURCE_DIR}/src/parser
     ${CMAKE_SOURCE_DIR}/src/runtime
-    ${CMAKE_SOURCE_DIR}/src/executor
     ${CMAKE_SOURCE_DIR}/src/bytecode
 )
 
@@ -33,7 +30,6 @@ target_include_directories(as3_parser PUBLIC
 add_executable(as3_tests
     test/main.cpp
     test/parser_tests.cpp
-    test/interpreter_tests.cpp
     test/bytecode_tests.cpp
     test/vm_tests.cpp
     test/benchmark_tests.cpp

@@ -1,6 +1,6 @@
-# libas3 - ActionScript 3 Parser & Interpreter
+# libas3 - ActionScript 3 Parser & Bytecode VM
 
-A complete ActionScript 3 parser, tree-walking interpreter, and bytecode compiler infrastructure written in C++17.
+A complete ActionScript 3 parser and bytecode virtual machine written in C++17.
 
 ## Features
 
@@ -14,14 +14,6 @@ A complete ActionScript 3 parser, tree-walking interpreter, and bytecode compile
 - Error recovery and reporting
 - **52/52 test cases passing**
 
-### ✅ Tree-Walking Interpreter
-- Execute AS3 code directly from AST
-- Variables (var, const, let)
-- Functions and recursion
-- Control flow (loops, conditionals)
-- Arrays and objects
-- Built-in functions (trace, print, parseInt, etc.)
-- **Working demos for Fibonacci, loops, functions, etc.**
 
 ### ✅ Bytecode VM (Complete & Working)
 - 90+ optimized opcodes
@@ -31,7 +23,9 @@ A complete ActionScript 3 parser, tree-walking interpreter, and bytecode compile
 - Call frame management
 - Bytecode disassembler
 - Complete AST → Bytecode compiler
-- **1.4x - 2.3x faster than tree-walking** (Release build)
+- Built-in functions (trace, print, parseInt, parseFloat, isNaN)
+- Control flow (if/while/for/ternary)
+- Arrays, objects, and all operators (arithmetic, logical, bitwise, comparison)
 
 ## Project Structure
 
@@ -51,12 +45,7 @@ src/
 │   └── parser.cpp
 │
 ├── runtime/          # Runtime value system
-│   ├── value.h/cpp
-│   └── environment.h/cpp
-│
-├── executor/         # Tree-walking interpreter
-│   ├── executor.h
-│   └── executor.cpp
+│   └── value.h/cpp
 │
 └── bytecode/         # Bytecode VM
     ├── opcode.h/cpp        # Instruction set
@@ -68,10 +57,9 @@ test/
 ├── test_runner.h          # Shared test framework
 ├── main.cpp               # Unified test entry point
 ├── parser_tests.cpp       # Parser tests (52 tests)
-├── interpreter_tests.cpp  # Interpreter tests
 ├── bytecode_tests.cpp     # Bytecode compiler tests
 ├── vm_tests.cpp           # VM execution tests
-└── benchmark_tests.cpp    # Performance benchmarks
+└── benchmark_tests.cpp    # VM performance benchmarks
 ```
 
 ## Building
@@ -102,31 +90,26 @@ if (parser.hasErrors()) {
 }
 ```
 
-### 2. Tree-Walking Interpreter
-```cpp
-#include "parser/parser.h"
-#include "executor/executor.h"
-
-as3::Parser parser("function fib(n) { return n <= 1 ? n : fib(n-1) + fib(n-2); } trace(fib(10));");
-auto program = parser.parse();
-
-as3::Executor executor;
-executor.execute(program.get());
-// Output: 55
-```
-
-### 3. Bytecode Compilation (Infrastructure Ready)
+### 2. Bytecode Compilation & Execution
 ```cpp
 #include "parser/parser.h"
 #include "bytecode/compiler.h"
+#include "bytecode/vm.h"
 
-as3::Parser parser("var x = 10 + 20;");
+// Parse AS3 code
+as3::Parser parser("var x = 10; var y = 20; trace('Sum:', x + y);");
 auto program = parser.parse();
 
+// Compile to bytecode
 as3::Compiler compiler;
 auto bytecode = compiler.compile(program.get());
 
-// Disassemble for inspection
+// Execute on VM
+as3::VM vm;
+vm.execute(bytecode);
+// Output: Sum: 30
+
+// Optional: Disassemble for inspection
 bytecode->chunk.disassemble("main");
 ```
 
@@ -135,7 +118,7 @@ bytecode->chunk.disassemble("main");
 All tests are now unified in a single executable:
 
 ```bash
-# Run all tests (104 tests total)
+# Run all tests (96 tests total)
 ./Release/as3_tests.exe
 
 # In Debug mode
@@ -144,33 +127,27 @@ All tests are now unified in a single executable:
 
 Test suites included:
 - **Parser** (52 tests) - All AS3 language constructs
-- **Interpreter** (12 tests) - Tree-walking interpreter execution
 - **Bytecode** (18 tests) - Bytecode compiler verification
-- **VM** (14 tests) - Bytecode VM execution
-- **Benchmark** (8 tests) - Performance comparison (Interpreter vs VM)
+- **VM** (18 tests) - Bytecode VM execution including function calls
+- **Benchmark** (8 tests) - VM performance benchmarks
 
 All test suites run automatically and provide a comprehensive test summary.
 
 ## Performance
 
-### Tree-Walking Interpreter
-- ✅ **Simple to understand and debug**
-- ✅ **Immediate execution**
-- ⚠️ Slower than bytecode VM
-- ⚠️ Higher memory overhead
+The bytecode VM provides fast execution with a compact bytecode representation:
 
-### Bytecode VM (Complete & Optimized)
-- ✅ **1.4x - 2.3x faster than tree-walking** (Release build)
-- ✅ **Compact bytecode representation**
-- ✅ **Optimized instruction dispatch**
-- ✅ **Full feature parity with interpreter**
+- ✅ **Optimized instruction dispatch** - Switch-based dispatch with 90+ opcodes
+- ✅ **Compact bytecode** - Efficient constant pool and instruction encoding
+- ✅ **Stack-based architecture** - Minimal memory overhead
+- ✅ **Fast execution** - ~2-12 μs per iteration for typical operations (Release build)
 
-**Benchmark Results** (Release build, 1000-10000 iterations):
-- Simple arithmetic: 1.7x speedup
-- Complex expressions: 1.6x speedup
-- Control flow: 1.7-1.8x speedup
-- Loops (Fibonacci): 2.3x speedup
-- Arrays/Objects: 1.5-1.6x speedup
+**Benchmark Results** (Release build):
+- Simple arithmetic: 1.9 μs per iteration (10k iterations)
+- Complex expressions: 2.4 μs per iteration (10k iterations)
+- Conditional logic: 1.7 μs per iteration (10k iterations)
+- Loops (10 iterations): 7.7 μs per run (1k runs)
+- Fibonacci iterative (15 iterations): 12.5 μs per run (1k runs)
 
 ## Example Programs
 
@@ -240,27 +217,28 @@ Compiles to:
 
 ## Roadmap
 
-### Phase 1: Parser & Interpreter ✅ DONE
+### Phase 1: Parser ✅ DONE
 - [x] Complete AS3 parser
-- [x] Tree-walking interpreter
-- [x] All basic features working
-- [x] 52 tests passing
+- [x] All statements and expressions
+- [x] Error recovery and reporting
+- [x] 52 parser tests passing
 
-### Phase 2: Bytecode Infrastructure ✅ DONE
-- [x] Instruction set design
-- [x] Chunk container
-- [x] AST → Bytecode compiler
-- [x] Disassembler
+### Phase 2: Bytecode Compiler ✅ DONE
+- [x] Instruction set design (90+ opcodes)
+- [x] Chunk container with constant pool
+- [x] Complete AST → Bytecode compiler
+- [x] Bytecode disassembler
+- [x] 18 compiler tests passing
 
 ### Phase 3: Bytecode VM ✅ DONE
-- [x] Value stack
-- [x] Instruction dispatch
+- [x] Value stack and call frames
+- [x] Instruction dispatch loop
 - [x] Variable storage (locals & globals)
 - [x] Native function calls
-- [x] Control flow (if/while/ternary)
+- [x] Control flow (if/while/for/ternary)
 - [x] Arrays and objects
-- [x] All arithmetic, comparison, logical, bitwise operations
-- [x] Performance benchmarks
+- [x] All operators (arithmetic, comparison, logical, bitwise)
+- [x] 14 VM tests + 8 performance benchmarks
 
 ### Phase 4: Optimization 📋 PLANNED
 - [ ] Inline caching
@@ -270,9 +248,9 @@ Compiles to:
 
 ## Documentation
 
-- [INTERPRETER.md](INTERPRETER.md) - Tree-walking interpreter details
 - [BYTECODE_DESIGN.md](src/bytecode/BYTECODE_DESIGN.md) - Bytecode VM architecture
 - [AST Nodes](src/ast/ast_nodes.h) - Complete AST structure
+- [Test Framework](test/README.md) - Test suite documentation
 
 ## Contributions
 
@@ -296,21 +274,23 @@ Inspired by:
 
 ## Status
 
-**Current State**: Production-ready parser, working tree-walking interpreter, and complete bytecode VM with 1.4x-2.3x performance advantage.
+**Current State**: Production-ready AS3 parser and complete bytecode virtual machine.
 
 **What Works**:
 - ✅ Full AS3 parser (52/52 tests passing)
-- ✅ Tree-walking interpreter with all features
-- ✅ Bytecode compiler with optimizations
-- ✅ Stack-based VM with full instruction set
+- ✅ Bytecode compiler with optimizations (18/18 tests passing)
+- ✅ Stack-based VM with full instruction set (18/18 tests passing)
 - ✅ Control flow (if/while/for/ternary)
-- ✅ Arrays, objects, functions
+- ✅ **Function calls (user-defined & native)**
+- ✅ Arrays, objects
 - ✅ All operators (arithmetic, logical, bitwise, comparison)
-- ✅ Performance benchmarks showing measurable speedup
+- ✅ Performance benchmarks (8/8 tests passing)
+- ✅ **96 total tests passing**
 
 **Not Yet Implemented**:
-- [ ] Bytecode function calls (user-defined functions in VM)
 - [ ] Closures with upvalues in VM
-- [ ] Classes and OOP features
-- [ ] Advanced VM optimizations (inline caching, JIT)
+- [ ] Recursive function calls
+- [ ] Classes and OOP features in VM
+- [ ] Advanced VM optimizations (inline caching, computed goto, JIT)
 - [ ] For-in loops in bytecode compiler
+- [ ] Exception handling in VM

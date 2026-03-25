@@ -304,6 +304,18 @@ void VM::run() {
                 break;
             }
 
+            case OpCode::OP_CLOSURE: {
+                // Load function from constant pool
+                uint16_t constantIndex = readU16();
+                ValuePtr functionValue = chunk.getConstant(constantIndex);
+
+                // Push the function onto the stack
+                push(functionValue);
+
+                // TODO: Handle upvalues for closures
+                break;
+            }
+
             case OpCode::OP_CALL: {
                 uint8_t argCount = readByte();
                 // Get function
@@ -325,9 +337,23 @@ void VM::run() {
 
                     push(result);
                 } else if (callee->type == ValueType::Function) {
-                    // TODO: Bytecode function call
-                    runtimeError("Bytecode function calls not yet implemented");
-                    return;
+                    // Bytecode function call
+                    BytecodeFunction* func = callee->bytecodeFunc.get();
+
+                    // Check arity
+                    if (argCount != func->arity) {
+                        runtimeError("Expected " + std::to_string(func->arity) +
+                                   " arguments but got " + std::to_string(argCount));
+                        return;
+                    }
+
+                    // Create new call frame
+                    // Stack layout: [... function arg0 arg1 ...]
+                    // stackOffset points to arg0 (first local/parameter)
+                    size_t stackOffset = stack.size() - argCount;
+                    frames.emplace_back(func, stackOffset);
+
+                    // Execution continues in the new frame
                 } else {
                     runtimeError("Can only call functions");
                     return;
@@ -348,6 +374,11 @@ void VM::run() {
 
                 // Pop all locals from the returning function
                 while (stack.size() > frame.stackOffset) {
+                    pop();
+                }
+
+                // Pop the function itself (it's at stackOffset - 1)
+                if (!stack.empty()) {
                     pop();
                 }
 

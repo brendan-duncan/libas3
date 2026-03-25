@@ -360,8 +360,8 @@ void Compiler::compileFunctionDefinition(FunctionDefinition* stmt, Chunk& chunk)
 
     current = previousCurrent;
 
-    // Create closure
-    uint16_t constant = makeConstant(Value::makeUndefined(), chunk);  // TODO: Store function
+    // Store the compiled function as a constant
+    uint16_t constant = makeConstant(Value::makeFunction(func), chunk);
     emitOpCode(OpCode::OP_CLOSURE, chunk);
     chunk.writeU16(constant);
 

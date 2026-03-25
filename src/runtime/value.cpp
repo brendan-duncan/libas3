@@ -49,11 +49,10 @@ ValuePtr Value::makeArray() {
     return v;
 }
 
-ValuePtr Value::makeFunction(FunctionDefinition* def, std::shared_ptr<Environment> env) {
+ValuePtr Value::makeFunction(std::shared_ptr<BytecodeFunction> func) {
     auto v = std::make_shared<Value>();
     v->type = ValueType::Function;
-    v->functionDef = def;
-    v->closure = env;
+    v->bytecodeFunc = func;
     return v;
 }
 
