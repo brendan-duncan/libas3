@@ -127,6 +127,38 @@ static void init_vm_tests() {
     suite.addTest("Method Call - this.property Access", []() {
         executeAndVerify("var person = { firstName: 'John', lastName: 'Doe', fullName: function() { return this.firstName; } }; trace('Name:', person.fullName());");
     });
+
+    suite.addTest("Class - Basic Definition", []() {
+        executeAndVerify("class MyClass { function test() { return 42; } } trace('Class defined');");
+    });
+
+    suite.addTest("Class - With Multiple Methods", []() {
+        executeAndVerify("class Calculator { function add(a, b) { return a + b; } function multiply(a, b) { return a * b; } } trace('Calculator class defined');");
+    });
+
+    suite.addTest("Class - Instance Creation", []() {
+        executeAndVerify("class Point { function Point(x, y) { } } var p = new Point(10, 20); trace('Instance created');");
+    });
+
+    suite.addTest("Class - Constructor with this", []() {
+        executeAndVerify("class Counter { function Counter(start) { this.value = start; } } var c = new Counter(5); trace('Value:', c.value);");
+    });
+
+    suite.addTest("Class - Instance Method Call", []() {
+        executeAndVerify("class Calculator { function Calculator() { this.result = 0; } function add(x) { this.result = this.result + x; } } var calc = new Calculator(); calc.add(10); trace('Result:', calc.result);");
+    });
+
+    suite.addTest("Class - Method with Return", []() {
+        executeAndVerify("class Math { function Math() { } function double(x) { return x * 2; } } var m = new Math(); trace('Double 21:', m.double(21));");
+    });
+
+    suite.addTest("Class - Inheritance Basic", []() {
+        executeAndVerify("class Animal { function speak() { return 'sound'; } } class Dog extends Animal { function bark() { return 'woof'; } } trace('Inheritance works');");
+    });
+
+    suite.addTest("Class - Inheritance Instance", []() {
+        executeAndVerify("class Animal { function Animal() { } function speak() { return 'sound'; } } class Dog extends Animal { function Dog() { } } var d = new Dog(); trace('Speak:', d.speak());");
+    });
 }
 
 // Auto-initialize tests

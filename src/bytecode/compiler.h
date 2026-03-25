@@ -80,6 +80,7 @@ private:
     void compileReturnStatement(ReturnStatement* stmt, Chunk& chunk);
     void compileVariableDefinition(VariableDefinition* stmt, Chunk& chunk);
     void compileFunctionDefinition(FunctionDefinition* stmt, Chunk& chunk);
+    void compileClassDefinition(ClassDefinition* stmt, Chunk& chunk);
 
     // Expression compilation
     void compileExpression(Expression* expr, Chunk& chunk);
@@ -90,6 +91,7 @@ private:
     void compileConditionalExpression(ConditionalExpression* expr, Chunk& chunk);
     void compileAssignmentExpression(AssignmentExpression* expr, Chunk& chunk);
     void compileCallExpression(CallExpression* expr, Chunk& chunk);
+    void compileNewExpression(NewExpression* expr, Chunk& chunk);
     void compileMemberExpression(MemberExpression* expr, Chunk& chunk);
     void compileArrayExpression(ArrayExpression* expr, Chunk& chunk);
     void compileObjectExpression(ObjectExpression* expr, Chunk& chunk);

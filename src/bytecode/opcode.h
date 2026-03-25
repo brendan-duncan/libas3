@@ -97,10 +97,11 @@ enum class OpCode : uint8_t {
     OP_GET_INDEX,       // Get array element (computed access)
     OP_SET_INDEX,       // Set array element (computed access)
 
-    // Classes (future)
+    // Classes
     OP_CLASS,           // Define class [u16 name_index]
     OP_METHOD,          // Define method [u16 name_index]
     OP_INHERIT,         // Set up inheritance
+    OP_INSTANTIATE,     // Create class instance [u8 arg_count]
     OP_GET_SUPER,       // Access super property [u16 name_index]
     OP_INVOKE,          // Optimized method call [u16 name] [u8 arg_count]
     OP_SUPER_INVOKE,    // Optimized super call [u16 name] [u8 arg_count]

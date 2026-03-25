@@ -23,7 +23,8 @@ enum class ValueType {
     Object,
     Array,
     Function,
-    NativeFunction
+    NativeFunction,
+    Class
 };
 
 class Value {
@@ -45,6 +46,11 @@ public:
     std::shared_ptr<class BytecodeFunction> bytecodeFunc;
     NativeFunction nativeFunc;
 
+    // Class data
+    std::string className;
+    ValuePtr superClass;      // Parent class for inheritance
+    ValuePtr constructor;     // Constructor function
+
     // Constructors
     Value() : type(ValueType::Undefined), boolValue(false), numberValue(0), bytecodeFunc(nullptr) {}
 
@@ -57,6 +63,7 @@ public:
     static ValuePtr makeArray();
     static ValuePtr makeFunction(std::shared_ptr<BytecodeFunction> func);
     static ValuePtr makeNativeFunction(NativeFunction func);
+    static ValuePtr makeClass(const std::string& name);
 
     // Type checking
     bool isUndefined() const { return type == ValueType::Undefined; }
@@ -67,6 +74,7 @@ public:
     bool isObject() const { return type == ValueType::Object; }
     bool isArray() const { return type == ValueType::Array; }
     bool isFunction() const { return type == ValueType::Function || type == ValueType::NativeFunction; }
+    bool isClass() const { return type == ValueType::Class; }
 
     // Conversions
     bool toBoolean() const;

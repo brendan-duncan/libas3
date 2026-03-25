@@ -36,8 +36,8 @@ static void benchmark(const std::string& code, int iterations) {
 
     // Results
     double per_iteration = static_cast<double>(vm_duration) / iterations;
-    std::cout << "    Total: " << vm_duration << " μs, "
-              << "Per iteration: " << per_iteration << " μs" << std::endl;
+    std::cout << "    Total: " << vm_duration << " us, "
+              << "Per iteration: " << per_iteration << " us" << std::endl;
 }
 
 static void init_benchmark_tests() {

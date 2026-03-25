@@ -126,7 +126,7 @@ Total Tests: 96
 Passed: 96
 Failed: 0
 
-✓ All tests passed!
+All tests passed!
 ```
 
 ## Adding New Tests

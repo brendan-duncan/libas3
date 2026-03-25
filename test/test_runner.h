@@ -107,10 +107,10 @@ public:
         std::cout << "Failed: " << totalFailed << std::endl;
 
         if (totalFailed == 0) {
-            std::cout << "\n✓ All tests passed!" << std::endl;
+            std::cout << "\nAll tests passed!" << std::endl;
             return 0;
         } else {
-            std::cout << "\n✗ Some tests failed" << std::endl;
+            std::cout << "\nSome tests failed" << std::endl;
             return 1;
         }
     }

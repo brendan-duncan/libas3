@@ -15,9 +15,11 @@ struct CallFrame {
     size_t ip;                  // Instruction pointer (offset into chunk)
     size_t stackOffset;         // Where this frame's locals start on stack
     ValuePtr thisBinding;       // 'this' value for this call
+    bool isConstructor;         // True if this is a constructor call
+    ValuePtr constructorInstance; // Instance to return from constructor
 
-    CallFrame(BytecodeFunction* func, size_t offset, ValuePtr thisVal = nullptr)
-        : function(func), ip(0), stackOffset(offset), thisBinding(thisVal) {}
+    CallFrame(BytecodeFunction* func, size_t offset, ValuePtr thisVal = nullptr, bool isCtor = false, ValuePtr instance = nullptr)
+        : function(func), ip(0), stackOffset(offset), thisBinding(thisVal), isConstructor(isCtor), constructorInstance(instance) {}
 };
 
 // Virtual Machine for bytecode execution
@@ -84,10 +86,6 @@ private:
     void execLeftShift();
     void execRightShift();
     void execUnsignedRightShift();
-
-    // Helper for binary operations
-    template<typename Op>
-    void binaryOp(Op op);
 
     // Error reporting
     void runtimeError(const std::string& message);

@@ -63,6 +63,13 @@ ValuePtr Value::makeNativeFunction(NativeFunction func) {
     return v;
 }
 
+ValuePtr Value::makeClass(const std::string& name) {
+    auto v = std::make_shared<Value>();
+    v->type = ValueType::Class;
+    v->className = name;
+    return v;
+}
+
 bool Value::toBoolean() const {
     switch (type) {
         case ValueType::Undefined:
@@ -143,6 +150,8 @@ std::string Value::toString() const {
         case ValueType::Function:
         case ValueType::NativeFunction:
             return "[function]";
+        case ValueType::Class:
+            return "[class " + className + "]";
         default:
             return "";
     }

@@ -141,6 +141,8 @@ void Compiler::compileStatement(Statement* stmt, Chunk& chunk) {
         compileVariableDefinition(varDef, chunk);
     } else if (auto* funcDef = dynamic_cast<FunctionDefinition*>(stmt)) {
         compileFunctionDefinition(funcDef, chunk);
+    } else if (auto* classDef = dynamic_cast<ClassDefinition*>(stmt)) {
+        compileClassDefinition(classDef, chunk);
     } else if (auto* breakStmt = dynamic_cast<BreakStatement*>(stmt)) {
         // TODO: Implement break
         emitJump(OpCode::OP_JUMP, chunk);
@@ -375,6 +377,75 @@ void Compiler::compileFunctionDefinition(FunctionDefinition* stmt, Chunk& chunk)
     }
 }
 
+void Compiler::compileClassDefinition(ClassDefinition* stmt, Chunk& chunk) {
+    // Emit OP_CLASS to create the class
+    uint16_t nameConstant = identifierConstant(stmt->name->name, chunk);
+    emitOpCode(OpCode::OP_CLASS, chunk);
+    chunk.writeU16(nameConstant);
+
+    // Define the class variable immediately so methods can reference it
+    defineVariable(nameConstant, chunk);
+
+    // Handle inheritance
+    if (stmt->superClass) {
+        // Load the superclass onto the stack
+        namedVariable(stmt->superClass->name, false, chunk);
+
+        // Load the subclass back onto the stack
+        namedVariable(stmt->name->name, false, chunk);
+
+        // Emit OP_INHERIT
+        emitOpCode(OpCode::OP_INHERIT, chunk);
+    }
+
+    // Load class back onto stack for method definitions
+    namedVariable(stmt->name->name, false, chunk);
+
+    // Compile methods
+    for (auto& member : stmt->members) {
+        if (auto* funcDef = dynamic_cast<FunctionDefinition*>(member.get())) {
+            // Create new compiler context for method
+            CompilerContext methodContext(current);
+            std::string methodName = funcDef->name->name;
+            auto func = std::make_shared<BytecodeFunction>(methodName, static_cast<int>(funcDef->parameters.size()));
+            methodContext.function = func.get();
+
+            CompilerContext* previousCurrent = current;
+            current = &methodContext;
+            current->beginScope();
+
+            // Compile parameters
+            for (auto& param : funcDef->parameters) {
+                current->addLocal(param->name->name);
+                current->markInitialized();
+            }
+
+            // Compile method body
+            compileStatement(funcDef->body.get(), func->chunk);
+
+            // Implicit return undefined
+            emitOpCode(OpCode::OP_UNDEFINED, func->chunk);
+            emitReturn(func->chunk);
+
+            current = previousCurrent;
+
+            // Store the compiled method as a constant
+            uint16_t methodConstant = makeConstant(Value::makeFunction(func), chunk);
+            emitOpCode(OpCode::OP_CLOSURE, chunk);
+            chunk.writeU16(methodConstant);
+
+            // Emit OP_METHOD to add method to class
+            uint16_t methodNameConst = identifierConstant(methodName, chunk);
+            emitOpCode(OpCode::OP_METHOD, chunk);
+            chunk.writeU16(methodNameConst);
+        }
+        // TODO: Handle variable members (fields)
+    }
+
+    // Pop the class from the stack
+    emitOpCode(OpCode::OP_POP, chunk);
+}
+
 // Expression compilation
 
 void Compiler::compileExpression(Expression* expr, Chunk& chunk) {
@@ -397,6 +468,8 @@ void Compiler::compileExpression(Expression* expr, Chunk& chunk) {
         compileAssignmentExpression(assign, chunk);
     } else if (auto* call = dynamic_cast<CallExpression*>(expr)) {
         compileCallExpression(call, chunk);
+    } else if (auto* newExpr = dynamic_cast<NewExpression*>(expr)) {
+        compileNewExpression(newExpr, chunk);
     } else if (auto* member = dynamic_cast<MemberExpression*>(expr)) {
         compileMemberExpression(member, chunk);
     } else if (auto* arr = dynamic_cast<ArrayExpression*>(expr)) {
@@ -524,15 +597,30 @@ void Compiler::compileConditionalExpression(ConditionalExpression* expr, Chunk& 
 }
 
 void Compiler::compileAssignmentExpression(AssignmentExpression* expr, Chunk& chunk) {
-    // Compile right side
-    compileExpression(expr->right.get(), chunk);
+    if (auto* member = dynamic_cast<MemberExpression*>(expr->left.get())) {
+        // Property assignment: obj.prop = value or obj[index] = value
 
-    // Assign to left side
-    if (auto* id = dynamic_cast<Identifier*>(expr->left.get())) {
+        // Compile the object
+        compileExpression(member->object.get(), chunk);
+
+        // Compile the value (right side)
+        compileExpression(expr->right.get(), chunk);
+
+        // Emit assignment opcode
+        if (member->computed && member->computedProperty) {
+            // Computed access: obj[index] = value
+            compileExpression(member->computedProperty.get(), chunk);
+            emitOpCode(OpCode::OP_SET_INDEX, chunk);
+        } else if (member->property) {
+            // Dot access: obj.prop = value
+            uint16_t name = identifierConstant(member->property->name, chunk);
+            emitOpCode(OpCode::OP_SET_PROPERTY, chunk);
+            chunk.writeU16(name);
+        }
+    } else if (auto* id = dynamic_cast<Identifier*>(expr->left.get())) {
+        // Variable assignment
+        compileExpression(expr->right.get(), chunk);
         namedVariable(id->name, true, chunk);
-    } else if (auto* member = dynamic_cast<MemberExpression*>(expr->left.get())) {
-        // TODO: Property assignment
-        error("Property assignment not yet implemented");
     }
 }
 
@@ -580,6 +668,31 @@ void Compiler::compileCallExpression(CallExpression* expr, Chunk& chunk) {
         emitOpCode(OpCode::OP_CALL, chunk);
         emitByte(static_cast<uint8_t>(expr->arguments.size()), chunk);
     }
+}
+
+void Compiler::compileNewExpression(NewExpression* expr, Chunk& chunk) {
+    // For 'new ClassName(arg1, arg2)', emit:
+    // 1. Push class onto stack
+    // 2. Push constructor arguments
+    // 3. Call OP_INSTANTIATE which will:
+    //    - Create new instance
+    //    - Copy methods from class to instance
+    //    - Call constructor with 'this' bound to instance
+    //    - Return instance
+
+    // Get the class
+    compileExpression(expr->callee.get(), chunk);
+
+    // Compile constructor arguments
+    for (auto& arg : expr->arguments) {
+        compileExpression(arg.get(), chunk);
+    }
+
+    // Emit OP_INSTANTIATE with argument count
+    // Stack before: [class arg1 arg2 ...]
+    // Stack after: [instance]
+    emitOpCode(OpCode::OP_INSTANTIATE, chunk);
+    emitByte(static_cast<uint8_t>(expr->arguments.size()), chunk);
 }
 
 void Compiler::compileMemberExpression(MemberExpression* expr, Chunk& chunk) {

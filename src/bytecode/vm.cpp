@@ -446,6 +446,10 @@ void VM::run() {
             case OpCode::OP_RETURN: {
                 ValuePtr result = pop();
 
+                // Check if this is a constructor return
+                bool wasConstructor = frame.isConstructor;
+                ValuePtr constructorInstance = frame.constructorInstance;
+
                 // Pop frame
                 frames.pop_back();
 
@@ -464,8 +468,159 @@ void VM::run() {
                     pop();
                 }
 
-                // Push return value
-                push(result);
+                // For constructors, return the instance instead of the function's return value
+                // unless the constructor explicitly returned a non-undefined value
+                if (wasConstructor && constructorInstance) {
+                    if (result->isUndefined()) {
+                        push(constructorInstance);
+                    } else {
+                        // Constructor explicitly returned something, use that
+                        push(result);
+                    }
+                } else {
+                    // Regular function, push return value
+                    push(result);
+                }
+                break;
+            }
+
+            case OpCode::OP_CLASS: {
+                // Create a new class
+                uint16_t nameIndex = readU16();
+                ValuePtr name = chunk.getConstant(nameIndex);
+                ValuePtr classValue = Value::makeClass(name->toString());
+                push(classValue);
+                break;
+            }
+
+            case OpCode::OP_METHOD: {
+                // Add a method to a class
+                // Stack: [... class method]
+                uint16_t nameIndex = readU16();
+                ValuePtr name = chunk.getConstant(nameIndex);
+                ValuePtr method = pop();
+                ValuePtr classValue = peek(0);
+
+                if (classValue->isClass()) {
+                    classValue->setProperty(name->toString(), method);
+                }
+                break;
+            }
+
+            case OpCode::OP_INHERIT: {
+                // Set up inheritance
+                // Stack: [... superclass subclass]
+                ValuePtr subclass = pop();
+                ValuePtr superclass = peek(0);
+
+                if (subclass->isClass() && superclass->isClass()) {
+                    subclass->superClass = superclass;
+                    // Copy methods from superclass to subclass
+                    for (auto& prop : superclass->properties) {
+                        if (!subclass->properties.count(prop.first)) {
+                            subclass->setProperty(prop.first, prop.second);
+                        }
+                    }
+                }
+
+                pop(); // Pop superclass
+                break;
+            }
+
+            case OpCode::OP_INSTANTIATE: {
+                // Create instance of a class
+                // Stack: [... class arg1 arg2 ...]
+                uint8_t argCount = readByte();
+
+                // Get class at position after all arguments
+                ValuePtr classValue = peek(argCount);
+
+                if (!classValue->isClass()) {
+                    runtimeError("Can only instantiate classes");
+                    return;
+                }
+
+                // Create new instance (empty object)
+                ValuePtr instance = Value::makeObject();
+
+                // Copy all methods from class to instance
+                for (auto& prop : classValue->properties) {
+                    instance->setProperty(prop.first, prop.second);
+                }
+
+                // Store reference to class
+                instance->setProperty("__class__", classValue);
+
+                // Check if there's a constructor (method with same name as class)
+                ValuePtr constructor = classValue->getProperty(classValue->className);
+
+                if (constructor && constructor->isFunction()) {
+                    // Call constructor with 'this' bound to instance
+                    // Rearrange stack: [class arg1 arg2 ...] -> [instance constructor arg1 arg2 ...]
+
+                    // Pop arguments
+                    std::vector<ValuePtr> args;
+                    for (int i = 0; i < argCount; i++) {
+                        args.push_back(pop());
+                    }
+
+                    // Pop class
+                    pop();
+
+                    // Push instance (receiver)
+                    push(instance);
+
+                    // Push constructor function
+                    push(constructor);
+
+                    // Push arguments back in correct order
+                    for (int i = argCount - 1; i >= 0; i--) {
+                        push(args[i]);
+                    }
+
+                    // Call constructor as method
+                    // Stack is now: [instance constructor arg1 arg2 ...]
+                    BytecodeFunction* func = constructor->bytecodeFunc.get();
+
+                    if (argCount != func->arity) {
+                        runtimeError("Constructor expected " + std::to_string(func->arity) +
+                                   " arguments but got " + std::to_string(argCount));
+                        return;
+                    }
+
+                    // Reorganize stack for call frame
+                    // Need to extract receiver and remove it from under arguments
+                    std::vector<ValuePtr> tempArgs;
+                    for (int i = 0; i < argCount; i++) {
+                        tempArgs.push_back(pop());
+                    }
+
+                    ValuePtr funcValue = pop();
+                    ValuePtr receiver = pop();
+
+                    // Push function back
+                    push(funcValue);
+
+                    // Push arguments back
+                    for (int i = argCount - 1; i >= 0; i--) {
+                        push(tempArgs[i]);
+                    }
+
+                    // Create call frame with 'this' binding and mark as constructor
+                    size_t stackOffset = stack.size() - argCount;
+                    frames.emplace_back(func, stackOffset, receiver, true, instance);
+
+                    // When constructor returns, OP_RETURN will return the instance instead of undefined
+                } else {
+                    // No constructor, just return the instance
+                    // Pop arguments and class
+                    for (uint8_t i = 0; i <= argCount; i++) {
+                        pop();
+                    }
+
+                    push(instance);
+                }
+
                 break;
             }
 
@@ -533,6 +688,26 @@ void VM::run() {
                     obj->setProperty(index->toString(), value);
                 }
                 push(value);
+                break;
+            }
+
+            case OpCode::OP_GET_SUPER: {
+                // Access a property from the superclass
+                // Stack: [instance]
+                uint16_t nameIndex = readU16();
+                ValuePtr name = chunk.getConstant(nameIndex);
+                ValuePtr instance = pop();
+
+                // Get the class from the instance
+                ValuePtr classValue = instance->getProperty("__class__");
+
+                if (classValue && classValue->isClass() && classValue->superClass) {
+                    // Look up property in superclass
+                    ValuePtr value = classValue->superClass->getProperty(name->toString());
+                    push(value);
+                } else {
+                    push(Value::makeUndefined());
+                }
                 break;
             }
 

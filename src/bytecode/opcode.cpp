@@ -84,6 +84,7 @@ const char* getOpCodeName(OpCode op) {
         case OpCode::OP_CLASS: return "OP_CLASS";
         case OpCode::OP_METHOD: return "OP_METHOD";
         case OpCode::OP_INHERIT: return "OP_INHERIT";
+        case OpCode::OP_INSTANTIATE: return "OP_INSTANTIATE";
         case OpCode::OP_GET_SUPER: return "OP_GET_SUPER";
         case OpCode::OP_INVOKE: return "OP_INVOKE";
         case OpCode::OP_SUPER_INVOKE: return "OP_SUPER_INVOKE";
@@ -163,6 +164,7 @@ int getOpCodeOperandCount(OpCode op) {
         case OpCode::OP_SET_UPVALUE:
         case OpCode::OP_CALL:
         case OpCode::OP_CALL_METHOD:
+        case OpCode::OP_INSTANTIATE:
             return 1;
 
         // 2 byte operand
