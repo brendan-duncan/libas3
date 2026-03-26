@@ -800,4 +800,4 @@ KeywordType Lexer::getKeywordType(const std::string& text) const {
     return KeywordType::None;
 }
 
-}
+} // namespace as3

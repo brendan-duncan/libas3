@@ -16,7 +16,10 @@ struct Local {
     bool isCaptured;    // Is this captured by a closure?
 
     Local(const std::string& n, int d)
-        : name(n), depth(d), isCaptured(false) {}
+        : name(n)
+        , depth(d)
+        , isCaptured(false) {
+    }
 };
 
 // Upvalue info (captured variables)
@@ -25,7 +28,9 @@ struct Upvalue {
     bool isLocal;  // Is it a local in the enclosing function?
 
     Upvalue(uint8_t i, bool local)
-        : index(i), isLocal(local) {}
+        : index(i)
+        , isLocal(local) {
+    }
 };
 
 // Compiler context for a function

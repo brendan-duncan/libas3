@@ -17,7 +17,9 @@ struct TestResult {
 // Test suite
 class TestSuite {
 public:
-    TestSuite(const std::string& name) : suiteName(name) {}
+    TestSuite(const std::string& name)
+        : suiteName(name) {
+    }
 
     void addTest(const std::string& name, std::function<void()> test) {
         tests.push_back({name, test});

@@ -1762,4 +1762,4 @@ OperatorType Parser::getBinaryOperator(TokenType type) const {
     }
 }
 
-}
+} // namespace as3

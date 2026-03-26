@@ -45,7 +45,9 @@ public:
     };
     ExpressionKind kind;
 
-    explicit Expression(ExpressionKind k) : kind(k) {}
+    explicit Expression(ExpressionKind k)
+        : kind(k) {
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -76,7 +78,10 @@ public:
     std::string name;
     std::string namespacePrefix;
 
-    explicit Identifier(const std::string& n) : Expression(ExpressionKind::Identifier), name(n) {}
+    explicit Identifier(const std::string& n)
+        : Expression(ExpressionKind::Identifier)
+        , name(n) {
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -94,7 +99,13 @@ public:
     double numberValue;
     std::string stringValue;
 
-    explicit Literal(LiteralKind k) : Expression(ExpressionKind::Literal), kind(k), valueType(LiteralValueType::None), boolValue(false), numberValue(0) {}
+    explicit Literal(LiteralKind k)
+        : Expression(ExpressionKind::Literal)
+        , kind(k)
+        , valueType(LiteralValueType::None)
+        , boolValue(false)
+        , numberValue(0) {
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -107,7 +118,11 @@ public:
     ExpressionPtr right;
 
     BinaryExpression(OperatorType operation, ExpressionPtr l, ExpressionPtr r)
-        : Expression(ExpressionKind::Binary), op(operation), left(std::move(l)), right(std::move(r)) {}
+        : Expression(ExpressionKind::Binary)
+        , op(operation)
+        , left(std::move(l))
+        , right(std::move(r)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -118,7 +133,11 @@ public:
     bool isPostfix;
 
     UnaryExpression(OperatorType operation, ExpressionPtr expr, bool postfix)
-        : Expression(ExpressionKind::Unary), op(operation), operand(std::move(expr)), isPostfix(postfix) {}
+        : Expression(ExpressionKind::Unary)
+        , op(operation)
+        , operand(std::move(expr))
+        , isPostfix(postfix) {
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -129,7 +148,10 @@ public:
     ExpressionPtr alternate;
 
     ConditionalExpression(ExpressionPtr t, ExpressionPtr c, ExpressionPtr a)
-        : Expression(ExpressionKind::Conditional), test(std::move(t)), consequent(std::move(c)), alternate(std::move(a)) {}
+        : Expression(ExpressionKind::Conditional)
+        , test(std::move(t))
+        , consequent(std::move(c))
+        , alternate(std::move(a)) {}
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -140,7 +162,11 @@ public:
     ExpressionPtr right;
 
     AssignmentExpression(OperatorType operation, ExpressionPtr l, ExpressionPtr r)
-        : Expression(ExpressionKind::Assignment), op(operation), left(std::move(l)), right(std::move(r)) {}
+        : Expression(ExpressionKind::Assignment)
+        , op(operation)
+        , left(std::move(l))
+        , right(std::move(r)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -150,7 +176,10 @@ public:
     ExpressionList arguments;
 
     CallExpression(ExpressionPtr c, ExpressionList args)
-        : Expression(ExpressionKind::Call), callee(std::move(c)), arguments(std::move(args)) {}
+        : Expression(ExpressionKind::Call)
+        , callee(std::move(c))
+        , arguments(std::move(args)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -160,7 +189,10 @@ public:
     ExpressionList arguments;
 
     NewExpression(ExpressionPtr c, ExpressionList args)
-        : Expression(ExpressionKind::New), callee(std::move(c)), arguments(std::move(args)) {}
+        : Expression(ExpressionKind::New)
+        , callee(std::move(c))
+        , arguments(std::move(args)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -173,9 +205,18 @@ public:
     bool optional;
 
     MemberExpression(ExpressionPtr obj, IdentifierPtr prop, bool comp = false, bool opt = false)
-        : Expression(ExpressionKind::Member), object(std::move(obj)), property(std::move(prop)), computed(comp), optional(opt) {}
+        : Expression(ExpressionKind::Member)
+        , object(std::move(obj))
+        , property(std::move(prop))
+        , computed(comp), optional(opt) {
+    }
     MemberExpression(ExpressionPtr obj, ExpressionPtr compProp, bool opt = false)
-        : Expression(ExpressionKind::Member), object(std::move(obj)), computedProperty(std::move(compProp)), computed(true), optional(opt) {}
+        : Expression(ExpressionKind::Member)
+        , object(std::move(obj))
+        , computedProperty(std::move(compProp))
+        , computed(true)
+        , optional(opt) {
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -187,7 +228,12 @@ public:
     StatementPtr body;
 
     FunctionExpression(IdentifierPtr n, std::vector<std::unique_ptr<Parameter>> params, IdentifierPtr ret, StatementPtr b)
-        : Expression(ExpressionKind::Function), name(std::move(n)), parameters(std::move(params)), returnType(std::move(ret)), body(std::move(b)) {}
+        : Expression(ExpressionKind::Function)
+        , name(std::move(n))
+        , parameters(std::move(params))
+        , returnType(std::move(ret))
+        , body(std::move(b)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -195,7 +241,10 @@ class ArrayExpression : public Expression {
 public:
     ExpressionList elements;
 
-    explicit ArrayExpression(ExpressionList elems) : Expression(ExpressionKind::Array), elements(std::move(elems)) {}
+    explicit ArrayExpression(ExpressionList elems)
+        : Expression(ExpressionKind::Array)
+        , elements(std::move(elems)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -204,7 +253,9 @@ public:
     std::vector<std::pair<ExpressionPtr, ExpressionPtr>> properties;
 
     explicit ObjectExpression(std::vector<std::pair<ExpressionPtr, ExpressionPtr>> props)
-        : Expression(ExpressionKind::Object), properties(std::move(props)) {}
+        : Expression(ExpressionKind::Object)
+        , properties(std::move(props)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -218,7 +269,9 @@ class BlockStatement : public Statement {
 public:
     std::vector<StatementPtr> statements;
 
-    explicit BlockStatement(std::vector<StatementPtr> stmts) : statements(std::move(stmts)) {}
+    explicit BlockStatement(std::vector<StatementPtr> stmts)
+        : statements(std::move(stmts)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -242,7 +295,10 @@ public:
     StatementPtr alternate;
 
     IfStatement(ExpressionPtr t, StatementPtr c, StatementPtr a = nullptr)
-        : test(std::move(t)), consequent(std::move(c)), alternate(std::move(a)) {}
+        : test(std::move(t))
+        , consequent(std::move(c))
+        , alternate(std::move(a)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -251,7 +307,10 @@ public:
     ExpressionPtr test;
     StatementPtr body;
 
-    WhileStatement(ExpressionPtr t, StatementPtr b) : test(std::move(t)), body(std::move(b)) {}
+    WhileStatement(ExpressionPtr t, StatementPtr b)
+        : test(std::move(t))
+        , body(std::move(b)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -260,7 +319,10 @@ public:
     StatementPtr body;
     ExpressionPtr test;
 
-    DoWhileStatement(StatementPtr b, ExpressionPtr t) : body(std::move(b)), test(std::move(t)) {}
+    DoWhileStatement(StatementPtr b, ExpressionPtr t)
+        : body(std::move(b))
+        , test(std::move(t)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -272,7 +334,11 @@ public:
     StatementPtr body;
 
     ForStatement(StatementPtr i, ExpressionPtr t, ExpressionPtr u, StatementPtr b)
-        : init(std::move(i)), test(std::move(t)), update(std::move(u)), body(std::move(b)) {}
+        : init(std::move(i))
+        , test(std::move(t))
+        , update(std::move(u))
+        , body(std::move(b)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -283,7 +349,10 @@ public:
     StatementPtr body;
 
     ForInStatement(StatementPtr l, ExpressionPtr r, StatementPtr b)
-        : left(std::move(l)), right(std::move(r)), body(std::move(b)) {}
+        : left(std::move(l))
+        , right(std::move(r))
+        , body(std::move(b)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -294,7 +363,10 @@ public:
     StatementPtr body;
 
     ForOfStatement(ExpressionPtr l, ExpressionPtr r, StatementPtr b)
-        : left(std::move(l)), right(std::move(r)), body(std::move(b)) {}
+        : left(std::move(l))
+        , right(std::move(r))
+        , body(std::move(b)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -304,7 +376,9 @@ public:
     std::vector<StatementPtr> consequent;
 
     CaseClause(ExpressionPtr t, std::vector<StatementPtr> c)
-        : test(std::move(t)), consequent(std::move(c)) {}
+        : test(std::move(t))
+        , consequent(std::move(c)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -314,7 +388,9 @@ public:
     std::vector<std::unique_ptr<CaseClause>> cases;
 
     SwitchStatement(ExpressionPtr d, std::vector<std::unique_ptr<CaseClause>> c)
-        : discriminant(std::move(d)), cases(std::move(c)) {}
+        : discriminant(std::move(d))
+        , cases(std::move(c)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -322,7 +398,9 @@ class ContinueStatement : public Statement {
 public:
     IdentifierPtr label;
 
-    explicit ContinueStatement(IdentifierPtr l = nullptr) : label(std::move(l)) {}
+    explicit ContinueStatement(IdentifierPtr l = nullptr)
+        : label(std::move(l)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -330,7 +408,9 @@ class BreakStatement : public Statement {
 public:
     IdentifierPtr label;
 
-    explicit BreakStatement(IdentifierPtr l = nullptr) : label(std::move(l)) {}
+    explicit BreakStatement(IdentifierPtr l = nullptr)
+        : label(std::move(l)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -338,7 +418,9 @@ class ReturnStatement : public Statement {
 public:
     ExpressionPtr argument;
 
-    explicit ReturnStatement(ExpressionPtr arg = nullptr) : argument(std::move(arg)) {}
+    explicit ReturnStatement(ExpressionPtr arg = nullptr)
+        : argument(std::move(arg)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -346,7 +428,9 @@ class ThrowStatement : public Statement {
 public:
     ExpressionPtr argument;
 
-    explicit ThrowStatement(ExpressionPtr arg) : argument(std::move(arg)) {}
+    explicit ThrowStatement(ExpressionPtr arg)
+        : argument(std::move(arg)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -358,7 +442,11 @@ public:
     StatementPtr finallyBody;
 
     TryStatement(StatementPtr b, IdentifierPtr cv, StatementPtr cb, StatementPtr fb)
-        : block(std::move(b)), catchVar(std::move(cv)), catchBody(std::move(cb)), finallyBody(std::move(fb)) {}
+        : block(std::move(b))
+        , catchVar(std::move(cv))
+        , catchBody(std::move(cb))
+        , finallyBody(std::move(fb)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -367,7 +455,10 @@ public:
     ExpressionPtr object;
     StatementPtr body;
 
-    WithStatement(ExpressionPtr obj, StatementPtr b) : object(std::move(obj)), body(std::move(b)) {}
+    WithStatement(ExpressionPtr obj, StatementPtr b)
+        : object(std::move(obj))
+        , body(std::move(b)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -376,7 +467,10 @@ public:
     IdentifierPtr label;
     StatementPtr body;
 
-    LabeledStatement(IdentifierPtr l, StatementPtr b) : label(std::move(l)), body(std::move(b)) {}
+    LabeledStatement(IdentifierPtr l, StatementPtr b)
+        : label(std::move(l))
+        , body(std::move(b)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -403,7 +497,10 @@ public:
     ExpressionPtr init;
 
     VariableDeclaration(IdentifierPtr i, IdentifierPtr t = nullptr, ExpressionPtr in = nullptr)
-        : id(std::move(i)), type(std::move(t)), init(std::move(in)) {}
+        : id(std::move(i))
+        , type(std::move(t))
+        , init(std::move(in)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -416,7 +513,10 @@ public:
     bool isConst;
 
     VariableDefinition(std::vector<AttributePtr> attrs, VariableDeclarationList decls, bool constFlag)
-        : attributes(std::move(attrs)), declarations(std::move(decls)), isConst(constFlag) {}
+        : attributes(std::move(attrs))
+        , declarations(std::move(decls))
+        , isConst(constFlag) {
+    }
     AstNodeType getType() const override { return AstNodeType::VariableDefinition; }
 };
 
@@ -428,7 +528,11 @@ public:
     bool rest;
 
     Parameter(IdentifierPtr n, IdentifierPtr t = nullptr, ExpressionPtr def = nullptr, bool r = false)
-        : name(std::move(n)), type(std::move(t)), defaultValue(std::move(def)), rest(r) {}
+        : name(std::move(n))
+        , type(std::move(t))
+        , defaultValue(std::move(def))
+        , rest(r) {
+    }
     AstNodeType getType() const override { return AstNodeType::Parameter; }
 };
 
@@ -449,9 +553,14 @@ public:
         IdentifierPtr ret,
         StatementPtr b,
         bool getter = false,
-        bool setter = false
-    ) : attributes(std::move(attrs)), name(std::move(n)), parameters(std::move(params)),
-        returnType(std::move(ret)), body(std::move(b)), isGetter(getter), isSetter(setter) {}
+        bool setter = false)
+        : attributes(std::move(attrs))
+        , name(std::move(n))
+        , parameters(std::move(params))
+        , returnType(std::move(ret))
+        , body(std::move(b))
+        , isGetter(getter), isSetter(setter) {
+    }
     AstNodeType getType() const override { return AstNodeType::FunctionDefinition; }
 };
 
@@ -468,9 +577,13 @@ public:
         IdentifierPtr n,
         IdentifierPtr super_,
         std::vector<IdentifierPtr> interfaces_,
-        std::vector<AstNodePtr> mems
-    ) : attributes(std::move(attrs)), name(std::move(n)), superClass(std::move(super_)),
-        interfaces(std::move(interfaces_)), members(std::move(mems)) {}
+        std::vector<AstNodePtr> mems)
+        : attributes(std::move(attrs))
+        , name(std::move(n))
+        , superClass(std::move(super_))
+        , interfaces(std::move(interfaces_))
+        , members(std::move(mems)) {
+    }
     AstNodeType getType() const override { return AstNodeType::ClassDefinition; }
 };
 
@@ -481,7 +594,10 @@ public:
     std::vector<AstNodePtr> members;
 
     InterfaceDefinition(IdentifierPtr n, std::vector<IdentifierPtr> ext, std::vector<AstNodePtr> mems)
-        : name(std::move(n)), extends(std::move(ext)), members(std::move(mems)) {}
+        : name(std::move(n))
+        , extends(std::move(ext))
+        , members(std::move(mems)) {
+    }
     AstNodeType getType() const override { return AstNodeType::ClassDefinition; }
 };
 
@@ -490,7 +606,10 @@ public:
     IdentifierPtr name;
     IdentifierPtr uri;
 
-    NamespaceDefinition(IdentifierPtr n, IdentifierPtr u) : name(std::move(n)), uri(std::move(u)) {}
+    NamespaceDefinition(IdentifierPtr n, IdentifierPtr u)
+        : name(std::move(n))
+        , uri(std::move(u)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
@@ -501,7 +620,10 @@ public:
     bool isPackage;
 
     ImportDirective(const std::string& p, IdentifierPtr n, bool isPkg)
-        : path(p), name(std::move(n)), isPackage(isPkg) {}
+        : path(p)
+        , name(std::move(n))
+        , isPackage(isPkg) {
+    }
     AstNodeType getType() const override { return AstNodeType::ImportDirective; }
 };
 
@@ -514,7 +636,10 @@ public:
     std::vector<AstNodePtr> members;
 
     PackageDefinition(IdentifierPtr n, std::vector<ImportDirectivePtr> imps, std::vector<AstNodePtr> mems)
-        : name(std::move(n)), imports(std::move(imps)), members(std::move(mems)) {}
+        : name(std::move(n))
+        , imports(std::move(imps))
+        , members(std::move(mems)) {
+    }
     AstNodeType getType() const override { return AstNodeType::PackageDefinition; }
 };
 
@@ -526,6 +651,5 @@ public:
     AstNodeType getType() const override { return AstNodeType::Program; }
 };
 
-}
-
+} // namespace as3
 #endif

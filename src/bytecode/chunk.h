@@ -64,7 +64,9 @@ public:
     std::vector<uint8_t> upvalueIndex;      // Index of upvalue
 
     BytecodeFunction(const std::string& n, int a)
-        : name(n), arity(a) {}
+        : name(n)
+        , arity(a) {
+    }
 };
 
 } // namespace as3

@@ -19,7 +19,13 @@ struct CallFrame {
     ValuePtr constructorInstance; // Instance to return from constructor
 
     CallFrame(BytecodeFunction* func, size_t offset, ValuePtr thisVal = nullptr, bool isCtor = false, ValuePtr instance = nullptr)
-        : function(func), ip(0), stackOffset(offset), thisBinding(thisVal), isConstructor(isCtor), constructorInstance(instance) {}
+        : function(func)
+        , ip(0)
+        , stackOffset(offset)
+        , thisBinding(thisVal)
+        , isConstructor(isCtor)
+        , constructorInstance(instance) {
+    }
 };
 
 // Virtual Machine for bytecode execution

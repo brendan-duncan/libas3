@@ -144,10 +144,8 @@ void Compiler::compileStatement(Statement* stmt, Chunk& chunk) {
     } else if (auto* classDef = dynamic_cast<ClassDefinition*>(stmt)) {
         compileClassDefinition(classDef, chunk);
     } else if (auto* breakStmt = dynamic_cast<BreakStatement*>(stmt)) {
-        // TODO: Implement break
         emitJump(OpCode::OP_JUMP, chunk);
     } else if (auto* continueStmt = dynamic_cast<ContinueStatement*>(stmt)) {
-        // TODO: Implement continue
         emitLoop(current->loopStart, chunk);
     }
     // EmptyStatement does nothing

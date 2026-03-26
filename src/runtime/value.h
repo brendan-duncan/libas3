@@ -52,7 +52,12 @@ public:
     ValuePtr constructor;     // Constructor function
 
     // Constructors
-    Value() : type(ValueType::Undefined), boolValue(false), numberValue(0), bytecodeFunc(nullptr) {}
+    Value()
+        : type(ValueType::Undefined)
+        , boolValue(false)
+        , numberValue(0)
+        , bytecodeFunc(nullptr) {
+    }
 
     static ValuePtr makeUndefined();
     static ValuePtr makeNull();
