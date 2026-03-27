@@ -426,6 +426,14 @@ static void init_parser_tests() {
             throw std::runtime_error("Parse failed");
         }
     });
+
+    suite.addTest("setProperty", []() {
+        Parser p("setProperty(\"hair_01\", _visible, \"1\");");
+        auto prog = p.parse();
+        if (prog == nullptr || prog->statements.empty() || p.hasErrors()) {
+            throw std::runtime_error("Parse failed");
+        }
+    });
 }
 
 // Auto-initialize tests
