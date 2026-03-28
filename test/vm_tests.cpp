@@ -159,6 +159,86 @@ static void init_vm_tests() {
     suite.addTest("Class - Inheritance Instance", []() {
         executeAndVerify("class Animal { function Animal() { } function speak() { return 'sound'; } } class Dog extends Animal { function Dog() { } } var d = new Dog(); trace('Speak:', d.speak());");
     });
+
+    suite.addTest("registerBuiltin - Custom Function", []() {
+        VM vm;
+        vm.registerBuiltin("double", [](const std::vector<ValuePtr>& args) {
+            if (args.empty()) return Value::makeNumber(0);
+            return Value::makeNumber(args[0]->toNumber() * 2);
+        });
+
+        Parser parser("trace('Result:', double(21));");
+        auto program = parser.parse();
+        Compiler compiler;
+        auto bytecode = compiler.compile(program.get());
+        vm.execute(bytecode);
+
+        if (vm.hasError()) {
+            throw std::runtime_error("Runtime error: " + vm.getError());
+        }
+    });
+
+    suite.addTest("registerBuiltin - Multiple Arguments", []() {
+        VM vm;
+        vm.registerBuiltin("add", [](const std::vector<ValuePtr>& args) {
+            double sum = 0;
+            for (const auto& arg : args) {
+                sum += arg->toNumber();
+            }
+            return Value::makeNumber(sum);
+        });
+
+        Parser parser("trace('Sum:', add(1, 2, 3, 4, 5));");
+        auto program = parser.parse();
+        Compiler compiler;
+        auto bytecode = compiler.compile(program.get());
+        vm.execute(bytecode);
+
+        if (vm.hasError()) {
+            throw std::runtime_error("Runtime error: " + vm.getError());
+        }
+    });
+
+    suite.addTest("defineExternClass - Basic", []() {
+        VM vm;
+        vm.defineExternClass("Math", {
+            {"abs", [](const std::vector<ValuePtr>& args) {
+                return Value::makeNumber(std::abs(args[0]->toNumber()));
+            }}
+        });
+
+        Parser parser("var m = new Math(); trace('Abs:', m.abs(-5));");
+        auto program = parser.parse();
+        Compiler compiler;
+        auto bytecode = compiler.compile(program.get());
+        vm.execute(bytecode);
+
+        if (vm.hasError()) {
+            throw std::runtime_error("Runtime error: " + vm.getError());
+        }
+    });
+
+    suite.addTest("defineExternClass - Multiple Methods", []() {
+        VM vm;
+        vm.defineExternClass("Calculator", {
+            {"add", [](const std::vector<ValuePtr>& args) {
+                return Value::makeNumber(args[0]->toNumber() + args[1]->toNumber());
+            }},
+            {"multiply", [](const std::vector<ValuePtr>& args) {
+                return Value::makeNumber(args[0]->toNumber() * args[1]->toNumber());
+            }}
+        });
+
+        Parser parser("var calc = new Calculator(); trace('Add:', calc.add(3, 4)); trace('Mul:', calc.multiply(3, 4));");
+        auto program = parser.parse();
+        Compiler compiler;
+        auto bytecode = compiler.compile(program.get());
+        vm.execute(bytecode);
+
+        if (vm.hasError()) {
+            throw std::runtime_error("Runtime error: " + vm.getError());
+        }
+    });
 }
 
 // Auto-initialize tests

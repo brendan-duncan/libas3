@@ -996,6 +996,21 @@ void VM::setGlobal(const std::string& name, ValuePtr value) {
     globals[name] = value;
 }
 
+void VM::registerBuiltin(const std::string& name, NativeFunction func) {
+    globals[name] = Value::makeNativeFunction(func);
+}
+
+void VM::defineExternClass(const std::string& className,
+                           const std::map<std::string, NativeFunction>& methods) {
+    ValuePtr classValue = Value::makeClass(className);
+    
+    for (const auto& pair : methods) {
+        classValue->setProperty(pair.first, Value::makeNativeFunction(pair.second));
+    }
+    
+    globals[className] = classValue;
+}
+
 // Error handling
 
 void VM::runtimeError(const std::string& message) {

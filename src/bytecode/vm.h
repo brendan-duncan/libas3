@@ -40,6 +40,14 @@ public:
     ValuePtr getGlobal(const std::string& name);
     void setGlobal(const std::string& name, ValuePtr value);
 
+    // Register a custom built-in function (callable from AS3 code)
+    void registerBuiltin(const std::string& name, NativeFunction func);
+
+    // Define a class with extern (native) methods
+    // Methods are called via callbacks when invoked from AS3 code
+    void defineExternClass(const std::string& className,
+                           const std::map<std::string, NativeFunction>& methods);
+
     // Error handling
     bool hasError() const { return hadError; }
     const std::string& getError() const { return errorMessage; }
