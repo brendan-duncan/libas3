@@ -2,6 +2,10 @@
 
 An ActionScript 3 parser and bytecode virtual machine written in C++17.
 
+## 🚧 Experimental Status
+
+This project is being developed for my own learning and experimentation. There are no guarantees of accuracy, feature completion, or support.
+
 ## Features
 
 ### ✅ AS3 Parser
@@ -12,8 +16,6 @@ An ActionScript 3 parser and bytecode virtual machine written in C++17.
 - Arrays and objects
 - Full operator precedence
 - Error recovery and reporting
-- **53/53 test cases passing**
-
 
 ### ✅ Bytecode VM
 - Stack-based virtual machine
@@ -25,6 +27,23 @@ An ActionScript 3 parser and bytecode virtual machine written in C++17.
 - Built-in functions (trace, print, parseInt, parseFloat, isNaN)
 - Control flow (if/while/for/ternary)
 - Arrays, objects, and all operators (arithmetic, logical, bitwise, comparison)
+
+### 📋 TODO
+- [ ] Javascript-style prototype classes / inheritance
+- [ ] Garbage Collection (Generational or Mark-Sweep)
+- [ ] Inline caching
+- [ ] Method dispatch optimization
+- [ ] Hot path detection
+- [ ] JIT compilation
+
+
+## Acknowledgments
+
+Inspired by:
+- ActionScript 3 Language Specification
+- [Crafting Interpreters](https://craftinginterpreters.com) by Robert Nystrom
+- Lua VM design
+- V8 JavaScript engine
 
 ## Project Structure
 
@@ -266,28 +285,3 @@ Compiles to:
 0031    | OP_DEFINE_GLOBAL 2 'result'
 ```
 
-## Roadmap
-
-### Optimization 📋 PLANNED
-- [ ] Inline caching
-- [ ] Method dispatch optimization
-- [ ] Hot path detection
-- [ ] JIT compilation (optional)
-
-## Documentation
-
-- [BYTECODE_DESIGN.md](src/bytecode/BYTECODE_DESIGN.md) - Bytecode VM architecture
-- [AST Nodes](src/ast/ast_nodes.h) - Complete AST structure
-- [Test Framework](test/README.md) - Test suite documentation
-
-## License
-
-MIT
-
-## Acknowledgments
-
-Inspired by:
-- ActionScript 3 Language Specification
-- Crafting Interpreters by Robert Nystrom
-- Lua VM design
-- V8 JavaScript engine
