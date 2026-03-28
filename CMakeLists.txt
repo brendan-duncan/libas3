@@ -82,7 +82,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 # Create a simple install script
-file(WRITE ${PACKAGE_DIR}/README.md "# as3_parser\n\nActionScript 3 Parser and Bytecode VM Library\n\n## Usage\n\nInclude the headers and link against the library:\n\n```cpp\n#include \"parser/parser.h\"\n#include \"bytecode/compiler.h\"\n#include \"bytecode/vm.h\"\n```\n")
+file(WRITE ${PACKAGE_DIR}/README.md "# as3_parser\n\nActionScript-like Parser and Bytecode VM Library\n\n## Usage\n\nInclude the headers and link against the library:\n\n```cpp\n#include \"parser/parser.h\"\n#include \"bytecode/compiler.h\"\n#include \"bytecode/vm.h\"\n```\n")
 
 # Print package location
 message(STATUS "Package created at: ${PACKAGE_DIR}")

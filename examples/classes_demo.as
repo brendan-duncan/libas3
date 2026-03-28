@@ -1,4 +1,4 @@
-// ActionScript 3 Classes Demo
+// Classes Demo
 // Demonstrates complete class support in libas3 bytecode VM
 
 // Basic class with constructor

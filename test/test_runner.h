@@ -75,7 +75,7 @@ public:
     }
 
     int runAll() {
-        std::cout << "\n===== ActionScript 3 Test Suite =====" << std::endl;
+        std::cout << "\n===== Test Suite =====" << std::endl;
         std::cout << "Running " << suites.size() << " test suites" << std::endl;
 
         int totalTests = 0;

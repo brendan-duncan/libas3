@@ -1,6 +1,6 @@
-# libas3 - ActionScript 3 Parser & Bytecode VM
+# libas3 - ActionScript-like Parser & Bytecode VM
 
-An ActionScript 3 parser and bytecode virtual machine written in C++17.
+An ActionScript-like parser and bytecode virtual machine written in C++17.
 
 ## 🚧 Experimental Status
 
@@ -40,7 +40,7 @@ This project is being developed for my own learning and experimentation. There a
 ## Acknowledgments
 
 Inspired by:
-- ActionScript 3 Language Specification
+- ActionScript Language Specification
 - [Crafting Interpreters](https://craftinginterpreters.com) by Robert Nystrom
 - Lua VM design
 - V8 JavaScript engine

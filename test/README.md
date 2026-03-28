@@ -1,6 +1,6 @@
 # libas3 Test Framework
 
-Unified test framework for ActionScript 3 parser, interpreter, and bytecode VM.
+Unified test framework for ActionScript-like parser, interpreter, and bytecode VM.
 
 ## Overview
 
@@ -81,7 +81,7 @@ cmake --build . --config Release
 ## Test Output
 
 ```
-===== ActionScript 3 Test Suite =====
+===== Test Suite =====
 Running 4 test suites
 
 ========================================

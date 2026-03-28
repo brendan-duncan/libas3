@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is a **stack-based virtual machine** for executing ActionScript 3 bytecode. The design prioritizes simplicity, debuggability, and performance.
+This is a **stack-based virtual machine** for executing ActionScript-like bytecode. The design prioritizes simplicity, debuggability, and performance.
 
 ## Architecture
 
