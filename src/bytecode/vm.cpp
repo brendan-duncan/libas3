@@ -6,8 +6,14 @@
 namespace as3 {
 
 VM::VM()
-    : hadError(false) {
+    : parent(nullptr)
+    , hadError(false) {
     setupBuiltins();
+}
+
+VM::VM(VM* parentVM)
+    : parent(parentVM)
+    , hadError(false) {
 }
 
 void VM::setupBuiltins() {
@@ -988,6 +994,9 @@ ValuePtr VM::getGlobal(const std::string& name) {
     auto it = globals.find(name);
     if (it != globals.end()) {
         return it->second;
+    }
+    if (parent) {
+        return parent->getGlobal(name);
     }
     return Value::makeUndefined();
 }

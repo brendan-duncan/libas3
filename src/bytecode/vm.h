@@ -32,11 +32,12 @@ struct CallFrame {
 class VM {
 public:
     VM();
+    explicit VM(VM* parent);
 
     // Execute a bytecode function
     void execute(std::shared_ptr<BytecodeFunction> function);
 
-    // Get/set global variables
+    // Get/set global variables (checks parent if not found locally)
     ValuePtr getGlobal(const std::string& name);
     void setGlobal(const std::string& name, ValuePtr value);
 
@@ -52,14 +53,18 @@ public:
     // The class should be defined via defineExternClass or exist in globals
     void registerObject(const std::string& name, const std::string& classType);
 
+    // Get parent VM (may be nullptr)
+    VM* getParent() const { return parent; }
+
     // Error handling
     bool hasError() const { return hadError; }
     const std::string& getError() const { return errorMessage; }
 
 private:
+    VM* parent;
     std::vector<ValuePtr> stack;            // Value stack
     std::vector<CallFrame> frames;          // Call frames
-    std::map<std::string, ValuePtr> globals; // Global variables
+    std::map<std::string, ValuePtr> globals; // Global variables (local + inherited)
     bool hadError;
     std::string errorMessage;
 

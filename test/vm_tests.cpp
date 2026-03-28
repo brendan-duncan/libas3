@@ -179,13 +179,13 @@ static void init_vm_tests() {
                 return Value::makeString("shape");
             }}
         });
-        
+
         Parser parser("class Circle extends Shape { function Circle() { } function getRadius() { return 5; } } var c = new Circle(); trace('Type:', c.getType()); trace('Radius:', c.getRadius());");
         auto program = parser.parse();
         Compiler compiler;
         auto bytecode = compiler.compile(program.get());
         vm.execute(bytecode);
-        
+
         if (vm.hasError()) {
             throw std::runtime_error("Runtime error: " + vm.getError());
         }
@@ -289,6 +289,113 @@ static void init_vm_tests() {
 
         if (vm.hasError()) {
             throw std::runtime_error("Runtime error: " + vm.getError());
+        }
+    });
+
+    suite.addTest("Hierarchical VM - Inherit Builtin", []() {
+        VM parentVM;
+        parentVM.registerBuiltin("parentFunc", [](const std::vector<ValuePtr>& args) {
+            return Value::makeString("from parent");
+        });
+
+        VM childVM(&parentVM);
+
+        Parser parser("trace('Result:', parentFunc());");
+        auto program = parser.parse();
+        Compiler compiler;
+        auto bytecode = compiler.compile(program.get());
+        childVM.execute(bytecode);
+
+        if (childVM.hasError()) {
+            throw std::runtime_error("Runtime error: " + childVM.getError());
+        }
+    });
+
+    suite.addTest("Hierarchical VM - Override Builtin", []() {
+        VM parentVM;
+        parentVM.registerBuiltin("myFunc", [](const std::vector<ValuePtr>& args) {
+            return Value::makeString("from parent");
+        });
+
+        VM childVM(&parentVM);
+        childVM.registerBuiltin("myFunc", [](const std::vector<ValuePtr>& args) {
+            return Value::makeString("from child");
+        });
+
+        Parser parser("trace('Result:', myFunc());");
+        auto program = parser.parse();
+        Compiler compiler;
+        auto bytecode = compiler.compile(program.get());
+        childVM.execute(bytecode);
+
+        if (childVM.hasError()) {
+            throw std::runtime_error("Runtime error: " + childVM.getError());
+        }
+    });
+
+    suite.addTest("Hierarchical VM - Parent Unaffected", []() {
+        VM parentVM;
+        parentVM.registerBuiltin("myFunc", [](const std::vector<ValuePtr>& args) {
+            return Value::makeString("parent");
+        });
+
+        VM childVM(&parentVM);
+        childVM.registerBuiltin("myFunc", [](const std::vector<ValuePtr>& args) {
+            return Value::makeString("child");
+        });
+
+        Parser parserParent("trace('Parent:', myFunc());");
+        auto program = parserParent.parse();
+        Compiler compiler;
+        auto bytecode = compiler.compile(program.get());
+        parentVM.execute(bytecode);
+
+        Parser parserChild("trace('Child:', myFunc());");
+        auto programChild = parserChild.parse();
+        auto bytecodeChild = compiler.compile(programChild.get());
+        childVM.execute(bytecodeChild);
+
+        if (parentVM.hasError() || childVM.hasError()) {
+            throw std::runtime_error("Runtime error");
+        }
+    });
+
+    suite.addTest("Hierarchical VM - Context Inheritance", []() {
+        VM parentVM;
+        parentVM.registerBuiltin("getBaseValue", [](const std::vector<ValuePtr>& args) {
+            return Value::makeNumber(100);
+        });
+
+        parentVM.defineExternClass("ParentClass", {
+            {"getName", [](const std::vector<ValuePtr>& args) {
+                return Value::makeString("ParentClass");
+            }},
+            {"getValue", [](const std::vector<ValuePtr>& args) {
+                return Value::makeNumber(50);
+            }}
+        });
+
+        parentVM.registerObject("sharedObj", "ParentClass");
+
+        VM childVM(&parentVM);
+        childVM.registerBuiltin("getChildValue", [](const std::vector<ValuePtr>& args) {
+            return Value::makeNumber(200);
+        });
+
+        childVM.defineExternClass("ChildClass", {
+            {"getChildName", [](const std::vector<ValuePtr>& args) {
+                return Value::makeString("ChildClass");
+            }}
+        });
+
+        Parser parser("trace('Base:', getBaseValue()); trace('Child:', getChildValue()); var obj = new ParentClass(); trace('Name:', obj.getName()); trace('Value:', obj.getValue()); trace('Shared:', sharedObj.getName());");
+        auto program = parser.parse();
+        Compiler compiler;
+        auto bytecode = compiler.compile(program.get());
+        childVM.execute(bytecode);
+
+        if (childVM.hasError()) {
+            throw std::runtime_error("Runtime error: " + childVM.getError());
         }
     });
 }
