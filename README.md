@@ -12,7 +12,7 @@ A complete ActionScript 3 parser and bytecode virtual machine written in C++17.
 - Arrays and objects
 - Full operator precedence
 - Error recovery and reporting
-- **52/52 test cases passing**
+- **53/53 test cases passing**
 
 
 ### ✅ Bytecode VM (Complete & Working)
@@ -113,12 +113,72 @@ vm.execute(bytecode);
 bytecode->chunk.disassemble("main");
 ```
 
+### 3. Custom Built-in Functions
+```cpp
+#include "parser/parser.h"
+#include "bytecode/compiler.h"
+#include "bytecode/vm.h"
+
+as3::VM vm;
+
+// Register a custom function callable from AS3
+vm.registerBuiltin("double", [](const std::vector<as3::ValuePtr>& args) {
+    if (args.empty()) return as3::Value::makeNumber(0);
+    return as3::Value::makeNumber(args[0]->toNumber() * 2);
+});
+
+// Now usable in AS3 code
+as3::Parser parser("trace('Result:', double(21));");  // Outputs: Result: 42
+auto bytecode = as3::Compiler().compile(parser.parse().get());
+vm.execute(bytecode);
+```
+
+### 4. Extern Classes with Native Methods
+```cpp
+as3::VM vm;
+
+// Define a class with native callback methods
+vm.defineExternClass("Math", {
+    {"abs", [](const std::vector<as3::ValuePtr>& args) {
+        return as3::Value::makeNumber(std::abs(args[0]->toNumber()));
+    }},
+    {"max", [](const std::vector<as3::ValuePtr>& args) {
+        double m = args[0]->toNumber();
+        for (size_t i = 1; i < args.size(); i++) {
+            m = std::max(m, args[i]->toNumber());
+        }
+        return as3::Value::makeNumber(m);
+    }}
+});
+
+// Usage in AS3:
+as3::Parser parser("var m = new Math(); trace('Abs:', m.abs(-5)); trace('Max:', m.max(1, 3, 2));");
+```
+
+### 5. Pre-registered Object Instances
+```cpp
+as3::VM vm;
+
+// Define class first
+vm.defineExternClass("Shape", {
+    {"getType", [](const std::vector<as3::ValuePtr>& args) {
+        return as3::Value::makeString("circle");
+    }}
+});
+
+// Register an object instance with that class type
+vm.registerObject("hair01", "Shape");
+
+// Usage in AS3:
+as3::Parser parser("trace('Type:', hair01.getType());");  // Outputs: Type: circle
+```
+
 ## Running Tests
 
 All tests are now unified in a single executable:
 
 ```bash
-# Run all tests (96 tests total)
+# Run all tests (116 tests total)
 ./Release/as3_tests.exe
 
 # In Debug mode
@@ -126,9 +186,9 @@ All tests are now unified in a single executable:
 ```
 
 Test suites included:
-- **Parser** (52 tests) - All AS3 language constructs
+- **Parser** (53 tests) - All AS3 language constructs
 - **Bytecode** (18 tests) - Bytecode compiler verification
-- **VM** (18 tests) - Bytecode VM execution including function calls
+- **VM** (37 tests) - Bytecode VM execution including function calls, classes, and extern integration
 - **Benchmark** (8 tests) - VM performance benchmarks
 
 All test suites run automatically and provide a comprehensive test summary.
@@ -238,7 +298,11 @@ Compiles to:
 - [x] Control flow (if/while/for/ternary)
 - [x] Arrays and objects
 - [x] All operators (arithmetic, comparison, logical, bitwise)
-- [x] 14 VM tests + 8 performance benchmarks
+- [x] Classes, inheritance, and OOP
+- [x] Custom built-in functions (registerBuiltin)
+- [x] Extern classes with native methods (defineExternClass)
+- [x] Object instance registration (registerObject)
+- [x] 37 VM tests + 8 performance benchmarks
 
 ### Phase 4: Optimization 📋 PLANNED
 - [ ] Inline caching
@@ -274,23 +338,26 @@ Inspired by:
 
 ## Status
 
-**Current State**: Production-ready AS3 parser and complete bytecode virtual machine.
+**Current State**: Production-ready AS3 parser and complete bytecode virtual machine with native interop.
 
 **What Works**:
-- ✅ Full AS3 parser (52/52 tests passing)
+- ✅ Full AS3 parser (53/53 tests passing)
 - ✅ Bytecode compiler with optimizations (18/18 tests passing)
-- ✅ Stack-based VM with full instruction set (18/18 tests passing)
+- ✅ Stack-based VM with full instruction set (36/36 tests passing)
 - ✅ Control flow (if/while/for/ternary)
 - ✅ **Function calls (user-defined & native)**
 - ✅ Arrays, objects
 - ✅ All operators (arithmetic, logical, bitwise, comparison)
+- ✅ **Classes and OOP (definition, instantiation, inheritance)**
+- ✅ **Custom built-in functions (registerBuiltin)**
+- ✅ **Extern classes with native methods (defineExternClass)**
+- ✅ **Pre-registered object instances (registerObject)**
 - ✅ Performance benchmarks (8/8 tests passing)
-- ✅ **96 total tests passing**
+- ✅ **116 total tests passing**
 
 **Not Yet Implemented**:
 - [ ] Closures with upvalues in VM
 - [ ] Recursive function calls
-- [ ] Classes and OOP features in VM
 - [ ] Advanced VM optimizations (inline caching, computed goto, JIT)
 - [ ] For-in loops in bytecode compiler
 - [ ] Exception handling in VM
