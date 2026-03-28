@@ -160,6 +160,37 @@ static void init_vm_tests() {
         executeAndVerify("class Animal { function Animal() { } function speak() { return 'sound'; } } class Dog extends Animal { function Dog() { } } var d = new Dog(); trace('Speak:', d.speak());");
     });
 
+    suite.addTest("Class - Inheritance Method Override", []() {
+        executeAndVerify("class Animal { function speak() { return 'sound'; } } class Dog extends Animal { function speak() { return 'bark'; } } var d = new Dog(); trace('Speak:', d.speak());");
+    });
+
+    suite.addTest("Class - Inheritance Multiple Levels", []() {
+        executeAndVerify("class Animal { function Animal() { } function breathe() { return 'breathing'; } } class Mammal extends Animal { function Mammal() { } function walk() { return 'walking'; } } class Dog extends Mammal { function Dog() { } function bark() { return 'barking'; } } var d = new Dog(); trace('Breathe:', d.breathe()); trace('Walk:', d.walk()); trace('Bark:', d.bark());");
+    });
+
+    suite.addTest("Class - Inheritance with Constructor", []() {
+        executeAndVerify("class Animal { function Animal(name) { this.name = name; } } class Dog extends Animal { function Dog(name) { } } var d = new Dog('Rex'); trace('Name:', d.name);");
+    });
+
+    suite.addTest("Class - Extends Extern Class", []() {
+        VM vm;
+        vm.defineExternClass("Shape", {
+            {"getType", [](const std::vector<ValuePtr>& args) {
+                return Value::makeString("shape");
+            }}
+        });
+        
+        Parser parser("class Circle extends Shape { function Circle() { } function getRadius() { return 5; } } var c = new Circle(); trace('Type:', c.getType()); trace('Radius:', c.getRadius());");
+        auto program = parser.parse();
+        Compiler compiler;
+        auto bytecode = compiler.compile(program.get());
+        vm.execute(bytecode);
+        
+        if (vm.hasError()) {
+            throw std::runtime_error("Runtime error: " + vm.getError());
+        }
+    });
+
     suite.addTest("registerBuiltin - Custom Function", []() {
         VM vm;
         vm.registerBuiltin("double", [](const std::vector<ValuePtr>& args) {
