@@ -1011,6 +1011,25 @@ void VM::defineExternClass(const std::string& className,
     globals[className] = classValue;
 }
 
+void VM::registerObject(const std::string& name, const std::string& classType) {
+    ValuePtr classValue = getGlobal(classType);
+    
+    if (!classValue->isClass()) {
+        runtimeError("Cannot register object: class '" + classType + "' not found");
+        return;
+    }
+    
+    ValuePtr instance = Value::makeObject();
+    
+    for (auto& prop : classValue->properties) {
+        instance->setProperty(prop.first, prop.second);
+    }
+    
+    instance->setProperty("__class__", classValue);
+    
+    globals[name] = instance;
+}
+
 // Error handling
 
 void VM::runtimeError(const std::string& message) {

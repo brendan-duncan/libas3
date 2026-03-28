@@ -239,6 +239,27 @@ static void init_vm_tests() {
             throw std::runtime_error("Runtime error: " + vm.getError());
         }
     });
+
+    suite.addTest("registerObject - Instance with Class Type", []() {
+        VM vm;
+        vm.defineExternClass("Shape", {
+            {"getType", [](const std::vector<ValuePtr>& args) {
+                return Value::makeString("circle");
+            }}
+        });
+
+        vm.registerObject("hair01", "Shape");
+
+        Parser parser("trace('Type:', hair01.getType());");
+        auto program = parser.parse();
+        Compiler compiler;
+        auto bytecode = compiler.compile(program.get());
+        vm.execute(bytecode);
+
+        if (vm.hasError()) {
+            throw std::runtime_error("Runtime error: " + vm.getError());
+        }
+    });
 }
 
 // Auto-initialize tests

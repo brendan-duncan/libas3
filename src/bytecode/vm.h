@@ -48,6 +48,10 @@ public:
     void defineExternClass(const std::string& className,
                            const std::map<std::string, NativeFunction>& methods);
 
+    // Register an object instance with a class type
+    // The class should be defined via defineExternClass or exist in globals
+    void registerObject(const std::string& name, const std::string& classType);
+
     // Error handling
     bool hasError() const { return hadError; }
     const std::string& getError() const { return errorMessage; }
