@@ -2,14 +2,14 @@
 
 ## Overview
 
-This is a **stack-based virtual machine** for executing ActionScript 3 bytecode. The design prioritizes simplicity, debuggability, and performance over the tree-walking interpreter.
+This is a **stack-based virtual machine** for executing ActionScript 3 bytecode. The design prioritizes simplicity, debuggability, and performance.
 
 ## Architecture
 
 ```
 ┌────────────┐     ┌──────────────┐     ┌────────────┐
 │   Parser   │────>│   Compiler   │────>│     VM     │
-│    (AST)   │     │ (AST→Bytecode│     │  (Execute) │
+│    (AST)   │     │(AST→Bytecode)│     │  (Execute) │
 └────────────┘     └──────────────┘     └────────────┘
 ```
 
@@ -224,20 +224,8 @@ vm.registerObject("hair01", "Shape");
 
 ## Next Steps
 
-What's implemented:
-
-1. ✅ Design instruction set (90+ opcodes)
-2. ✅ Implement Chunk with constant pool
-3. ✅ Implement Compiler (AST → Bytecode)
-4. ✅ Implement VM with full instruction dispatch
-5. ✅ Add disassembler
-6. ✅ Test & benchmark
-7. ✅ Native interop (registerBuiltin, defineExternClass, registerObject)
-
-## Advanced Optimizations (Future Work)
-
+- [ ] Improved garbage collection
 - [ ] Inline caching
 - [ ] Method dispatch optimization
 - [ ] Computed goto for dispatch
 - [ ] JIT compilation
-- [ ] Improved garbage collection
