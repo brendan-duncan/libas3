@@ -1,12 +1,12 @@
 # libas3 - ActionScript 3 Parser & Bytecode VM
 
-A complete ActionScript 3 parser and bytecode virtual machine written in C++17.
+An ActionScript 3 parser and bytecode virtual machine written in C++17.
 
 ## Features
 
-### ✅ Complete AS3 Parser
-- All statements (if, while, for, for-in, switch, try/catch, etc.)
-- All expressions (binary, unary, conditional, assignments, etc.)
+### ✅ AS3 Parser
+- Statements (if, while, for, for-in, switch, try/catch, etc.)
+- Expressions (binary, unary, conditional, assignments, etc.)
 - Functions with closures
 - Classes, interfaces, packages
 - Arrays and objects
@@ -15,8 +15,7 @@ A complete ActionScript 3 parser and bytecode virtual machine written in C++17.
 - **53/53 test cases passing**
 
 
-### ✅ Bytecode VM (Complete & Working)
-- 90+ optimized opcodes
+### ✅ Bytecode VM
 - Stack-based virtual machine
 - Constant pool management
 - Local variables with stack slots
@@ -200,14 +199,6 @@ The bytecode VM provides fast execution with a compact bytecode representation:
 - ✅ **Optimized instruction dispatch** - Switch-based dispatch with 90+ opcodes
 - ✅ **Compact bytecode** - Efficient constant pool and instruction encoding
 - ✅ **Stack-based architecture** - Minimal memory overhead
-- ✅ **Fast execution** - ~2-12 μs per iteration for typical operations (Release build)
-
-**Benchmark Results** (Release build):
-- Simple arithmetic: 1.9 μs per iteration (10k iterations)
-- Complex expressions: 2.4 μs per iteration (10k iterations)
-- Conditional logic: 1.7 μs per iteration (10k iterations)
-- Loops (10 iterations): 7.7 μs per run (1k runs)
-- Fibonacci iterative (15 iterations): 12.5 μs per run (1k runs)
 
 ## Example Programs
 
@@ -277,34 +268,7 @@ Compiles to:
 
 ## Roadmap
 
-### Phase 1: Parser ✅ DONE
-- [x] Complete AS3 parser
-- [x] All statements and expressions
-- [x] Error recovery and reporting
-- [x] 52 parser tests passing
-
-### Phase 2: Bytecode Compiler ✅ DONE
-- [x] Instruction set design (90+ opcodes)
-- [x] Chunk container with constant pool
-- [x] Complete AST → Bytecode compiler
-- [x] Bytecode disassembler
-- [x] 18 compiler tests passing
-
-### Phase 3: Bytecode VM ✅ DONE
-- [x] Value stack and call frames
-- [x] Instruction dispatch loop
-- [x] Variable storage (locals & globals)
-- [x] Native function calls
-- [x] Control flow (if/while/for/ternary)
-- [x] Arrays and objects
-- [x] All operators (arithmetic, comparison, logical, bitwise)
-- [x] Classes, inheritance, and OOP
-- [x] Custom built-in functions (registerBuiltin)
-- [x] Extern classes with native methods (defineExternClass)
-- [x] Object instance registration (registerObject)
-- [x] 37 VM tests + 8 performance benchmarks
-
-### Phase 4: Optimization 📋 PLANNED
+### Optimization 📋 PLANNED
 - [ ] Inline caching
 - [ ] Method dispatch optimization
 - [ ] Hot path detection
@@ -315,14 +279,6 @@ Compiles to:
 - [BYTECODE_DESIGN.md](src/bytecode/BYTECODE_DESIGN.md) - Bytecode VM architecture
 - [AST Nodes](src/ast/ast_nodes.h) - Complete AST structure
 - [Test Framework](test/README.md) - Test suite documentation
-
-## Contributions
-
-This is a learning/reference implementation. Feel free to use it for:
-- Understanding AS3 parsing
-- Learning compiler design
-- Building your own interpreters
-- Migrating Flash content
 
 ## License
 
@@ -335,29 +291,3 @@ Inspired by:
 - Crafting Interpreters by Robert Nystrom
 - Lua VM design
 - V8 JavaScript engine
-
-## Status
-
-**Current State**: Production-ready AS3 parser and complete bytecode virtual machine with native interop.
-
-**What Works**:
-- ✅ Full AS3 parser (53/53 tests passing)
-- ✅ Bytecode compiler with optimizations (18/18 tests passing)
-- ✅ Stack-based VM with full instruction set (36/36 tests passing)
-- ✅ Control flow (if/while/for/ternary)
-- ✅ **Function calls (user-defined & native)**
-- ✅ Arrays, objects
-- ✅ All operators (arithmetic, logical, bitwise, comparison)
-- ✅ **Classes and OOP (definition, instantiation, inheritance)**
-- ✅ **Custom built-in functions (registerBuiltin)**
-- ✅ **Extern classes with native methods (defineExternClass)**
-- ✅ **Pre-registered object instances (registerObject)**
-- ✅ Performance benchmarks (8/8 tests passing)
-- ✅ **116 total tests passing**
-
-**Not Yet Implemented**:
-- [ ] Closures with upvalues in VM
-- [ ] Recursive function calls
-- [ ] Advanced VM optimizations (inline caching, computed goto, JIT)
-- [ ] For-in loops in bytecode compiler
-- [ ] Exception handling in VM
