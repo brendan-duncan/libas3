@@ -32,11 +32,14 @@ This is a **stack-based virtual machine** for executing ActionScript 3 bytecode.
    - Upvalue (closure) handling
    - Jump patching for control flow
 
-4. **VM** (`vm.h/cpp` - TODO)
+4. **VM** (`vm.h/cpp` - ✅ DONE)
    - Instruction dispatch loop
    - Value stack
    - Call frames
    - Global variables
+   - Native function callbacks
+   - Class and OOP support
+   - Native interop (registerBuiltin, defineExternClass, registerObject)
 
 ## Instruction Set
 
@@ -191,43 +194,45 @@ trace(result);
 ## Migration Path from Tree-Walking
 
 ### Phase 1: Bytecode Infrastructure (✅ DONE)
-- [x] OpCode definitions
+- [x] OpCode definitions (90+ opcodes)
 - [x] Chunk container
 - [x] Compiler (AST → Bytecode)
 - [x] Disassembler
 
-### Phase 2: Basic VM (TODO)
-- [ ] Value stack
-- [ ] Instruction dispatch
-- [ ] Arithmetic & comparison
-- [ ] Variables (global & local)
-- [ ] Basic control flow
+### Phase 2: Basic VM (✅ DONE)
+- [x] Value stack
+- [x] Instruction dispatch
+- [x] Arithmetic & comparison
+- [x] Variables (global & local)
+- [x] Basic control flow
 
-### Phase 3: Functions & Closures (TODO)
-- [ ] Call frames
-- [ ] Function calls
-- [ ] Closures & upvalues
-- [ ] Return values
+### Phase 3: Functions & Closures (✅ DONE)
+- [x] Call frames
+- [x] Function calls
+- [x] Closures (basic support)
+- [x] Return values
+- [x] Native function calls
 
-### Phase 4: Objects & Arrays (TODO)
-- [ ] Object creation
-- [ ] Property access
-- [ ] Array operations
-- [ ] Method calls
+### Phase 4: Objects & Arrays (✅ DONE)
+- [x] Object creation
+- [x] Property access
+- [x] Array operations
+- [x] Method calls
 
-### Phase 5: Classes (TODO)
-- [ ] Class definitions
-- [ ] Inheritance
-- [ ] Constructors
-- [ ] Super calls
+### Phase 5: Classes (✅ DONE)
+- [x] Class definitions
+- [x] Inheritance
+- [x] Constructors
+- [x] Super calls
 
-### Phase 6: Optimization (TODO)
-- [ ] Inline caching
-- [ ] Method dispatch optimization
-- [ ] Hot path detection
+### Phase 6: Native Interop (✅ DONE)
+- [x] Custom built-in functions (registerBuiltin)
+- [x] Extern classes with native methods (defineExternClass)
+- [x] Object instance registration (registerObject)
 
 ## Usage
 
+### Basic Compilation & Execution
 ```cpp
 // Compile
 as3::Compiler compiler;
@@ -239,6 +244,32 @@ bytecode->chunk.disassemble("main");
 // Execute
 as3::VM vm;
 vm.execute(bytecode);
+```
+
+### Custom Built-in Functions
+```cpp
+as3::VM vm;
+vm.registerBuiltin("double", [](const std::vector<as3::ValuePtr>& args) {
+    return as3::Value::makeNumber(args[0]->toNumber() * 2);
+});
+// Now usable in AS3: double(21) returns 42
+```
+
+### Extern Classes
+```cpp
+vm.defineExternClass("Math", {
+    {"abs", [](const std::vector<as3::ValuePtr>& args) {
+        return as3::Value::makeNumber(std::abs(args[0]->toNumber()));
+    }}
+});
+// Now usable in AS3: new Math().abs(-5)
+```
+
+### Pre-registered Objects
+```cpp
+vm.defineExternClass("Shape", {...});
+vm.registerObject("hair01", "Shape");
+// Now usable in AS3: hair01.getType()
 ```
 
 ## Testing Strategy
@@ -255,21 +286,30 @@ vm.execute(bytecode);
    - Fibonacci (recursion)
    - Array operations (loops)
    - Object manipulation
+   - Built-in function performance
 
 4. **Compatibility Tests**
-   - All 52 parser tests
-   - All interpreter demo programs
+   - All 53 parser tests
+   - All 18 bytecode compiler tests
+   - All 37 VM tests (including native interop)
+   - 8 benchmark tests
 
 ## Next Steps
 
-To complete the bytecode VM:
+What's implemented:
 
-1. ✅ Design instruction set
-2. ✅ Implement Chunk
-3. ✅ Implement Compiler
-4. ⏳ Implement VM
-5. ⏳ Add disassembler
-6. ⏳ Test & benchmark
-7. ⏳ Optimize hot paths
+1. ✅ Design instruction set (90+ opcodes)
+2. ✅ Implement Chunk with constant pool
+3. ✅ Implement Compiler (AST → Bytecode)
+4. ✅ Implement VM with full instruction dispatch
+5. ✅ Add disassembler
+6. ✅ Test & benchmark (116 tests passing)
+7. ✅ Native interop (registerBuiltin, defineExternClass, registerObject)
 
-Ready to implement the VM next!
+## Advanced Optimizations (Future Work)
+
+- [ ] Inline caching
+- [ ] Method dispatch optimization
+- [ ] Computed goto for dispatch
+- [ ] JIT compilation
+- [ ] Improved garbage collection
