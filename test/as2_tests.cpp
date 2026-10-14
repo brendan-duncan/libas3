@@ -184,6 +184,23 @@ static void init_as2_tests() {
         expect(run(vm, "trace(count + 1, this == undefined);", rootValue), "3 false\n");
     });
 
+    suite.addTest("getProperty and setProperty name the property", []() {
+        VM vm;
+        std::string seen;
+        vm.registerBuiltin("getProperty", [&seen](const std::vector<ValuePtr>& args) {
+            seen += args[0]->toString() + ":" + args[1]->toString() + " ";
+            return Value::makeNumber(7);
+        });
+        vm.registerBuiltin("setProperty", [&seen](const std::vector<ValuePtr>& args) {
+            seen += args[0]->toString() + ":" + args[1]->toString() + "=" + args[2]->toString() + " ";
+            return Value::makeUndefined();
+        });
+        // Even with a variable called _x about.
+        expect(run(vm, "var _x = 99;\nx = getProperty(\"hat\", _x);\nsetProperty(\"hat\", _visible, x + 1);\ntrace(x);"),
+               "7\n");
+        expect(seen, "hat:_x hat:_visible=8 ");
+    });
+
     suite.addTest("Calls from the host", []() {
         VM vm;
         run(vm, "function add(a, b) { return a + b; }");

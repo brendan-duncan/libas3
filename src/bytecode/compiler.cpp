@@ -655,9 +655,21 @@ void Compiler::compileCallExpression(CallExpression* expr, Chunk& chunk) {
         // Compile callee
         compileExpression(expr->callee.get(), chunk);
 
+        // ActionScript 1's getProperty(target, _x) and setProperty(target,
+        // _x, value) name the property, as _x, _visible and the like: the
+        // name is given as a string, not looked up as a variable (inside a
+        // clip, a bare _x is the clip's own).
+        const auto* function = dynamic_cast<Identifier*>(expr->callee.get());
+        const bool namesProperty = function && (function->name == "getProperty" || function->name == "setProperty");
+
         // Compile arguments
-        for (auto& arg : expr->arguments) {
-            compileExpression(arg.get(), chunk);
+        for (size_t i = 0; i < expr->arguments.size(); ++i) {
+            auto* property = namesProperty && i == 1 ? dynamic_cast<Identifier*>(expr->arguments[i].get()) : nullptr;
+            if (property && !property->name.empty() && property->name[0] == '_') {
+                emitConstant(Value::makeString(property->name), chunk);
+            } else {
+                compileExpression(expr->arguments[i].get(), chunk);
+            }
         }
 
         // Emit call
