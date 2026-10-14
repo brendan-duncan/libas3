@@ -240,6 +240,24 @@ std::unique_ptr<AstNode> Parser::parseTopLevel() {
         return parsePackage();
     }
 
+    // public class Main ..., public function ..., in a package.
+    if (check(KeywordType::Public) || check(KeywordType::Private) || check(KeywordType::Protected) ||
+        check(KeywordType::Internal) || check(KeywordType::Static) || check(KeywordType::Final) ||
+        check(KeywordType::Dynamic) || check(KeywordType::Native) || check(KeywordType::Override)) {
+        auto attrs = parseAttributes();
+        if (check(KeywordType::Class)) {
+            return parseClassDeclaration();
+        }
+        if (check(KeywordType::Function)) {
+            return parseFunctionDefinitionWithAttributes(std::move(attrs));
+        }
+        if (check(KeywordType::Var) || check(KeywordType::Const)) {
+            return parseVariableStatementWithAttributes(std::move(attrs));
+        }
+        addError("Expected a class, function or variable after its attributes");
+        return nullptr;
+    }
+
     if (check(KeywordType::Import)) {
         // Parse single import as a statement-like node
         auto imports = parseImports();
@@ -253,7 +271,8 @@ std::unique_ptr<AstNode> Parser::parseTopLevel() {
 }
 
 std::unique_ptr<PackageDefinition> Parser::parsePackage() {
-    std::string packageName = parseQualifiedName();
+    // The top-level package has no name: package { ... }.
+    std::string packageName = check(TokenType::LBrace) ? std::string() : parseQualifiedName();
     auto name = std::make_unique<Identifier>(packageName);
 
     expectToken(TokenType::LBrace, "Expected '{' after package name");

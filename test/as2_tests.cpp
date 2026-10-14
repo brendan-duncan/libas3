@@ -227,6 +227,28 @@ static void init_as2_tests() {
                "hat 3 0\n");
     });
 
+    suite.addTest("A class file, as a document class is written", []() {
+        VM vm;
+        expect(run(vm,
+                   "package {\n"
+                   "    import flash.display.MovieClip;\n"
+                   "    import flash.events.MouseEvent;\n"
+                   "    public class Main extends MovieClip {\n"
+                   "        private var count:int = 0;\n"
+                   "        public function Main() {\n"
+                   "            count = 5;\n"
+                   "        }\n"
+                   "        public function add(amount:int):int {\n"
+                   "            count += amount;\n"
+                   "            return count;\n"
+                   "        }\n"
+                   "    }\n"
+                   "}\n"
+                   "var main = new Main();\n"
+                   "trace(main.add(2));\n"),
+               "7\n");
+    });
+
     suite.addTest("new on a function", []() {
         VM vm;
         // An ActionScript 1 constructor function.

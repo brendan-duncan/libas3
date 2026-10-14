@@ -1,4 +1,5 @@
 #include "compiler.h"
+#include <cmath>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
@@ -99,11 +100,19 @@ std::shared_ptr<BytecodeFunction> Compiler::compile(Program* program) {
 
     Chunk& chunk = scriptFunction->chunk;
 
-    // Compile all statements
-    for (auto& stmt : program->statements) {
-        if (auto* s = dynamic_cast<Statement*>(stmt.get())) {
+    // Compile all statements; what a package holds is compiled as if at the
+    // top level, so its classes and functions are globals by their names.
+    std::function<void(AstNode*)> compileNode = [&](AstNode* node) {
+        if (auto* package = dynamic_cast<PackageDefinition*>(node)) {
+            for (auto& member : package->members) {
+                compileNode(member.get());
+            }
+        } else if (auto* s = dynamic_cast<Statement*>(node)) {
             compileStatement(s, chunk);
         }
+    };
+    for (auto& stmt : program->statements) {
+        compileNode(stmt.get());
     }
 
     // Implicit return undefined at end
@@ -440,7 +449,34 @@ void Compiler::compileClassDefinition(ClassDefinition* stmt, Chunk& chunk) {
             emitOpCode(OpCode::OP_METHOD, chunk);
             chunk.writeU16(methodNameConst);
         }
-        // TODO: Handle variable members (fields)
+        // Fields: each starts as its initializer's value, or as its type's
+        // default (0 for int and uint, NaN for Number, false for Boolean,
+        // null otherwise), kept on the class as a method is, so a new
+        // instance has it.
+        else if (auto* field = dynamic_cast<VariableDefinition*>(member.get())) {
+            for (auto& declaration : field->declarations) {
+                if (!declaration || !declaration->id) {
+                    continue;
+                }
+                if (declaration->init) {
+                    compileExpression(declaration->init.get(), chunk);
+                } else {
+                    const std::string type = declaration->type ? declaration->type->name : std::string();
+                    if (type == "int" || type == "uint") {
+                        emitOpCode(OpCode::OP_NUMBER_0, chunk);
+                    } else if (type == "Number") {
+                        emitConstant(Value::makeNumber(std::nan("")), chunk);
+                    } else if (type == "Boolean") {
+                        emitOpCode(OpCode::OP_FALSE, chunk);
+                    } else {
+                        emitOpCode(OpCode::OP_NULL, chunk);
+                    }
+                }
+                uint16_t fieldName = identifierConstant(declaration->id->name, chunk);
+                emitOpCode(OpCode::OP_METHOD, chunk);
+                chunk.writeU16(fieldName);
+            }
+        }
     }
 
     // Pop the class from the stack
