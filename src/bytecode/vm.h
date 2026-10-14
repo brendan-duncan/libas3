@@ -34,8 +34,25 @@ public:
     VM();
     explicit VM(VM* parent);
 
-    // Execute a bytecode function
-    void execute(std::shared_ptr<BytecodeFunction> function);
+    // Execute a bytecode function. With a scope, the script runs on it as
+    // ActionScript runs a frame script on its timeline: it is 'this', names
+    // not found as locals are looked for on it before the globals, and
+    // assigning a name that is not a global (or declaring one with var at
+    // the top level) keeps it there.
+    void execute(std::shared_ptr<BytecodeFunction> function, ValuePtr scope = nullptr);
+
+    // Calls a function (compiled or native) from the host, with these
+    // arguments, 'this' and scope (see execute), as when an event it
+    // handles comes. Returns what it returns; undefined, with hasError(),
+    // when it failed. Can be called while a script runs, from a native
+    // function, as well as between scripts.
+    ValuePtr call(ValuePtr function, const std::vector<ValuePtr>& args = {}, ValuePtr thisValue = nullptr,
+                  ValuePtr scope = nullptr);
+
+    // Whether two values are equal as ActionScript's == has it: numbers,
+    // strings and booleans compared as numbers when their types differ,
+    // null equal to undefined.
+    static bool looselyEqual(const ValuePtr& a, const ValuePtr& b);
 
     // Get/set global variables (checks parent if not found locally)
     ValuePtr getGlobal(const std::string& name);
@@ -56,20 +73,35 @@ public:
     // Get parent VM (may be nullptr)
     VM* getParent() const { return parent; }
 
-    // Error handling
+    // Error handling: the last run's error, with the line it was on (-1
+    // when not known). Runtime errors stop the script and are kept here;
+    // they are not thrown out of the VM or printed.
     bool hasError() const { return hadError; }
     const std::string& getError() const { return errorMessage; }
+    int getErrorLine() const { return errorLine; }
 
 private:
     VM* parent;
     std::vector<ValuePtr> stack;            // Value stack
     std::vector<CallFrame> frames;          // Call frames
     std::map<std::string, ValuePtr> globals; // Global variables (local + inherited)
+    ValuePtr scope;                         // The timeline a script runs on (see execute)
     bool hadError;
     std::string errorMessage;
+    int errorLine = -1;
 
-    // Main execution loop
-    void run();
+    // Main execution loop: runs until the frame count is back down to
+    // stopDepth, or to the script's end.
+    static constexpr size_t kToTheEnd = static_cast<size_t>(-1);
+    void run(size_t stopDepth = kToTheEnd);
+
+    // A name not found as a local: on the scope, then the globals.
+    ValuePtr lookup(const std::string& name);
+    // Assigning such a name: a global already there, else the scope's.
+    void assign(const std::string& name, ValuePtr value);
+    // The arguments on top of the stack made the function's own count:
+    // missing ones undefined, extra ones dropped.
+    void fitArguments(uint8_t given, int wanted);
 
     // Stack operations
     void push(ValuePtr value);

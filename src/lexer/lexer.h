@@ -29,6 +29,8 @@ private:
     size_t _currentTokenIndex;
     uint32_t _line;
     uint32_t _column;
+    // A line break was skipped since the last token.
+    bool _newLineSeen = false;
     std::string _errors;
 
     static bool isDigit(char c);

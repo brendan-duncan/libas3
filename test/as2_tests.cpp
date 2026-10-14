@@ -1,0 +1,210 @@
+#include "test_runner.h"
+#include "../src/parser/parser.h"
+#include "../src/bytecode/compiler.h"
+#include "../src/bytecode/vm.h"
+#include <stdexcept>
+
+using namespace as3;
+using namespace as3test;
+
+// ActionScript 1 and 2, as the scripts in old Flash movies are written, and
+// what a host such as a player needs to run them.
+TEST_SUITE(AS2)
+
+namespace {
+
+std::shared_ptr<BytecodeFunction> compileSource(const std::string& code) {
+    Parser parser(code);
+    auto program = parser.parse();
+    if (parser.hasErrors()) {
+        throw std::runtime_error("Parse error: " + parser.getErrors());
+    }
+    Compiler compiler;
+    return compiler.compile(program.get());
+}
+
+// Runs code, gathering what it traces, one line a call.
+std::string run(VM& vm, const std::string& code, ValuePtr scope = nullptr) {
+    std::string out;
+    vm.registerBuiltin("trace", [&out](const std::vector<ValuePtr>& args) {
+        for (size_t i = 0; i < args.size(); ++i) {
+            out += (i ? " " : "") + args[i]->toString();
+        }
+        out += "\n";
+        return Value::makeUndefined();
+    });
+    vm.execute(compileSource(code), scope);
+    if (vm.hasError()) {
+        throw std::runtime_error("Runtime error: " + vm.getError());
+    }
+    return out;
+}
+
+void expect(const std::string& got, const std::string& wanted) {
+    if (got != wanted) {
+        throw std::runtime_error("got \"" + got + "\", wanted \"" + wanted + "\"");
+    }
+}
+
+// A movie clip as a host keeps it: _visible and _x worked out by the host,
+// and a method bound to the clip.
+class Clip : public HostObject {
+public:
+    bool visible = true;
+    double x = 0;
+    int frame = 1;
+
+    ValuePtr get(const std::string& name) override {
+        if (name == "_visible") return Value::makeBoolean(visible);
+        if (name == "_x") return Value::makeNumber(x);
+        if (name == "gotoAndStop") {
+            return Value::makeNativeFunction([this](const std::vector<ValuePtr>& args) {
+                frame = args.empty() ? frame : static_cast<int>(args[0]->toNumber());
+                return Value::makeUndefined();
+            });
+        }
+        return nullptr;
+    }
+
+    bool set(const std::string& name, ValuePtr value) override {
+        if (name == "_visible") {
+            visible = value->toBoolean();
+            return true;
+        }
+        if (name == "_x") {
+            x = value->toNumber();
+            return true;
+        }
+        return false;
+    }
+};
+
+} // namespace
+
+static void init_as2_tests() {
+    auto& suite = suite_AS2;
+
+    suite.addTest("Statements end at line breaks", []() {
+        VM vm;
+        expect(run(vm, "var a = 1\nvar b = 2\ntrace(a + b)\n"), "3\n");
+        expect(run(vm, "function f() {\n  return\n}\ntrace(f())"), "undefined\n");
+    });
+
+    suite.addTest("If without else", []() {
+        VM vm;
+        expect(run(vm, "var n = 0;\nif (n == 0) {\n\ttrace('then');\n}\ntrace('after');\n"), "then\nafter\n");
+    });
+
+    suite.addTest("Loose equality", []() {
+        VM vm;
+        expect(run(vm, "trace(false == '0', true == '1', 1 == '1', null == undefined, 0 == null, '12abc' == 12, "
+                       "'a' != 'a');"),
+               "true true true true false false false\n");
+    });
+
+    suite.addTest("Missing and extra arguments", []() {
+        VM vm;
+        expect(run(vm, "function f(a, b) { return b; }\ntrace(f(1), f(1, 2, 3));"), "undefined 2\n");
+    });
+
+    suite.addTest("Runtime errors are kept, not thrown", []() {
+        VM vm;
+        vm.execute(compileSource("var x = 1;\nnothing();"));
+        if (!vm.hasError() || vm.getError().empty()) {
+            throw std::runtime_error("no error kept");
+        }
+        // And the VM runs on afterwards.
+        expect(run(vm, "trace('again');"), "again\n");
+    });
+
+    suite.addTest("on, onClipEvent and tellTarget become calls", []() {
+        VM vm;
+        std::vector<std::string> events;
+        ValuePtr handler;
+        vm.registerBuiltin("__on", [&](const std::vector<ValuePtr>& args) {
+            for (const ValuePtr& event : args[0]->elements) {
+                events.push_back(event->toString());
+            }
+            handler = args[1];
+            return Value::makeUndefined();
+        });
+        expect(run(vm, "on (release, keyPress \"<Enter>\") {\n\ttrace('clicked');\n}\n"), "");
+        if (events.size() != 2 || events[0] != "release" || events[1] != "keyPress <Enter>") {
+            throw std::runtime_error("events not given");
+        }
+        // The host runs the block when the event comes.
+        std::string out;
+        vm.registerBuiltin("trace", [&out](const std::vector<ValuePtr>& args) {
+            out += args[0]->toString();
+            return Value::makeUndefined();
+        });
+        vm.call(handler);
+        expect(out, "clicked");
+        if (vm.hasError()) {
+            throw std::runtime_error(vm.getError());
+        }
+        // A function called on is still a call.
+        vm.registerBuiltin("on", [](const std::vector<ValuePtr>& args) {
+            return Value::makeNumber(args[0]->toNumber() * 2);
+        });
+        expect(run(vm, "trace(on(4));"), "8\n");
+    });
+
+    suite.addTest("ifFrameLoaded is an if", []() {
+        VM vm;
+        int asked = 0;
+        vm.registerBuiltin("ifFrameLoaded", [&asked](const std::vector<ValuePtr>& args) {
+            asked = static_cast<int>(args[0]->toNumber());
+            return Value::makeBoolean(true);
+        });
+        expect(run(vm, "ifFrameLoaded (10) {\n\ttrace('loaded');\n}\n"), "loaded\n");
+        if (asked != 10) {
+            throw std::runtime_error("frame not given");
+        }
+    });
+
+    suite.addTest("Host objects and the timeline's scope", []() {
+        VM vm;
+        auto root = std::make_shared<Clip>();
+        auto hat = std::make_shared<Clip>();
+        ValuePtr rootValue = Value::makeHostObject(root);
+        rootValue->setProperty("hat", Value::makeHostObject(hat));
+        // Bare names are the timeline's: its clips, and variables kept on it.
+        expect(run(vm, "hat._visible = false;\nhat._x = hat._x + 20;\nhat.gotoAndStop(3);\ncount = 2;\n"
+                       "trace(hat._visible, hat._x, count);\n",
+                   rootValue),
+               "false 20 2\n");
+        if (hat->visible || hat->x != 20 || hat->frame != 3) {
+            throw std::runtime_error("host object not changed");
+        }
+        if (rootValue->getProperty("count")->toNumber() != 2) {
+            throw std::runtime_error("variable not kept on the timeline");
+        }
+        // Another script on the same timeline sees them.
+        expect(run(vm, "trace(count + 1, this == undefined);", rootValue), "3 false\n");
+    });
+
+    suite.addTest("Calls from the host", []() {
+        VM vm;
+        run(vm, "function add(a, b) { return a + b; }");
+        ValuePtr add = vm.getGlobal("add");
+        ValuePtr sum = vm.call(add, {Value::makeNumber(2), Value::makeNumber(3)});
+        if (vm.hasError() || sum->toNumber() != 5) {
+            throw std::runtime_error("call failed: " + vm.getError());
+        }
+        // A failing function leaves the error and the VM usable.
+        run(vm, "function bad() { nothing(); }");
+        vm.call(vm.getGlobal("bad"));
+        if (!vm.hasError()) {
+            throw std::runtime_error("no error from the call");
+        }
+        sum = vm.call(add, {Value::makeNumber(1), Value::makeNumber(1)});
+        if (vm.hasError() || sum->toNumber() != 2) {
+            throw std::runtime_error("VM not usable after an error");
+        }
+    });
+}
+
+static struct AS2TestInit {
+    AS2TestInit() { init_as2_tests(); }
+} as2_test_init;

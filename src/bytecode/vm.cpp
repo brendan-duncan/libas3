@@ -2,8 +2,20 @@
 #include "opcode.h"
 #include <iostream>
 #include <cmath>
+#include <algorithm>
+#include <stdexcept>
 
 namespace as3 {
+
+namespace {
+
+// A runtime error: raised to stop the script, caught where it was run.
+class VMError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+} // namespace
 
 VM::VM()
     : parent(nullptr)
@@ -73,20 +85,101 @@ void VM::setupBuiltins() {
     globals["Infinity"] = Value::makeNumber(std::numeric_limits<double>::infinity());
 }
 
-void VM::execute(std::shared_ptr<BytecodeFunction> function) {
+void VM::execute(std::shared_ptr<BytecodeFunction> function, ValuePtr scopeValue) {
     resetStack();
     frames.clear();
-    frames.emplace_back(function.get(), 0);
+    frames.emplace_back(function.get(), 0, scopeValue);
     hadError = false;
+    errorMessage.clear();
+    errorLine = -1;
+    ValuePtr savedScope = scope;
+    scope = scopeValue;
 
     try {
         run();
+    } catch (const VMError&) {
+        // Kept by runtimeError.
     } catch (const std::exception& e) {
-        runtimeError(e.what());
+        hadError = true;
+        errorMessage = e.what();
+    }
+    scope = savedScope;
+    frames.clear();
+    resetStack();
+}
+
+ValuePtr VM::call(ValuePtr function, const std::vector<ValuePtr>& args, ValuePtr thisValue, ValuePtr scopeValue) {
+    hadError = false;
+    errorMessage.clear();
+    errorLine = -1;
+    if (!function || !function->isFunction()) {
+        hadError = true;
+        errorMessage = "Can only call functions";
+        return Value::makeUndefined();
+    }
+    ValuePtr savedScope = scope;
+    if (scopeValue) {
+        scope = scopeValue;
+    }
+    const size_t depth = frames.size();
+    const size_t base = stack.size();
+    ValuePtr result = Value::makeUndefined();
+    try {
+        if (function->type == ValueType::NativeFunction) {
+            result = function->nativeFunc(args);
+        } else {
+            BytecodeFunction* func = function->bytecodeFunc.get();
+            push(function);
+            for (size_t i = 0; i < args.size() && i < 255; ++i) {
+                push(args[i]);
+            }
+            fitArguments(static_cast<uint8_t>(std::min<size_t>(args.size(), 255)), func->arity);
+            frames.emplace_back(func, stack.size() - func->arity, thisValue);
+            run(depth);
+            result = pop();
+        }
+    } catch (const VMError&) {
+        // Kept by runtimeError.
+    } catch (const std::exception& e) {
+        hadError = true;
+        errorMessage = e.what();
+    }
+    frames.resize(depth, CallFrame(nullptr, 0));
+    while (stack.size() > base) {
+        stack.pop_back();
+    }
+    scope = savedScope;
+    return hadError ? Value::makeUndefined() : result;
+}
+
+ValuePtr VM::lookup(const std::string& name) {
+    if (scope && globals.find(name) == globals.end()) {
+        ValuePtr value = scope->getProperty(name);
+        if (value && !value->isUndefined()) {
+            return value;
+        }
+    }
+    return getGlobal(name);
+}
+
+void VM::assign(const std::string& name, ValuePtr value) {
+    if (scope && globals.find(name) == globals.end()) {
+        scope->setProperty(name, value);
+        return;
+    }
+    setGlobal(name, value);
+}
+
+void VM::fitArguments(uint8_t given, int wanted) {
+    for (int i = given; i < wanted; ++i) {
+        push(Value::makeUndefined());
+    }
+    for (int i = wanted; i < given; ++i) {
+        pop();
     }
 }
 
-void VM::run() {
+void VM::run(size_t stopDepth) {
     while (true) {
         CallFrame& frame = currentFrame();
         Chunk& chunk = currentChunk();
@@ -142,7 +235,7 @@ void VM::run() {
             case OpCode::OP_GET_GLOBAL: {
                 uint16_t nameIndex = readU16();
                 ValuePtr name = chunk.getConstant(nameIndex);
-                ValuePtr value = getGlobal(name->toString());
+                ValuePtr value = lookup(name->toString());
                 push(value);
                 break;
             }
@@ -150,14 +243,14 @@ void VM::run() {
             case OpCode::OP_SET_GLOBAL: {
                 uint16_t nameIndex = readU16();
                 ValuePtr name = chunk.getConstant(nameIndex);
-                setGlobal(name->toString(), peek(0));
+                assign(name->toString(), peek(0));
                 break;
             }
 
             case OpCode::OP_DEFINE_GLOBAL: {
                 uint16_t nameIndex = readU16();
                 ValuePtr name = chunk.getConstant(nameIndex);
-                setGlobal(name->toString(), pop());
+                assign(name->toString(), pop());
                 break;
             }
 
@@ -357,17 +450,14 @@ void VM::run() {
                     // Bytecode function call
                     BytecodeFunction* func = callee->bytecodeFunc.get();
 
-                    // Check arity
-                    if (argCount != func->arity) {
-                        runtimeError("Expected " + std::to_string(func->arity) +
-                                   " arguments but got " + std::to_string(argCount));
-                        return;
-                    }
+                    // As ActionScript does, missing arguments are
+                    // undefined and extra ones are dropped.
+                    fitArguments(argCount, func->arity);
 
                     // Create new call frame
                     // Stack layout: [... function arg0 arg1 ...]
                     // stackOffset points to arg0 (first local/parameter)
-                    size_t stackOffset = stack.size() - argCount;
+                    size_t stackOffset = stack.size() - func->arity;
                     frames.emplace_back(func, stackOffset);
 
                     // Execution continues in the new frame
@@ -405,13 +495,6 @@ void VM::run() {
                     // Bytecode function call with 'this' binding
                     BytecodeFunction* func = callee->bytecodeFunc.get();
 
-                    // Check arity
-                    if (argCount != func->arity) {
-                        runtimeError("Expected " + std::to_string(func->arity) +
-                                   " arguments but got " + std::to_string(argCount));
-                        return;
-                    }
-
                     // Need to reorganize stack to remove receiver from under the arguments
                     // Current: [... receiver function arg0 arg1 ...]
                     // Need: [... function arg0 arg1 ...] with receiver saved in thisBinding
@@ -436,9 +519,10 @@ void VM::run() {
                         push(args[i]);
                     }
 
-                    // Now stack is: [... function arg0 arg1 ...]
-                    // stackOffset points to arg0 (first local/parameter)
-                    size_t stackOffset = stack.size() - argCount;
+                    // Now stack is: [... function arg0 arg1 ...], fitted
+                    // to the function's own count of arguments.
+                    fitArguments(argCount, func->arity);
+                    size_t stackOffset = stack.size() - func->arity;
                     frames.emplace_back(func, stackOffset, receiver);
 
                     // Execution continues in the new frame
@@ -455,17 +539,18 @@ void VM::run() {
                 // Check if this is a constructor return
                 bool wasConstructor = frame.isConstructor;
                 ValuePtr constructorInstance = frame.constructorInstance;
+                const size_t stackOffset = frame.stackOffset;
 
                 // Pop frame
                 frames.pop_back();
 
-                if (frames.empty()) {
+                if (frames.empty() && stopDepth == kToTheEnd) {
                     // Top-level return
                     return;
                 }
 
                 // Pop all locals from the returning function
-                while (stack.size() > frame.stackOffset) {
+                while (stack.size() > stackOffset) {
                     pop();
                 }
 
@@ -486,6 +571,10 @@ void VM::run() {
                 } else {
                     // Regular function, push return value
                     push(result);
+                }
+                // A function the host called (see call) is done.
+                if (frames.size() == stopDepth) {
+                    return;
                 }
                 break;
             }
@@ -843,42 +932,53 @@ void VM::execNot() {
 
 // Comparison operations
 
+bool VM::looselyEqual(const ValuePtr& a, const ValuePtr& b) {
+    if (a->type == b->type) {
+        if (a->isNumber()) {
+            return a->numberValue == b->numberValue;
+        }
+        if (a->isString()) {
+            return a->stringValue == b->stringValue;
+        }
+        if (a->isBoolean()) {
+            return a->boolValue == b->boolValue;
+        }
+        if (a->isUndefined() || a->isNull()) {
+            return true;
+        }
+        return a.get() == b.get();
+    }
+    const bool aNothing = a->isUndefined() || a->isNull();
+    const bool bNothing = b->isUndefined() || b->isNull();
+    if (aNothing || bNothing) {
+        return aNothing && bNothing;
+    }
+    // A boolean, or a number against a string: as numbers.
+    const bool aPrimitive = a->isNumber() || a->isString() || a->isBoolean();
+    const bool bPrimitive = b->isNumber() || b->isString() || b->isBoolean();
+    if (aPrimitive && bPrimitive) {
+        return a->toNumber() == b->toNumber();
+    }
+    // An object against a primitive: the object as a string.
+    if (aPrimitive != bPrimitive) {
+        const ValuePtr& object = aPrimitive ? b : a;
+        const ValuePtr& primitive = aPrimitive ? a : b;
+        ValuePtr asString = Value::makeString(object->toString());
+        return looselyEqual(asString, primitive);
+    }
+    return false;
+}
+
 void VM::execEqual() {
     ValuePtr b = pop();
     ValuePtr a = pop();
-
-    if (a->type == b->type) {
-        if (a->isNumber()) {
-            push(Value::makeBoolean(a->numberValue == b->numberValue));
-        } else if (a->isString()) {
-            push(Value::makeBoolean(a->stringValue == b->stringValue));
-        } else if (a->isBoolean()) {
-            push(Value::makeBoolean(a->boolValue == b->boolValue));
-        } else {
-            push(Value::makeBoolean(a.get() == b.get()));
-        }
-    } else {
-        push(Value::makeBoolean(false));
-    }
+    push(Value::makeBoolean(looselyEqual(a, b)));
 }
 
 void VM::execNotEqual() {
     ValuePtr b = pop();
     ValuePtr a = pop();
-
-    if (a->type == b->type) {
-        if (a->isNumber()) {
-            push(Value::makeBoolean(a->numberValue != b->numberValue));
-        } else if (a->isString()) {
-            push(Value::makeBoolean(a->stringValue != b->stringValue));
-        } else if (a->isBoolean()) {
-            push(Value::makeBoolean(a->boolValue != b->boolValue));
-        } else {
-            push(Value::makeBoolean(a.get() != b.get()));
-        }
-    } else {
-        push(Value::makeBoolean(true));
-    }
+    push(Value::makeBoolean(!looselyEqual(a, b)));
 }
 
 void VM::execStrictEqual() {
@@ -1044,18 +1144,12 @@ void VM::registerObject(const std::string& name, const std::string& classType) {
 void VM::runtimeError(const std::string& message) {
     hadError = true;
     errorMessage = message;
-
-    CallFrame& frame = currentFrame();
-    size_t instruction = frame.ip - 1;
-    int line = currentChunk().getLine(instruction);
-
-    std::cerr << "Runtime error";
-    if (line >= 0) {
-        std::cerr << " at line " << line;
+    errorLine = -1;
+    if (!frames.empty() && frames.back().function) {
+        const CallFrame& frame = frames.back();
+        errorLine = currentChunk().getLine(frame.ip > 0 ? frame.ip - 1 : 0);
     }
-    std::cerr << ": " << message << std::endl;
-
-    throw std::runtime_error(message);
+    throw VMError(message);
 }
 
 } // namespace as3

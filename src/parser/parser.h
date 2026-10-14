@@ -71,6 +71,8 @@ private:
     std::unique_ptr<Statement> parseFunctionDeclaration();
     std::unique_ptr<Statement> parseClassDeclaration();
     std::unique_ptr<Statement> parseNamespaceDeclaration();
+    std::unique_ptr<Statement> parseLegacyBlock();
+    void endStatement(const std::string& message);
 
     std::unique_ptr<Expression> parseExpression();
     std::unique_ptr<Expression> parseAssignmentExpression();

@@ -5,7 +5,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-include_directories(${CMAKE_SOURCE_DIR})
+# Built on its own, or inside another project (Phoenix): paths are this
+# folder's, and the tests and the package are only made on its own.
+if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+    set(AS3_TOP_LEVEL ON)
+else()
+    set(AS3_TOP_LEVEL OFF)
+endif()
 
 add_library(as3_parser
     src/ast/ast_nodes.cpp
@@ -19,12 +25,17 @@ add_library(as3_parser
 )
 
 target_include_directories(as3_parser PUBLIC
-    ${CMAKE_SOURCE_DIR}/src/ast
-    ${CMAKE_SOURCE_DIR}/src/lexer
-    ${CMAKE_SOURCE_DIR}/src/parser
-    ${CMAKE_SOURCE_DIR}/src/runtime
-    ${CMAKE_SOURCE_DIR}/src/bytecode
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ast
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/lexer
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/parser
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/bytecode
 )
+
+if(NOT AS3_TOP_LEVEL)
+    return()
+endif()
 
 # Unified test executable
 add_executable(as3_tests
@@ -32,11 +43,12 @@ add_executable(as3_tests
     test/parser_tests.cpp
     test/bytecode_tests.cpp
     test/vm_tests.cpp
+    test/as2_tests.cpp
     test/benchmark_tests.cpp
 )
 
 target_include_directories(as3_tests PRIVATE
-    ${CMAKE_SOURCE_DIR}/test
+    ${CMAKE_CURRENT_SOURCE_DIR}/test
 )
 
 target_link_libraries(as3_tests as3_parser)
@@ -57,9 +69,9 @@ file(MAKE_DIRECTORY ${PACKAGE_DIR}/include/libas3/bytecode)
 file(MAKE_DIRECTORY ${PACKAGE_DIR}/lib)
 
 # Copy header files
-file(GLOB_RECURSE HEADERS "${CMAKE_SOURCE_DIR}/src/*.h")
+file(GLOB_RECURSE HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
 foreach(HEADER ${HEADERS})
-    file(RELATIVE_PATH REL_HEADER ${CMAKE_SOURCE_DIR}/src ${HEADER})
+    file(RELATIVE_PATH REL_HEADER ${CMAKE_CURRENT_SOURCE_DIR}/src ${HEADER})
     get_filename_component(DEST_DIR ${PACKAGE_DIR}/include/libas3/${REL_HEADER} DIRECTORY)
     file(MAKE_DIRECTORY ${DEST_DIR})
     file(COPY ${HEADER} DESTINATION ${DEST_DIR})
@@ -72,8 +84,15 @@ add_custom_command(TARGET as3_parser POST_BUILD
         ${PACKAGE_DIR}/lib/
 )
 
-# Copy PDB for debugging (only in Debug builds)
+# Copy PDB for debugging (only in Debug builds). A single-configuration
+# generator (Ninja) has MSVC write a static library's compile PDB in its
+# object folder: it is put beside the library, where the copy looks.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    if(MSVC)
+        set_target_properties(as3_parser PROPERTIES
+            COMPILE_PDB_NAME as3_parser
+            COMPILE_PDB_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
     add_custom_command(TARGET as3_parser POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy
             $<TARGET_FILE_DIR:as3_parser>/as3_parser.pdb

@@ -10,6 +10,7 @@ namespace as3 {
 
 class Value;
 class BytecodeFunction;
+class HostObject;
 
 using ValuePtr = std::shared_ptr<Value>;
 using NativeFunction = std::function<ValuePtr(const std::vector<ValuePtr>&)>;
@@ -51,6 +52,9 @@ public:
     ValuePtr superClass;      // Parent class for inheritance
     ValuePtr constructor;     // Constructor function
 
+    // An object the host program answers for (see HostObject)
+    std::shared_ptr<HostObject> host;
+
     // Constructors
     Value()
         : type(ValueType::Undefined)
@@ -69,6 +73,7 @@ public:
     static ValuePtr makeFunction(std::shared_ptr<BytecodeFunction> func);
     static ValuePtr makeNativeFunction(NativeFunction func);
     static ValuePtr makeClass(const std::string& name);
+    static ValuePtr makeHostObject(std::shared_ptr<HostObject> host);
 
     // Type checking
     bool isUndefined() const { return type == ValueType::Undefined; }
@@ -96,6 +101,28 @@ public:
 
     // Utility
     std::string typeName() const;
+};
+
+// An object whose properties the host program works out itself, such as a
+// movie clip's _x or its gotoAndStop method. What the host does not answer
+// for is kept as an ordinary property of the object.
+class HostObject {
+public:
+    virtual ~HostObject() = default;
+
+    // The property's value, or nullptr when the host has none by that name.
+    virtual ValuePtr get(const std::string& name) {
+        (void)name;
+        return nullptr;
+    }
+
+    // True when the host took the value; false keeps it as an ordinary
+    // property.
+    virtual bool set(const std::string& name, ValuePtr value) {
+        (void)name;
+        (void)value;
+        return false;
+    }
 };
 
 } // namespace as3

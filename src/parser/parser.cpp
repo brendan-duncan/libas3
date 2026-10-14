@@ -330,9 +330,108 @@ std::unique_ptr<Statement> Parser::parseStatement() {
         if (peek(1).type == TokenType::Colon) {
             return parseLabeledStatement();
         }
+        if (auto legacy = parseLegacyBlock()) {
+            return legacy;
+        }
     }
 
     return parseExpressionStatement();
+}
+
+// ActionScript 1 and 2 blocks, which name what they are for in parentheses
+// and then give a block: on (release) { ... } and onClipEvent (enterFrame)
+// { ... } become calls to __on and __onClipEvent with the event names and
+// the block as a function, for the host to run when the event comes;
+// tellTarget (target) { ... } becomes __tellTarget(target, function); and
+// ifFrameLoaded (frame) { ... } becomes if (ifFrameLoaded(frame)) { ... }.
+// A call to a function of one of these names, with no block after it, is
+// left as the call it is.
+std::unique_ptr<Statement> Parser::parseLegacyBlock() {
+    const std::string word = currentToken().text;
+    if (word != "on" && word != "onClipEvent" && word != "ifFrameLoaded" && word != "tellTarget") {
+        return nullptr;
+    }
+    if (peek(1).type != TokenType::LParen) {
+        return nullptr;
+    }
+    // The parentheses' close, and a block after it.
+    int depth = 0;
+    int close = -1;
+    for (int i = 1;; ++i) {
+        const Token& token = peek(i);
+        if (token.type == TokenType::EndOfFile) {
+            return nullptr;
+        }
+        if (token.type == TokenType::LParen) {
+            ++depth;
+        } else if (token.type == TokenType::RParen && --depth == 0) {
+            close = i;
+            break;
+        }
+    }
+    if (peek(close + 1).type != TokenType::LBrace) {
+        return nullptr;
+    }
+
+    advance();  // the word
+    advance();  // (
+    const auto stringLiteral = [](const std::string& text) {
+        auto literal = std::make_unique<Literal>(Literal::LiteralKind::String);
+        literal->valueType = Literal::LiteralValueType::String;
+        literal->stringValue = text;
+        return literal;
+    };
+    const auto blockFunction = [this]() {
+        StatementPtr body = parseBlockStatement();
+        return std::make_unique<FunctionExpression>(nullptr, std::vector<std::unique_ptr<Parameter>>(), nullptr,
+                                                    std::move(body));
+    };
+
+    if (word == "on" || word == "onClipEvent") {
+        // The events, as written: release, press, keyPress "<Enter>"...
+        ExpressionList events;
+        std::string event;
+        while (!check(TokenType::RParen) && !check(TokenType::EndOfFile)) {
+            if (check(TokenType::Comma)) {
+                if (!event.empty()) {
+                    events.push_back(stringLiteral(event));
+                }
+                event.clear();
+            } else {
+                const Token& token = currentToken();
+                const std::string part = token.type == TokenType::String ? token.stringValue : token.text;
+                event += event.empty() ? part : " " + part;
+            }
+            advance();
+        }
+        if (!event.empty()) {
+            events.push_back(stringLiteral(event));
+        }
+        expectToken(TokenType::RParen, "Expected ')' after the events");
+        ExpressionList arguments;
+        arguments.push_back(std::make_unique<ArrayExpression>(std::move(events)));
+        arguments.push_back(blockFunction());
+        auto call = std::make_unique<CallExpression>(
+            std::make_unique<Identifier>(word == "on" ? "__on" : "__onClipEvent"), std::move(arguments));
+        return std::make_unique<ExpressionStatement>(std::move(call));
+    }
+
+    ExpressionList arguments;
+    if (!check(TokenType::RParen)) {
+        arguments.push_back(parseAssignmentExpression());
+        while (match(TokenType::Comma)) {
+            arguments.push_back(parseAssignmentExpression());
+        }
+    }
+    expectToken(TokenType::RParen, "Expected ')'");
+    if (word == "tellTarget") {
+        arguments.push_back(blockFunction());
+        auto call = std::make_unique<CallExpression>(std::make_unique<Identifier>("__tellTarget"), std::move(arguments));
+        return std::make_unique<ExpressionStatement>(std::move(call));
+    }
+    auto test = std::make_unique<CallExpression>(std::make_unique<Identifier>("ifFrameLoaded"), std::move(arguments));
+    StatementPtr body = parseBlockStatement();
+    return std::make_unique<IfStatement>(std::move(test), std::move(body));
 }
 
 std::unique_ptr<Statement> Parser::parseBlockStatement() {
@@ -354,6 +453,18 @@ std::unique_ptr<Statement> Parser::parseBlockStatement() {
     return std::make_unique<BlockStatement>(std::move(statements));
 }
 
+// A statement ends at a semicolon, or, as ActionScript allows, without one
+// at the end of a line, before a closing brace or at the end of the script.
+void Parser::endStatement(const std::string& message) {
+    if (match(TokenType::SemiColon)) {
+        return;
+    }
+    if (check(TokenType::RBrace) || check(TokenType::EndOfFile) || currentToken().newLineBefore) {
+        return;
+    }
+    expectToken(TokenType::SemiColon, message);
+}
+
 std::unique_ptr<Statement> Parser::parseEmptyStatement() {
     expectToken(TokenType::SemiColon, "Expected ';'");
     return std::make_unique<EmptyStatement>();
@@ -365,7 +476,7 @@ std::unique_ptr<Statement> Parser::parseExpressionStatement() {
         addError("Failed to parse expression");
         return nullptr;
     }
-    expectToken(TokenType::SemiColon, "Expected ';' after expression");
+    endStatement("Expected ';' after expression");
     return std::make_unique<ExpressionStatement>(std::move(expr));
 }
 
@@ -475,7 +586,7 @@ std::unique_ptr<Statement> Parser::parseDoWhileStatement() {
         return nullptr;
     }
     expectToken(TokenType::RParen, "Expected ')'");
-    expectToken(TokenType::SemiColon, "Expected ';'");
+    endStatement("Expected ';'");
 
     return std::make_unique<DoWhileStatement>(std::move(body), std::move(test));
 }
@@ -605,30 +716,31 @@ std::unique_ptr<Statement> Parser::parseForInOrOfStatement(bool isForEach) {
 std::unique_ptr<Statement> Parser::parseBreakStatement() {
     expectKeyword(KeywordType::Break, "Expected 'break'");
     IdentifierPtr label = nullptr;
-    if (check(TokenType::Identifier)) {
+    if (check(TokenType::Identifier) && !currentToken().newLineBefore) {
         label = parseIdentifier();
     }
-    expectToken(TokenType::SemiColon, "Expected ';'");
+    endStatement("Expected ';'");
     return std::make_unique<BreakStatement>(std::move(label));
 }
 
 std::unique_ptr<Statement> Parser::parseContinueStatement() {
     expectKeyword(KeywordType::Continue, "Expected 'continue'");
     IdentifierPtr label = nullptr;
-    if (check(TokenType::Identifier)) {
+    if (check(TokenType::Identifier) && !currentToken().newLineBefore) {
         label = parseIdentifier();
     }
-    expectToken(TokenType::SemiColon, "Expected ';'");
+    endStatement("Expected ';'");
     return std::make_unique<ContinueStatement>(std::move(label));
 }
 
 std::unique_ptr<Statement> Parser::parseReturnStatement() {
     expectKeyword(KeywordType::Return, "Expected 'return'");
     ExpressionPtr argument = nullptr;
-    if (!check(TokenType::SemiColon) && !check(TokenType::EndOfFile)) {
+    if (!check(TokenType::SemiColon) && !check(TokenType::EndOfFile) && !check(TokenType::RBrace) &&
+        !currentToken().newLineBefore) {
         argument = parseExpression();
     }
-    expectToken(TokenType::SemiColon, "Expected ';'");
+    endStatement("Expected ';'");
     return std::make_unique<ReturnStatement>(std::move(argument));
 }
 
@@ -639,7 +751,7 @@ std::unique_ptr<Statement> Parser::parseThrowStatement() {
         addError("Failed to parse throw expression");
         return nullptr;
     }
-    expectToken(TokenType::SemiColon, "Expected ';'");
+    endStatement("Expected ';'");
     return std::make_unique<ThrowStatement>(std::move(argument));
 }
 
@@ -730,7 +842,7 @@ std::unique_ptr<Statement> Parser::parseVariableStatement() {
         declarations.push_back(std::make_unique<VariableDeclaration>(std::move(id), std::move(type), std::move(init)));
     } while (match(TokenType::Comma));
 
-    expectToken(TokenType::SemiColon, "Expected ';'");
+    endStatement("Expected ';'");
 
     return std::make_unique<VariableDefinition>(std::vector<AttributePtr>(), std::move(declarations), isConst);
 }
@@ -1649,7 +1761,7 @@ std::unique_ptr<Statement> Parser::parseVariableStatementWithAttributes(std::vec
         declarations.push_back(std::make_unique<VariableDeclaration>(std::move(id), std::move(type), std::move(init)));
     } while (match(TokenType::Comma));
 
-    expectToken(TokenType::SemiColon, "Expected ';'");
+    endStatement("Expected ';'");
 
     return std::make_unique<VariableDefinition>(std::move(attrs), std::move(declarations), isConst);
 }

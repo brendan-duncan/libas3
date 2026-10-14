@@ -28,6 +28,15 @@ This project is being developed for my own learning and experimentation. There a
 - Control flow (if/while/for/ternary)
 - Arrays, objects, and all operators (arithmetic, logical, bitwise, comparison)
 
+### ✅ ActionScript 1 and 2
+- Statements may end at a line break, without a semicolon
+- `==` and `!=` compare loosely, as ActionScript does (`"0" == false`)
+- Missing arguments are `undefined`, extra ones are dropped
+- `on (release) { }`, `onClipEvent (enterFrame) { }` and `tellTarget (target) { }` become calls to `__on`, `__onClipEvent` and `__tellTarget` with the block as a function, for the host to run when the event comes; `ifFrameLoaded (frame) { }` becomes `if (ifFrameLoaded(frame)) { }`
+- Scripts run on a timeline (`VM::execute(code, scope)`): bare names are looked up on it, and undeclared assignments are kept on it
+- Host objects (`HostObject`, `Value::makeHostObject`) work out their own properties, such as a movie clip's `_x`
+- `VM::call` runs a script function from the host, as when an event comes; runtime errors are kept on the VM (`hasError`, `getError`, `getErrorLine`), not thrown or printed
+
 ### 📋 TODO
 - [ ] Javascript-style prototype classes / inheritance
 - [ ] Garbage Collection (Generational or Mark-Sweep)

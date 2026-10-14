@@ -70,6 +70,13 @@ ValuePtr Value::makeClass(const std::string& name) {
     return v;
 }
 
+ValuePtr Value::makeHostObject(std::shared_ptr<HostObject> host) {
+    auto v = std::make_shared<Value>();
+    v->type = ValueType::Object;
+    v->host = std::move(host);
+    return v;
+}
+
 bool Value::toBoolean() const {
     switch (type) {
         case ValueType::Undefined:
@@ -101,13 +108,21 @@ double Value::toNumber() const {
             return boolValue ? 1 : 0;
         case ValueType::Number:
             return numberValue;
-        case ValueType::String:
-            if (stringValue.empty()) return 0;
+        case ValueType::String: {
+            // The whole string, give or take spaces, must be the number:
+            // "12abc" is not a number.
+            size_t start = stringValue.find_first_not_of(" \t\r\n");
+            if (start == std::string::npos) return 0;
+            size_t end = stringValue.find_last_not_of(" \t\r\n") + 1;
+            const std::string text = stringValue.substr(start, end - start);
             try {
-                return std::stod(stringValue);
+                size_t used = 0;
+                double value = std::stod(text, &used);
+                return used == text.size() ? value : std::nan("");
             } catch (...) {
                 return std::nan("");
             }
+        }
         default:
             return std::nan("");
     }
@@ -161,6 +176,11 @@ ValuePtr Value::getProperty(const std::string& name) {
     if (type == ValueType::Array && name == "length") {
         return makeNumber(static_cast<double>(elements.size()));
     }
+    if (host) {
+        if (ValuePtr value = host->get(name)) {
+            return value;
+        }
+    }
 
     auto it = properties.find(name);
     if (it != properties.end()) {
@@ -170,6 +190,9 @@ ValuePtr Value::getProperty(const std::string& name) {
 }
 
 void Value::setProperty(const std::string& name, ValuePtr value) {
+    if (host && host->set(name, value)) {
+        return;
+    }
     properties[name] = value;
 }
 

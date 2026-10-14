@@ -175,18 +175,16 @@ void Compiler::compileIfStatement(IfStatement* stmt, Chunk& chunk) {
     // Compile then branch
     compileStatement(stmt->consequent.get(), chunk);
 
+    // The then branch goes on past the false path's pop of the condition,
+    // which it has popped already.
+    size_t elseJump = emitJump(OpCode::OP_JUMP, chunk);
+    patchJump(thenJump, chunk);
+    emitOpCode(OpCode::OP_POP, chunk);  // Pop condition
     if (stmt->alternate) {
-        size_t elseJump = emitJump(OpCode::OP_JUMP, chunk);
-        patchJump(thenJump, chunk);
-        emitOpCode(OpCode::OP_POP, chunk);  // Pop condition
-
         // Compile else branch
         compileStatement(stmt->alternate.get(), chunk);
-        patchJump(elseJump, chunk);
-    } else {
-        patchJump(thenJump, chunk);
-        emitOpCode(OpCode::OP_POP, chunk);  // Pop condition
     }
+    patchJump(elseJump, chunk);
 }
 
 void Compiler::compileWhileStatement(WhileStatement* stmt, Chunk& chunk) {

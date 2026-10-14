@@ -61,6 +61,8 @@ char Lexer::advanceChar() {
 
 void Lexer::addToken(const Token& token) {
     _tokens.push_back(token);
+    _tokens.back().newLineBefore = _newLineSeen;
+    _newLineSeen = false;
 }
 
 SourceLocation Lexer::makeLocation() const {
@@ -170,7 +172,12 @@ void Lexer::advance() {
 void Lexer::skipWhiteSpace() {
     while (hasMore()) {
         char c = peekChar();
-        if (isWhiteSpace(c)) {
+        if (isWhiteSpace(c) || c == '\n') {
+            // A line break between tokens is whitespace, but a statement
+            // may end at one (see Token::newLineBefore).
+            if (c == '\n') {
+                _newLineSeen = true;
+            }
             advanceChar();
         } else if (c == '/') {
             if (peekChar(1) == '/' || peekChar(1) == '*') {

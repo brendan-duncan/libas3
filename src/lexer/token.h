@@ -160,6 +160,9 @@ struct Token {
     double numericValue;
     SourceLocation start;
     SourceLocation end;
+    // A line break comes before it, where a statement may end without a
+    // semicolon.
+    bool newLineBefore = false;
 
     Token()
         : type(TokenType::EndOfFile)
