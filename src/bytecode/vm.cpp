@@ -630,6 +630,31 @@ void VM::run(size_t stopDepth) {
                 // Get class at position after all arguments
                 ValuePtr classValue = peek(argCount);
 
+                // new on a function rather than a class: a host's constructor
+                // (new Sound() in a player), or an ActionScript 1 constructor
+                // function, called with a new object as this. What it returns
+                // is the instance when it is an object, else the new object.
+                if (classValue->type == ValueType::NativeFunction || classValue->type == ValueType::Function) {
+                    std::vector<ValuePtr> args(argCount);
+                    for (int i = argCount - 1; i >= 0; i--) {
+                        args[i] = pop();
+                    }
+                    pop();
+                    ValuePtr instance = Value::makeObject();
+                    ValuePtr result;
+                    if (classValue->type == ValueType::NativeFunction) {
+                        result = classValue->nativeFunc(args);
+                    } else {
+                        result = call(classValue, args, instance);
+                        if (hadError) {
+                            // The constructor's own error, where it stopped.
+                            throw VMError(errorMessage);
+                        }
+                    }
+                    push(result && (result->isObject() || result->isArray()) ? result : instance);
+                    break;
+                }
+
                 if (!classValue->isClass()) {
                     runtimeError("Can only instantiate classes");
                     return;

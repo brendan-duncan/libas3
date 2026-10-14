@@ -227,6 +227,21 @@ static void init_as2_tests() {
                "hat 3 0\n");
     });
 
+    suite.addTest("new on a function", []() {
+        VM vm;
+        // An ActionScript 1 constructor function.
+        expect(run(vm, "function Point(x, y) {\n    this.x = x;\n    this.y = y;\n}\nvar p = new Point(2, 3);\n"
+                       "trace(p.x + p.y);"),
+               "5\n");
+        // A host's constructor.
+        vm.registerBuiltin("Box", [](const std::vector<ValuePtr>& args) {
+            ValuePtr box = Value::makeObject();
+            box->setProperty("w", Value::makeNumber(args.empty() ? 4 : args[0]->toNumber()));
+            return box;
+        });
+        expect(run(vm, "var b = new Box(7);\ntrace(b.w + ' ' + new Box().w);"), "7 4\n");
+    });
+
     suite.addTest("Calls from the host", []() {
         VM vm;
         run(vm, "function add(a, b) { return a + b; }");
