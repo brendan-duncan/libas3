@@ -1326,6 +1326,19 @@ std::unique_ptr<Expression> Parser::parseMultiplicativeExpression() {
 }
 
 std::unique_ptr<Expression> Parser::parseUnaryExpression() {
+    // ++x and --x: the lexer makes the same token as for x++.
+    if (check(TokenType::Increment) || check(TokenType::Decrement)) {
+        const bool increment = check(TokenType::Increment);
+        advance();
+        auto operand = parseUnaryExpression();
+        if (!operand) {
+            addError("Failed to parse operand of ++ or --");
+            return nullptr;
+        }
+        return std::make_unique<UnaryExpression>(
+            increment ? OperatorType::PreIncrement : OperatorType::PreDecrement, std::move(operand), false);
+    }
+
     if (check(TokenType::PreIncrement) || check(TokenType::PreDecrement) ||
         check(TokenType::Plus) || check(TokenType::Minus) || check(TokenType::Tilde) ||
         check(TokenType::Exclamation) || check(KeywordType::Delete) ||
@@ -1372,11 +1385,8 @@ std::unique_ptr<Expression> Parser::parsePostfixExpression() {
 }
 
 std::unique_ptr<Expression> Parser::parseCallMemberExpression() {
-    if (check(KeywordType::New)) {
-        return parseNewExpression();
-    }
-
-    auto expr = parsePrimaryExpression();
+    // new X(...) may be followed by a member or a call too: new Array().length.
+    auto expr = check(KeywordType::New) ? parseNewExpression() : parsePrimaryExpression();
     if (!expr) {
         return nullptr;
     }
@@ -1848,7 +1858,7 @@ OperatorType Parser::getBinaryOperator(TokenType type) const {
         case TokenType::LogicalXor: return OperatorType::LogicalXor;
         case TokenType::Power: return OperatorType::Power;
         case TokenType::NullCoalescing: return OperatorType::NullCoalescing;
-        case TokenType::Assign: return OperatorType::Add;  // Assignment uses Add for simple =
+        case TokenType::Assign: return OperatorType::Assign;
         case TokenType::PlusAssign: return OperatorType::Add;
         case TokenType::MinusAssign: return OperatorType::Subtract;
         case TokenType::MultiplyAssign: return OperatorType::Multiply;

@@ -92,6 +92,11 @@ private:
     void compileIdentifier(Identifier* expr, Chunk& chunk);
     void compileLiteral(Literal* expr, Chunk& chunk);
     void compileBinaryExpression(BinaryExpression* expr, Chunk& chunk);
+    // The opcode of a binary operator; false when there is none.
+    bool emitBinaryOperator(OperatorType op, Chunk& chunk);
+    // ++ and --, before or after: the target read, stepped by one and
+    // written back, leaving the new value or, after, the old one.
+    void compileIncrement(Expression* target, bool increment, bool postfix, Chunk& chunk);
     void compileUnaryExpression(UnaryExpression* expr, Chunk& chunk);
     void compileConditionalExpression(ConditionalExpression* expr, Chunk& chunk);
     void compileAssignmentExpression(AssignmentExpression* expr, Chunk& chunk);

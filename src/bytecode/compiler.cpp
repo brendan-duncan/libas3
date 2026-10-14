@@ -1,4 +1,5 @@
 #include "compiler.h"
+#include <functional>
 #include <iostream>
 #include <stdexcept>
 
@@ -518,8 +519,13 @@ void Compiler::compileBinaryExpression(BinaryExpression* expr, Chunk& chunk) {
     compileExpression(expr->left.get(), chunk);
     compileExpression(expr->right.get(), chunk);
 
-    // Emit operator
-    switch (expr->op) {
+    if (!emitBinaryOperator(expr->op, chunk)) {
+        error("Unsupported binary operator");
+    }
+}
+
+bool Compiler::emitBinaryOperator(OperatorType op, Chunk& chunk) {
+    switch (op) {
         case OperatorType::Add: emitOpCode(OpCode::OP_ADD, chunk); break;
         case OperatorType::Subtract: emitOpCode(OpCode::OP_SUBTRACT, chunk); break;
         case OperatorType::Multiply: emitOpCode(OpCode::OP_MULTIPLY, chunk); break;
@@ -550,12 +556,61 @@ void Compiler::compileBinaryExpression(BinaryExpression* expr, Chunk& chunk) {
         case OperatorType::In: emitOpCode(OpCode::OP_IN, chunk); break;
 
         default:
-            error("Unsupported binary operator");
-            break;
+            return false;
+    }
+    return true;
+}
+
+void Compiler::compileIncrement(Expression* target, bool increment, bool postfix, Chunk& chunk) {
+    // x - (-1) rather than x + 1, so a string holding a number steps as a
+    // number rather than having "1" added on.
+    const auto step = [&]() {
+        emitOpCode(increment ? OpCode::OP_NUMBER_NEG1 : OpCode::OP_NUMBER_1, chunk);
+        emitOpCode(OpCode::OP_SUBTRACT, chunk);
+    };
+    if (auto* id = dynamic_cast<Identifier*>(target)) {
+        namedVariable(id->name, false, chunk);
+        step();
+        namedVariable(id->name, true, chunk);
+    } else if (auto* member = dynamic_cast<MemberExpression*>(target)) {
+        if (member->computed && member->computedProperty) {
+            // [obj, index, obj[index] stepped] for OP_SET_INDEX.
+            compileExpression(member->object.get(), chunk);
+            compileExpression(member->computedProperty.get(), chunk);
+            compileExpression(member->object.get(), chunk);
+            compileExpression(member->computedProperty.get(), chunk);
+            emitOpCode(OpCode::OP_GET_INDEX, chunk);
+            step();
+            emitOpCode(OpCode::OP_SET_INDEX, chunk);
+        } else if (member->property) {
+            uint16_t name = identifierConstant(member->property->name, chunk);
+            compileExpression(member->object.get(), chunk);
+            emitOpCode(OpCode::OP_DUP, chunk);
+            emitOpCode(OpCode::OP_GET_PROPERTY, chunk);
+            chunk.writeU16(name);
+            step();
+            emitOpCode(OpCode::OP_SET_PROPERTY, chunk);
+            chunk.writeU16(name);
+        }
+    } else {
+        error("Invalid target for ++ or --");
+        return;
+    }
+    // The new value is left; after, the value before is wanted.
+    if (postfix) {
+        emitOpCode(increment ? OpCode::OP_NUMBER_1 : OpCode::OP_NUMBER_NEG1, chunk);
+        emitOpCode(OpCode::OP_SUBTRACT, chunk);
     }
 }
 
 void Compiler::compileUnaryExpression(UnaryExpression* expr, Chunk& chunk) {
+    switch (expr->op) {
+        case OperatorType::PreIncrement: compileIncrement(expr->operand.get(), true, false, chunk); return;
+        case OperatorType::PreDecrement: compileIncrement(expr->operand.get(), false, false, chunk); return;
+        case OperatorType::PostIncrement: compileIncrement(expr->operand.get(), true, true, chunk); return;
+        case OperatorType::PostDecrement: compileIncrement(expr->operand.get(), false, true, chunk); return;
+        default: break;
+    }
     compileExpression(expr->operand.get(), chunk);
 
     switch (expr->op) {
@@ -593,19 +648,44 @@ void Compiler::compileConditionalExpression(ConditionalExpression* expr, Chunk& 
 }
 
 void Compiler::compileAssignmentExpression(AssignmentExpression* expr, Chunk& chunk) {
+    // x += y and the like: x = x + y.
+    const bool compound = expr->op != OperatorType::Assign;
+    const auto value = [&](const std::function<void()>& current) {
+        if (compound) {
+            current();
+        }
+        compileExpression(expr->right.get(), chunk);
+        if (compound && !emitBinaryOperator(expr->op, chunk)) {
+            error("Unsupported compound assignment");
+        }
+    };
     if (auto* member = dynamic_cast<MemberExpression*>(expr->left.get())) {
         // Property assignment: obj.prop = value or obj[index] = value
 
-        // Compile the object
+        // Compile the object, and the index for obj[index]: OP_SET_INDEX
+        // takes [obj, index, value]
         compileExpression(member->object.get(), chunk);
+        const bool computed = member->computed && member->computedProperty;
+        if (computed) {
+            compileExpression(member->computedProperty.get(), chunk);
+        }
 
-        // Compile the value (right side)
-        compileExpression(expr->right.get(), chunk);
+        // Compile the value (right side), from the property's own for a
+        // compound assignment
+        value([&]() {
+            compileExpression(member->object.get(), chunk);
+            if (member->computed && member->computedProperty) {
+                compileExpression(member->computedProperty.get(), chunk);
+                emitOpCode(OpCode::OP_GET_INDEX, chunk);
+            } else if (member->property) {
+                emitOpCode(OpCode::OP_GET_PROPERTY, chunk);
+                chunk.writeU16(identifierConstant(member->property->name, chunk));
+            }
+        });
 
         // Emit assignment opcode
-        if (member->computed && member->computedProperty) {
+        if (computed) {
             // Computed access: obj[index] = value
-            compileExpression(member->computedProperty.get(), chunk);
             emitOpCode(OpCode::OP_SET_INDEX, chunk);
         } else if (member->property) {
             // Dot access: obj.prop = value
@@ -615,7 +695,7 @@ void Compiler::compileAssignmentExpression(AssignmentExpression* expr, Chunk& ch
         }
     } else if (auto* id = dynamic_cast<Identifier*>(expr->left.get())) {
         // Variable assignment
-        compileExpression(expr->right.get(), chunk);
+        value([&]() { namedVariable(id->name, false, chunk); });
         namedVariable(id->name, true, chunk);
     }
 }
@@ -687,6 +767,27 @@ void Compiler::compileNewExpression(NewExpression* expr, Chunk& chunk) {
     //    - Copy methods from class to instance
     //    - Call constructor with 'this' bound to instance
     //    - Return instance
+
+    // new Object() and new Array(...) are literals.
+    if (auto* id = dynamic_cast<Identifier*>(expr->callee.get())) {
+        if (id->name == "Object" && expr->arguments.empty()) {
+            emitOpCode(OpCode::OP_NEW_OBJECT, chunk);
+            chunk.writeU16(0);
+            return;
+        }
+        if (id->name == "Array") {
+            // new Array(3) is three empty places; new Array(a, b) holds a and b.
+            const bool sized = expr->arguments.size() == 1;
+            if (!sized) {
+                for (auto& arg : expr->arguments) {
+                    compileExpression(arg.get(), chunk);
+                }
+            }
+            emitOpCode(OpCode::OP_NEW_ARRAY, chunk);
+            chunk.writeU16(static_cast<uint16_t>(sized ? 0 : expr->arguments.size()));
+            return;
+        }
+    }
 
     // Get the class
     compileExpression(expr->callee.get(), chunk);

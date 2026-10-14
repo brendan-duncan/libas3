@@ -201,6 +201,32 @@ static void init_as2_tests() {
         expect(seen, "hat:_x hat:_visible=8 ");
     });
 
+    suite.addTest("Compound assignment, ++ and --", []() {
+        VM vm;
+        // x += y was x = y before.
+        expect(run(vm, "var x = 5;\nx += 3;\nx -= 1;\nx *= 2;\ntrace(x);"), "14\n");
+        expect(run(vm, "var s = 'a';\ns += 'b';\ntrace(s);"), "ab\n");
+        // Prefix gives the new value, postfix the old; both store the new.
+        expect(run(vm, "var i = 1;\nvar a = i++;\nvar b = ++i;\nvar c = i--;\ntrace(a + ' ' + b + ' ' + c + ' ' + i);"),
+               "1 3 3 2\n");
+        // On properties and elements too.
+        expect(run(vm, "var o = {n: 1};\no.n++;\no.n += 10;\nvar list = [5, 6];\nlist[1]++;\nlist[0] -= 5;\n"
+                       "trace(o.n + ' ' + list[0] + ' ' + list[1]);"),
+               "12 0 7\n");
+        expect(run(vm, "var count = 0;\nfor (var k = 0; k < 4; k++) { count += k; }\ntrace(count);"), "6\n");
+        // a[i] = v puts v at i (it once put i at v).
+        expect(run(vm, "var slots = [0, 0, 0];\nslots[2] = 9;\nvar map = {};\nmap['k'] = 'v';\n"
+                       "trace(slots[2] + ' ' + slots.length + ' ' + map.k);"),
+               "9 3 v\n");
+    });
+
+    suite.addTest("new Object() and new Array()", []() {
+        VM vm;
+        expect(run(vm, "var o = new Object();\no.name = 'hat';\nvar a = new Array(1, 2, 3);\n"
+                       "trace(o.name + ' ' + a.length + ' ' + new Array().length);"),
+               "hat 3 0\n");
+    });
+
     suite.addTest("Calls from the host", []() {
         VM vm;
         run(vm, "function add(a, b) { return a + b; }");

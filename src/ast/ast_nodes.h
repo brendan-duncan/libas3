@@ -71,6 +71,8 @@ enum class OperatorType {
     Positive, Negative, BitwiseNot, LogicalNot,
     NonNull,
     Delete, Void, Typeof,
+    // A plain = (compound assignments carry their operator).
+    Assign,
 };
 
 class Identifier : public Expression {
