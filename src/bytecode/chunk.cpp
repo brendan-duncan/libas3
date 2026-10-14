@@ -101,7 +101,8 @@ void Chunk::patchJump(size_t offset, int16_t jump) {
 }
 
 void Chunk::addLine(int line) {
-    lines.push_back(line);
+    // An operand written with no line is on its instruction's.
+    lines.push_back(line == 0 && !lines.empty() ? lines.back() : line);
 }
 
 // Disassembly

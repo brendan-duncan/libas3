@@ -275,6 +275,15 @@ std::unique_ptr<PackageDefinition> Parser::parsePackage() {
 }
 
 std::unique_ptr<Statement> Parser::parseStatement() {
+    const int line = static_cast<int>(currentToken().start.line);
+    auto statement = parseStatementBody();
+    if (statement && statement->line == 0) {
+        statement->line = line;
+    }
+    return statement;
+}
+
+std::unique_ptr<Statement> Parser::parseStatementBody() {
     if (check(TokenType::LBrace)) {
         return parseBlockStatement();
     }

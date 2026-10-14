@@ -71,6 +71,8 @@ private:
     CompilerContext* current;
     bool hadError;
     std::string errorMessage;
+    // The line of the statement being compiled, for what it emits.
+    int currentLine = 0;
 
     // Statement compilation
     void compileStatement(Statement* stmt, Chunk& chunk);

@@ -54,6 +54,9 @@ public:
 class Statement : public AstNode {
 public:
     AstNodeType getType() const override { return AstNodeType::Statement; }
+
+    // The line it starts on, from 1; 0 when not known.
+    int line = 0;
 };
 
 enum class OperatorType {

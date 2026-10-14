@@ -51,6 +51,7 @@ private:
     std::unique_ptr<AstNode> parseTopLevel();
 
     std::unique_ptr<Statement> parseStatement();
+    std::unique_ptr<Statement> parseStatementBody();
     std::unique_ptr<Statement> parseBlockStatement();
     std::unique_ptr<Statement> parseEmptyStatement();
     std::unique_ptr<Statement> parseExpressionStatement();

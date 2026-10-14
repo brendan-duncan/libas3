@@ -119,6 +119,10 @@ std::shared_ptr<BytecodeFunction> Compiler::compile(Program* program) {
 
 void Compiler::compileStatement(Statement* stmt, Chunk& chunk) {
     if (!stmt) return;
+    // What it compiles to is on its line.
+    if (stmt->line > 0) {
+        currentLine = stmt->line;
+    }
 
     if (auto* block = dynamic_cast<BlockStatement*>(stmt)) {
         compileBlockStatement(block, chunk);
@@ -897,7 +901,7 @@ uint16_t Compiler::identifierConstant(const std::string& name, Chunk& chunk) {
 }
 
 void Compiler::emitByte(uint8_t byte, Chunk& chunk) {
-    chunk.writeByte(byte);
+    chunk.writeByte(byte, currentLine);
 }
 
 void Compiler::emitBytes(uint8_t byte1, uint8_t byte2, Chunk& chunk) {
@@ -906,7 +910,7 @@ void Compiler::emitBytes(uint8_t byte1, uint8_t byte2, Chunk& chunk) {
 }
 
 void Compiler::emitOpCode(OpCode op, Chunk& chunk) {
-    chunk.writeOpCode(op);
+    chunk.writeOpCode(op, currentLine);
 }
 
 void Compiler::emitConstant(ValuePtr value, Chunk& chunk) {

@@ -246,6 +246,20 @@ static void init_as2_tests() {
             throw std::runtime_error("VM not usable after an error");
         }
     });
+
+    suite.addTest("Errors give their line", []() {
+        VM vm;
+        vm.execute(compileSource("var a = 1;\n\nif (a == 1) {\n    nothing();\n}\n"));
+        if (!vm.hasError() || vm.getErrorLine() != 4) {
+            throw std::runtime_error("error line " + std::to_string(vm.getErrorLine()));
+        }
+        // In a function too, called later.
+        run(vm, "function later() {\n    var b = 2;\n    missing(b);\n}");
+        vm.call(vm.getGlobal("later"));
+        if (!vm.hasError() || vm.getErrorLine() != 3) {
+            throw std::runtime_error("error line in a function " + std::to_string(vm.getErrorLine()));
+        }
+    });
 }
 
 static struct AS2TestInit {
