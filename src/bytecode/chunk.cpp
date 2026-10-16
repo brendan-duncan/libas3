@@ -1,7 +1,6 @@
 #include "chunk.h"
 #include <iostream>
 #include <iomanip>
-#include <cstring>
 
 namespace as3 {
 
@@ -18,212 +17,140 @@ void Chunk::writeOpCode(OpCode op, int line) {
 }
 
 void Chunk::writeU16(uint16_t value) {
-    writeByte((value >> 8) & 0xFF);
-    writeByte(value & 0xFF);
+    const int line = lines.empty() ? 0 : lines.back();
+    writeByte(static_cast<uint8_t>(value & 0xFF), line);
+    writeByte(static_cast<uint8_t>((value >> 8) & 0xFF), line);
 }
 
 void Chunk::writeU32(uint32_t value) {
-    writeByte((value >> 24) & 0xFF);
-    writeByte((value >> 16) & 0xFF);
-    writeByte((value >> 8) & 0xFF);
-    writeByte(value & 0xFF);
-}
-
-void Chunk::writeS16(int16_t value) {
-    writeU16(static_cast<uint16_t>(value));
-}
-
-void Chunk::writeF64(double value) {
-    uint64_t bits;
-    std::memcpy(&bits, &value, sizeof(double));
-    for (int i = 7; i >= 0; i--) {
-        writeByte((bits >> (i * 8)) & 0xFF);
+    const int line = lines.empty() ? 0 : lines.back();
+    for (int i = 0; i < 4; ++i) {
+        writeByte(static_cast<uint8_t>((value >> (8 * i)) & 0xFF), line);
     }
 }
 
-uint16_t Chunk::addConstant(ValuePtr value) {
+void Chunk::writeS32(int32_t value) {
+    writeU32(static_cast<uint32_t>(value));
+}
+
+uint16_t Chunk::addConstant(const Val& value) {
+    // The same number or string once.
+    for (size_t i = 0; i < constants.size(); ++i) {
+        const Val& known = constants[i];
+        if (known.tag == value.tag &&
+            ((value.isNumber() && known.num == value.num && std::signbit(known.num) == std::signbit(value.num)) ||
+             (value.isString() && known.str() == value.str()))) {
+            return static_cast<uint16_t>(i);
+        }
+    }
     constants.push_back(value);
-    if (constants.size() > UINT16_MAX) {
-        throw std::runtime_error("Too many constants in one chunk");
-    }
     return static_cast<uint16_t>(constants.size() - 1);
 }
 
-ValuePtr Chunk::getConstant(size_t index) const {
-    if (index >= constants.size()) {
-        return Value::makeUndefined();
+uint16_t Chunk::addName(const std::string& text) {
+    auto found = nameIndex.find(text);
+    if (found != nameIndex.end()) {
+        return found->second;
     }
-    return constants[index];
+    names.push_back(text);
+    const uint16_t index = static_cast<uint16_t>(names.size() - 1);
+    nameIndex[text] = index;
+    return index;
 }
 
 uint8_t Chunk::getByte(size_t offset) const {
-    if (offset >= code.size()) return 0;
     return code[offset];
 }
 
 uint16_t Chunk::getU16(size_t offset) const {
-    if (offset + 1 >= code.size()) return 0;
-    return (static_cast<uint16_t>(code[offset]) << 8) |
-           static_cast<uint16_t>(code[offset + 1]);
+    return static_cast<uint16_t>(code[offset] | (code[offset + 1] << 8));
 }
 
 uint32_t Chunk::getU32(size_t offset) const {
-    if (offset + 3 >= code.size()) return 0;
-    return (static_cast<uint32_t>(code[offset]) << 24) |
-           (static_cast<uint32_t>(code[offset + 1]) << 16) |
-           (static_cast<uint32_t>(code[offset + 2]) << 8) |
-           static_cast<uint32_t>(code[offset + 3]);
+    return static_cast<uint32_t>(code[offset]) | (static_cast<uint32_t>(code[offset + 1]) << 8) |
+           (static_cast<uint32_t>(code[offset + 2]) << 16) | (static_cast<uint32_t>(code[offset + 3]) << 24);
 }
 
-int16_t Chunk::getS16(size_t offset) const {
-    return static_cast<int16_t>(getU16(offset));
-}
-
-double Chunk::getF64(size_t offset) const {
-    if (offset + 7 >= code.size()) return 0.0;
-    uint64_t bits = 0;
-    for (int i = 0; i < 8; i++) {
-        bits = (bits << 8) | code[offset + i];
-    }
-    double value;
-    std::memcpy(&value, &bits, sizeof(double));
-    return value;
+int32_t Chunk::getS32(size_t offset) const {
+    return static_cast<int32_t>(getU32(offset));
 }
 
 int Chunk::getLine(size_t offset) const {
-    if (offset >= lines.size()) return -1;
-    return lines[offset];
+    if (offset < lines.size()) {
+        return lines[offset];
+    }
+    return lines.empty() ? 0 : lines.back();
 }
 
-void Chunk::patchJump(size_t offset, int16_t jump) {
-    code[offset] = (jump >> 8) & 0xFF;
-    code[offset + 1] = jump & 0xFF;
+void Chunk::patchS32(size_t offset, int32_t value) {
+    const uint32_t bits = static_cast<uint32_t>(value);
+    for (int i = 0; i < 4; ++i) {
+        code[offset + i] = static_cast<uint8_t>((bits >> (8 * i)) & 0xFF);
+    }
 }
 
 void Chunk::addLine(int line) {
-    // An operand written with no line is on its instruction's.
-    lines.push_back(line == 0 && !lines.empty() ? lines.back() : line);
+    lines.push_back(line);
 }
 
-// Disassembly
-
-void Chunk::disassemble(const std::string& chunkName) const {
-    std::cout << "== " << chunkName << " ==" << std::endl;
-
-    for (size_t offset = 0; offset < code.size(); ) {
+void Chunk::disassemble(const std::string& title) const {
+    std::cout << "== " << title << " ==" << std::endl;
+    for (size_t offset = 0; offset < code.size();) {
         offset = disassembleInstruction(offset);
     }
 }
 
 size_t Chunk::disassembleInstruction(size_t offset) const {
-    std::cout << std::setw(4) << std::setfill('0') << offset << " ";
-
-    // Print line number
+    std::cout << std::setw(4) << std::setfill('0') << offset << std::setfill(' ') << " ";
     if (offset > 0 && getLine(offset) == getLine(offset - 1)) {
         std::cout << "   | ";
     } else {
         std::cout << std::setw(4) << getLine(offset) << " ";
     }
-
-    uint8_t instruction = code[offset];
-    OpCode op = static_cast<OpCode>(instruction);
-
+    const OpCode op = static_cast<OpCode>(code[offset]);
+    std::cout << std::left << std::setw(26) << getOpCodeName(op) << std::right;
+    const int operands = getOpCodeOperandCount(op);
     switch (op) {
-        case OpCode::OP_CONSTANT: {
-            uint16_t constant = getU16(offset + 1);
-            std::cout << std::setw(16) << std::left << getOpCodeName(op);
-            std::cout << std::setw(4) << constant << " '";
-            std::cout << getConstant(constant)->toString() << "'";
-            std::cout << std::endl;
-            return offset + 3;
-        }
-
-        case OpCode::OP_NUMBER: {
-            double value = getF64(offset + 1);
-            std::cout << std::setw(16) << std::left << getOpCodeName(op);
-            std::cout << value << std::endl;
-            return offset + 9;
-        }
-
-        case OpCode::OP_GET_LOCAL:
-        case OpCode::OP_SET_LOCAL:
-        case OpCode::OP_GET_UPVALUE:
-        case OpCode::OP_SET_UPVALUE:
-        case OpCode::OP_CALL: {
-            uint8_t slot = getByte(offset + 1);
-            std::cout << std::setw(16) << std::left << getOpCodeName(op);
-            std::cout << static_cast<int>(slot) << std::endl;
-            return offset + 2;
-        }
-
-        case OpCode::OP_GET_GLOBAL:
-        case OpCode::OP_SET_GLOBAL:
-        case OpCode::OP_DEFINE_GLOBAL:
-        case OpCode::OP_GET_PROPERTY:
-        case OpCode::OP_SET_PROPERTY:
-        case OpCode::OP_CLASS:
-        case OpCode::OP_METHOD: {
-            uint16_t constant = getU16(offset + 1);
-            std::cout << std::setw(16) << std::left << getOpCodeName(op);
-            std::cout << std::setw(4) << constant << " '";
-            std::cout << getConstant(constant)->toString() << "'";
-            std::cout << std::endl;
-            return offset + 3;
-        }
-
+        case OpCode::OP_CONSTANT:
+            std::cout << getU16(offset + 1) << " '" << constants[getU16(offset + 1)].toString() << "'";
+            break;
+        case OpCode::OP_GET_NAME:
+        case OpCode::OP_SET_NAME:
+        case OpCode::OP_GET_PROP:
+        case OpCode::OP_SET_PROP:
+        case OpCode::OP_CALL_PROP:
+        case OpCode::OP_CALL_NAME:
+        case OpCode::OP_CALL_SUPER:
+        case OpCode::OP_TYPEOF_NAME:
+        case OpCode::OP_DEFINE_VAR:
+        case OpCode::OP_DEFINE_FUNCTION:
+        case OpCode::OP_GET_QNAME:
+        case OpCode::OP_DELETE_PROP:
+        case OpCode::OP_GET_SUPER:
+        case OpCode::OP_SET_SUPER:
+            std::cout << "'" << names[getU16(offset + 1)] << "'";
+            if (op == OpCode::OP_CALL_PROP || op == OpCode::OP_CALL_NAME || op == OpCode::OP_CALL_SUPER) {
+                std::cout << " (" << static_cast<int>(code[offset + 3]) << " args)";
+            }
+            break;
         case OpCode::OP_JUMP:
         case OpCode::OP_JUMP_IF_FALSE:
-        case OpCode::OP_JUMP_IF_TRUE: {
-            int16_t jump = getS16(offset + 1);
-            std::cout << std::setw(16) << std::left << getOpCodeName(op);
-            std::cout << std::setw(4) << offset << " -> " << (offset + 3 + jump);
-            std::cout << std::endl;
-            return offset + 3;
-        }
-
-        case OpCode::OP_LOOP: {
-            uint16_t jump = getU16(offset + 1);
-            std::cout << std::setw(16) << std::left << getOpCodeName(op);
-            std::cout << std::setw(4) << offset << " -> " << (offset + 3 - jump);
-            std::cout << std::endl;
-            return offset + 3;
-        }
-
-        case OpCode::OP_NEW_ARRAY:
-        case OpCode::OP_NEW_OBJECT: {
-            uint16_t count = getU16(offset + 1);
-            std::cout << std::setw(16) << std::left << getOpCodeName(op);
-            std::cout << count << std::endl;
-            return offset + 3;
-        }
-
-        case OpCode::OP_CLOSURE: {
-            uint16_t constant = getU16(offset + 1);
-            std::cout << std::setw(16) << std::left << getOpCodeName(op);
-            std::cout << std::setw(4) << constant << " '";
-            std::cout << getConstant(constant)->toString() << "'";
-            std::cout << std::endl;
-            // TODO: Print upvalue info
-            return offset + 3;
-        }
-
-        case OpCode::OP_INVOKE:
-        case OpCode::OP_SUPER_INVOKE: {
-            uint16_t constant = getU16(offset + 1);
-            uint8_t argCount = getByte(offset + 3);
-            std::cout << std::setw(16) << std::left << getOpCodeName(op);
-            std::cout << "(" << static_cast<int>(argCount) << " args) ";
-            std::cout << constant << " '";
-            std::cout << getConstant(constant)->toString() << "'";
-            std::cout << std::endl;
-            return offset + 4;
-        }
-
-        default: {
-            std::cout << getOpCodeName(op) << std::endl;
-            return offset + 1;
-        }
+        case OpCode::OP_JUMP_IF_TRUE:
+        case OpCode::OP_JUMP_IF_FALSE_KEEP:
+        case OpCode::OP_JUMP_IF_TRUE_KEEP:
+        case OpCode::OP_JUMP_IF_NOT_NULLISH_KEEP:
+            std::cout << "-> " << (offset + 5 + getS32(offset + 1));
+            break;
+        default:
+            if (operands == 1) {
+                std::cout << static_cast<int>(code[offset + 1]);
+            } else if (operands >= 2) {
+                std::cout << getU16(offset + 1);
+            }
+            break;
     }
+    std::cout << std::endl;
+    return offset + 1 + static_cast<size_t>(operands);
 }
 
 } // namespace as3

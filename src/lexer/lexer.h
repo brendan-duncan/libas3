@@ -47,6 +47,8 @@ private:
     void scanIdentifier();
     void scanString();
     void scanNumber();
+    void scanRegExp();
+    bool regexAllowed() const;
     void skipWhiteSpace();
     void skipComment();
 

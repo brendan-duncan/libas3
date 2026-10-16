@@ -5,134 +5,139 @@
 
 namespace as3 {
 
-// Bytecode instruction opcodes
-// Stack-based VM: instructions pop operands from stack and push results
+// Bytecode instruction opcodes, for a stack machine: instructions take
+// their operands from the stack and push their results. Operand bytes
+// after the opcode are given in brackets: u8, u16 (indices), s32 (jumps,
+// relative to the end of the instruction).
 enum class OpCode : uint8_t {
-    // Constants (1 byte opcode + operands)
-    OP_CONSTANT,        // Push constant from pool [u16 index]
-    OP_CONSTANT_LONG,   // Push constant from pool [u32 index]
-    OP_TRUE,            // Push true
-    OP_FALSE,           // Push false
-    OP_NULL,            // Push null
-    OP_UNDEFINED,       // Push undefined
-
-    // Literals (inline values)
-    OP_NUMBER_0,        // Push 0
-    OP_NUMBER_1,        // Push 1
-    OP_NUMBER_NEG1,     // Push -1
-    OP_NUMBER,          // Push inline number [f64]
+    // Constants
+    OP_CONSTANT,        // Push constant [u16 index]
+    OP_UNDEFINED,
+    OP_NULL,
+    OP_TRUE,
+    OP_FALSE,
+    OP_ZERO,
+    OP_ONE,
 
     // Stack manipulation
-    OP_POP,             // Pop and discard top value
-    OP_DUP,             // Duplicate top value
-    OP_SWAP,            // Swap top two values
+    OP_POP,
+    OP_DUP,             // a -> a a
+    OP_DUP2,            // a b -> a b a b
+    OP_SWAP,            // a b -> b a
+    OP_DUP_X1,          // a b -> b a b
+    OP_DUP_X2,          // a b c -> c a b c
 
-    // Variables (using constant pool for names)
-    OP_GET_GLOBAL,      // Get global variable [u16 name_index]
-    OP_SET_GLOBAL,      // Set global variable [u16 name_index]
-    OP_DEFINE_GLOBAL,   // Define global variable [u16 name_index]
-    OP_GET_LOCAL,       // Get local variable [u8 slot]
-    OP_SET_LOCAL,       // Set local variable [u8 slot]
-    OP_GET_UPVALUE,     // Get captured variable [u8 index]
-    OP_SET_UPVALUE,     // Set captured variable [u8 index]
-    OP_CLOSE_UPVALUE,   // Close upvalue when leaving scope
+    // Variables
+    OP_GET_LOCAL,       // [u16 slot]
+    OP_SET_LOCAL,       // [u16 slot] stores the top, keeps it
+    OP_PUT_LOCAL,       // [u16 slot] stores the top, pops it
+    OP_GET_CELL,        // [u16 cell] a captured local of this function
+    OP_SET_CELL,        // [u16 cell]
+    OP_PUT_CELL,        // [u16 cell]
+    OP_GET_UPVALUE,     // [u16 index] a variable captured from outside
+    OP_SET_UPVALUE,     // [u16 index]
+    OP_PUT_UPVALUE,     // [u16 index]
+    OP_INC_LOCAL,       // [u16 slot][u8 delta+128][u8 coerce] local = coerce(ToNumber(local) + delta)
+    OP_GET_NAME,        // [u16 name][u16 cache] a name looked up at run time
+    OP_SET_NAME,        // [u16 name][u16 cache] keeps the value
+    OP_TYPEOF_NAME,     // [u16 name] typeof of a name that may not exist
+    OP_DEFINE_VAR,      // [u16 name] a top-level var: defined with the top's value unless it exists; pops
+    OP_DEFINE_FUNCTION, // [u16 name] a top-level function: defined with the top's value; pops
+    OP_GET_QNAME,       // [u16 name] a definition by qualified name (a.b.C)
+
+    // Properties
+    OP_GET_PROP,        // [u16 name][u16 cache] obj -> value
+    OP_SET_PROP,        // [u16 name][u16 cache] obj value -> value
+    OP_DELETE_PROP,     // [u16 name] obj -> boolean
+    OP_GET_INDEX,       // obj key -> value
+    OP_SET_INDEX,       // obj key value -> value
+    OP_DELETE_INDEX,    // obj key -> boolean
+    OP_GET_SUPER,       // [u16 name] -> value (on this)
+    OP_SET_SUPER,       // [u16 name] value -> value
 
     // Arithmetic
-    OP_ADD,             // a + b
-    OP_SUBTRACT,        // a - b
-    OP_MULTIPLY,        // a * b
-    OP_DIVIDE,          // a / b
-    OP_MODULO,          // a % b
-    OP_POWER,           // a ** b
-    OP_NEGATE,          // -a
+    OP_ADD,
+    OP_SUBTRACT,
+    OP_MULTIPLY,
+    OP_DIVIDE,
+    OP_MODULO,
+    OP_NEGATE,
+    OP_TO_NUMBER,       // unary +
+    OP_INCREMENT,       // ToNumber(a) + 1
+    OP_DECREMENT,       // ToNumber(a) - 1
 
     // Comparison
-    OP_EQUAL,           // a == b (loose)
-    OP_NOT_EQUAL,       // a != b (loose)
-    OP_STRICT_EQUAL,    // a === b
-    OP_STRICT_NOT_EQUAL,// a !== b
-    OP_GREATER,         // a > b
-    OP_GREATER_EQUAL,   // a >= b
-    OP_LESS,            // a < b
-    OP_LESS_EQUAL,      // a <= b
+    OP_EQUAL,
+    OP_NOT_EQUAL,
+    OP_STRICT_EQUAL,
+    OP_STRICT_NOT_EQUAL,
+    OP_GREATER,
+    OP_GREATER_EQUAL,
+    OP_LESS,
+    OP_LESS_EQUAL,
 
-    // Logical
-    OP_NOT,             // !a
-    OP_AND,             // a && b (short-circuit)
-    OP_OR,              // a || b (short-circuit)
+    // Logical and bitwise
+    OP_NOT,
+    OP_BIT_AND,
+    OP_BIT_OR,
+    OP_BIT_XOR,
+    OP_BIT_NOT,
+    OP_LEFT_SHIFT,
+    OP_RIGHT_SHIFT,
+    OP_UNSIGNED_RIGHT_SHIFT,
 
-    // Bitwise
-    OP_BIT_AND,         // a & b
-    OP_BIT_OR,          // a | b
-    OP_BIT_XOR,         // a ^ b
-    OP_BIT_NOT,         // ~a
-    OP_LEFT_SHIFT,      // a << b
-    OP_RIGHT_SHIFT,     // a >> b
-    OP_UNSIGNED_RIGHT_SHIFT, // a >>> b
-
-    // Increment/Decrement
-    OP_INCREMENT,       // ++a (prefix)
-    OP_DECREMENT,       // --a (prefix)
-    OP_POST_INCREMENT,  // a++ (postfix)
-    OP_POST_DECREMENT,  // a-- (postfix)
+    // Types
+    OP_TYPEOF,
+    OP_INSTANCEOF,      // value class -> boolean
+    OP_IN,              // key obj -> boolean
+    OP_IS,              // value type -> boolean
+    OP_AS,              // value type -> value or null
+    OP_COERCE,          // [u8 Coerce]
 
     // Control flow
-    OP_JUMP,            // Unconditional jump [s16 offset]
-    OP_JUMP_IF_FALSE,   // Jump if top is falsy [s16 offset]
-    OP_JUMP_IF_TRUE,    // Jump if top is truthy [s16 offset]
-    OP_LOOP,            // Jump backward [u16 offset]
+    OP_JUMP,                    // [s32]
+    OP_JUMP_IF_FALSE,           // [s32] pops
+    OP_JUMP_IF_TRUE,            // [s32] pops
+    OP_JUMP_IF_FALSE_KEEP,      // [s32] keeps the value when jumping, pops it otherwise
+    OP_JUMP_IF_TRUE_KEEP,       // [s32]
+    OP_JUMP_IF_NOT_NULLISH_KEEP,// [s32]
 
     // Functions
-    OP_CALL,            // Call function [u8 arg_count]
-    OP_CALL_METHOD,     // Call method with 'this' binding [u8 arg_count]
-    OP_CLOSURE,         // Create closure [u16 function_index] [upvalue_count]
-    OP_RETURN,          // Return from function
-    OP_THIS,            // Push 'this' value
+    OP_CALL,            // [u8 argc] fn args... -> result ('this' undefined)
+    OP_CALL_PROP,       // [u16 name][u8 argc][u16 cache] obj args... -> result
+    OP_CALL_NAME,       // [u16 name][u8 argc][u16 cache] args... -> result
+    OP_CALL_INDEX,      // [u8 argc] obj key args... -> result
+    OP_CALL_SUPER,      // [u16 name][u8 argc] args... -> result
+    OP_SUPER_CTOR,      // [u8 argc] args... -> undefined
+    OP_NEW,             // [u8 argc] class args... -> instance
+    OP_RETURN,
+    OP_RETURN_UNDEFINED,
+    OP_THIS,
+    OP_SCOPE_THIS,      // the instance names in a method (or a function in one) find
+    OP_OWNER_CLASS,     // the class the running method belongs to
+    OP_CLOSURE,         // [u16 function index]
+    OP_DEFAULT_ARG,     // [u16 param][s32] jumps when the argument was given
 
-    // Objects & Arrays
-    OP_NEW_ARRAY,       // Create array [u16 element_count]
-    OP_NEW_OBJECT,      // Create object [u16 property_count]
-    OP_GET_PROPERTY,    // Get object property [u16 name_index]
-    OP_SET_PROPERTY,    // Set object property [u16 name_index]
-    OP_GET_INDEX,       // Get array element (computed access)
-    OP_SET_INDEX,       // Set array element (computed access)
+    // Objects and arrays
+    OP_NEW_ARRAY,       // [u16 count]
+    OP_NEW_OBJECT,      // [u16 pairs] key value ... -> object
+    OP_NEW_VECTOR,      // [u16 count] type elements... -> vector
+    OP_NEW_REGEXP,      // [u16 pattern][u16 flags]
+    OP_APPLY_TYPE,      // [u8 count] base types... -> class (Vector.<int>)
+    OP_DEFINE_CLASS,    // [u16 class index] -> class
 
-    // Classes
-    OP_CLASS,           // Define class [u16 name_index]
-    OP_METHOD,          // Define method [u16 name_index]
-    OP_INHERIT,         // Set up inheritance
-    OP_INSTANTIATE,     // Create class instance [u8 arg_count]
-    OP_GET_SUPER,       // Access super property [u16 name_index]
-    OP_INVOKE,          // Optimized method call [u16 name] [u8 arg_count]
-    OP_SUPER_INVOKE,    // Optimized super call [u16 name] [u8 arg_count]
+    // Exceptions and iteration
+    OP_THROW,
+    OP_ITER_INIT,       // [u8 each] obj -> iterator
+    OP_ITER_NEXT,       // [u16 iterator local][s32] pushes the next key (or value), or jumps when done
 
-    // Special
-    OP_TYPEOF,          // typeof operator
-    OP_INSTANCEOF,      // instanceof operator
-    OP_IN,              // in operator
-    OP_DELETE,          // delete operator
-
-    // Debugging
-    OP_PRINT,           // Print top value (for debugging)
-    OP_BREAKPOINT,      // Debugger breakpoint
+    OP_NOP,
 };
 
 // Get human-readable name for opcode
 const char* getOpCodeName(OpCode op);
 
-// Get number of operand bytes for opcode
+// The number of operand bytes after the opcode.
 int getOpCodeOperandCount(OpCode op);
-
-// Instruction structure for disassembly
-struct Instruction {
-    OpCode opcode;
-    union {
-        uint8_t byte;
-        uint16_t u16;
-        uint32_t u32;
-        int16_t s16;
-        double f64;
-    } operand;
-};
 
 } // namespace as3

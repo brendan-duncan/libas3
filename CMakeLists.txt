@@ -22,6 +22,13 @@ add_library(as3_parser
     src/bytecode/chunk.cpp
     src/bytecode/compiler.cpp
     src/bytecode/vm.cpp
+    src/bytecode/vm_runtime.cpp
+    src/runtime/builtins_core.cpp
+    src/runtime/builtins_array.cpp
+    src/runtime/builtins_string.cpp
+    src/runtime/builtins_date.cpp
+    src/runtime/builtins_json.cpp
+    src/runtime/builtins_utils.cpp
 )
 
 target_include_directories(as3_parser PUBLIC
@@ -45,6 +52,7 @@ add_executable(as3_tests
     test/vm_tests.cpp
     test/as2_tests.cpp
     test/benchmark_tests.cpp
+    test/language_tests.cpp
 )
 
 target_include_directories(as3_tests PRIVATE

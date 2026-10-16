@@ -2,6 +2,7 @@
 #include <cctype>
 #include <cmath>
 #include <sstream>
+#include <cstdlib>
 
 namespace as3 {
 
@@ -22,7 +23,9 @@ bool Lexer::isHexDigit(char c) {
 }
 
 bool Lexer::isAlpha(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$';
+    // Bytes of a UTF-8 sequence are letters too: names may use any.
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$' ||
+           static_cast<unsigned char>(c) >= 0x80;
 }
 
 bool Lexer::isAlphaNumeric(char c) {
@@ -126,6 +129,10 @@ Token Lexer::makeError(const std::string& message) {
 }
 
 std::vector<Token> Lexer::tokenize() {
+    // A UTF-8 byte order mark, as editors on Windows write.
+    if (_source.compare(0, 3, "\xEF\xBB\xBF") == 0) {
+        _position = 3;
+    }
     while (hasMore()) {
         skipWhiteSpace();
         if (!hasMore()) 
@@ -505,7 +512,7 @@ void Lexer::scanToken() {
             advanceChar();
         }
     } else if (c == '/') {
-        if (peekChar(1) == '=') {
+        if (peekChar(1) == '=' && !regexAllowed()) {
             Token t = makeToken(TokenType::DivideAssign);
             t.text = "/=";
             addToken(t);
@@ -526,6 +533,8 @@ void Lexer::scanToken() {
                 }
                 advanceChar();
             }
+        } else if (regexAllowed()) {
+            scanRegExp();
         } else {
             Token t = makeToken(TokenType::Divide);
             t.text = "/";
@@ -658,25 +667,86 @@ void Lexer::scanIdentifier() {
     }
 }
 
+namespace {
+
+// A code point as UTF-8.
+void appendUtf8(std::string& out, uint32_t code) {
+    if (code < 0x80) {
+        out += static_cast<char>(code);
+    } else if (code < 0x800) {
+        out += static_cast<char>(0xC0 | (code >> 6));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+    } else if (code < 0x10000) {
+        out += static_cast<char>(0xE0 | (code >> 12));
+        out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+    } else {
+        out += static_cast<char>(0xF0 | (code >> 18));
+        out += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+    }
+}
+
+int hexValue(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+} // namespace
+
 void Lexer::scanString() {
     char quote = peekChar();
+    SourceLocation start = makeLocation();
     advanceChar();
     std::string value;
-    SourceLocation start = makeLocation();
+    uint32_t pendingHigh = 0;  // the first half of a \u surrogate pair
 
     while (hasMore() && peekChar() != quote) {
         char c = peekChar();
         if (c == '\\') {
             advanceChar();
-            char escaped = peekChar();
+            char escaped = advanceChar();
             switch (escaped) {
                 case 'n': value += '\n'; break;
                 case 'r': value += '\r'; break;
                 case 't': value += '\t'; break;
+                case 'b': value += '\b'; break;
+                case 'f': value += '\f'; break;
+                case 'v': value += '\v'; break;
                 case '0': value += '\0'; break;
-                case '\\': value += '\\'; break;
-                case '\'': value += '\''; break;
-                case '"': value += '"'; break;
+                case '\r':
+                    // A line continued: the break is not in the string.
+                    if (peekChar() == '\n') advanceChar();
+                    break;
+                case '\n':
+                    break;
+                case 'x':
+                case 'u': {
+                    const int digits = escaped == 'x' ? 2 : 4;
+                    uint32_t code = 0;
+                    int read = 0;
+                    while (read < digits && hexValue(peekChar()) >= 0) {
+                        code = code * 16 + static_cast<uint32_t>(hexValue(advanceChar()));
+                        ++read;
+                    }
+                    if (read == 0) {
+                        value += escaped;
+                        break;
+                    }
+                    if (code >= 0xD800 && code < 0xDC00) {
+                        pendingHigh = code;
+                        break;
+                    }
+                    if (code >= 0xDC00 && code < 0xE000 && pendingHigh) {
+                        code = 0x10000 + ((pendingHigh - 0xD800) << 10) + (code - 0xDC00);
+                    }
+                    pendingHigh = 0;
+                    appendUtf8(value, code);
+                    break;
+                }
                 default:
                     value += escaped;
                     break;
@@ -696,6 +766,68 @@ void Lexer::scanString() {
     }
 
     Token t = makeString(value);
+    t.text = value;
+    t.start = start;
+    t.end = makeLocation();
+    addToken(t);
+}
+
+// Whether a / here starts a regular expression rather than dividing: it
+// does where a value is expected, after an operator, a keyword or nothing.
+bool Lexer::regexAllowed() const {
+    if (_tokens.empty()) {
+        return true;
+    }
+    const Token& last = _tokens.back();
+    switch (last.type) {
+        case TokenType::Identifier:
+        case TokenType::Number:
+        case TokenType::String:
+        case TokenType::Boolean:
+        case TokenType::Null:
+        case TokenType::RegularExpression:
+        case TokenType::RParen:
+        case TokenType::RBracket:
+        case TokenType::RBrace:
+        case TokenType::Increment:
+        case TokenType::Decrement:
+            return false;
+        case TokenType::Keyword:
+            return last.keyword != KeywordType::This && last.keyword != KeywordType::Super;
+        default:
+            return true;
+    }
+}
+
+void Lexer::scanRegExp() {
+    SourceLocation start = makeLocation();
+    advanceChar();  // the opening /
+    std::string pattern;
+    bool inClass = false;
+    while (hasMore() && !isNewLine(peekChar())) {
+        char c = peekChar();
+        if (c == '\\') {
+            pattern += advanceChar();
+            if (hasMore()) pattern += advanceChar();
+            continue;
+        }
+        if (c == '[') inClass = true;
+        else if (c == ']') inClass = false;
+        else if (c == '/' && !inClass) break;
+        pattern += advanceChar();
+    }
+    if (peekChar() != '/') {
+        addToken(makeError("Unterminated regular expression"));
+        return;
+    }
+    advanceChar();
+    std::string flags;
+    while (hasMore() && isAlphaNumeric(peekChar())) {
+        flags += advanceChar();
+    }
+    Token t = makeToken(TokenType::RegularExpression);
+    t.text = pattern;
+    t.stringValue = flags;
     t.start = start;
     t.end = makeLocation();
     addToken(t);
@@ -705,30 +837,32 @@ void Lexer::scanNumber() {
     std::string numStr;
     SourceLocation start = makeLocation();
 
-    if (peekChar() == '0') {
-        numStr += advanceChar();
-        if (peekChar() == 'x' || peekChar() == 'X') {
-            numStr += advanceChar();
-            while (isHexDigit(peekChar())) {
-                numStr += advanceChar();
-            }
-            double value = static_cast<double>(std::stoi(numStr.substr(2), nullptr, 16));
-            Token t = makeNumber(value);
-            t.start = start;
-            t.end = makeLocation();
-            addToken(t);
-            return;
+    if (peekChar() == '0' && (peekChar(1) == 'x' || peekChar(1) == 'X')) {
+        advanceChar();
+        advanceChar();
+        // As a double: 0xFF000000 and larger are more than an int holds.
+        double value = 0;
+        while (isHexDigit(peekChar())) {
+            value = value * 16 + hexValue(advanceChar());
         }
+        Token t = makeNumber(value);
+        t.start = start;
+        t.end = makeLocation();
+        addToken(t);
+        return;
     }
 
     while (isDigit(peekChar()) || peekChar() == '.') {
         if (peekChar() == '.') {
+            // One point only, and not the first of two (a range or 1..x).
             if (numStr.find('.') != std::string::npos) break;
+            if (peekChar(1) == '.') break;
         }
         numStr += advanceChar();
     }
 
-    if (peekChar() == 'e' || peekChar() == 'E') {
+    if ((peekChar() == 'e' || peekChar() == 'E') &&
+        (isDigit(peekChar(1)) || ((peekChar(1) == '+' || peekChar(1) == '-') && isDigit(peekChar(2))))) {
         numStr += advanceChar();
         if (peekChar() == '+' || peekChar() == '-') {
             numStr += advanceChar();
@@ -738,8 +872,9 @@ void Lexer::scanNumber() {
         }
     }
 
-    double value = std::stod(numStr);
+    double value = std::strtod(numStr.c_str(), nullptr);
     Token t = makeNumber(value);
+    t.text = numStr;
     t.start = start;
     t.end = makeLocation();
     addToken(t);

@@ -4,12 +4,16 @@
 
 namespace as3 {
 
-Parser::Parser(const std::string& source)
+Parser::Parser(const std::string& source, const std::string& fileName)
     : _lexer(source)
-    , _position(0) {
+    , _position(0)
+    , _fileName(fileName) {
     _tokens = _lexer.tokenize();
     _eofToken.type = TokenType::EndOfFile;
     _eofToken.keyword = KeywordType::None;
+    if (!_tokens.empty()) {
+        _eofToken.start = _tokens.back().start;
+    }
 }
 
 Parser::~Parser() {
@@ -44,32 +48,6 @@ bool Parser::check(KeywordType keyword) const {
     return currentToken().type == TokenType::Keyword && currentToken().keyword == keyword;
 }
 
-bool Parser::peekForInOrOf() {
-    size_t savedPos = _position;
-    if (check(KeywordType::Var) || check(KeywordType::Const) || check(KeywordType::Let)) {
-        advance();
-        if (check(TokenType::Identifier)) {
-            advance();
-            if (check(KeywordType::In)) {
-                _position = savedPos;
-                return true;
-            }
-            if (check(TokenType::Colon)) {
-                advance();
-                if (check(TokenType::Identifier)) {
-                    advance();
-                    if (check(KeywordType::In)) {
-                        _position = savedPos;
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    _position = savedPos;
-    return false;
-}
-
 bool Parser::match(TokenType type) {
     if (check(type)) {
         advance();
@@ -84,12 +62,6 @@ bool Parser::match(KeywordType keyword) {
         return true;
     }
     return false;
-}
-
-void Parser::expect(bool condition, const std::string& message) {
-    if (!condition) {
-        addError(message);
-    }
 }
 
 void Parser::expectToken(TokenType type, const std::string& message) {
@@ -108,9 +80,51 @@ void Parser::expectKeyword(KeywordType keyword, const std::string& message) {
     }
 }
 
+bool Parser::isNameToken(const Token& token) {
+    if (token.type == TokenType::Identifier) {
+        return true;
+    }
+    if (token.type != TokenType::Keyword) {
+        return false;
+    }
+    switch (token.keyword) {
+        case KeywordType::Get:
+        case KeywordType::Set:
+        case KeywordType::Each:
+        case KeywordType::Of:
+        case KeywordType::Namespace:
+        case KeywordType::Dynamic:
+        case KeywordType::Final:
+        case KeywordType::Native:
+        case KeywordType::Override:
+        case KeywordType::Static:
+        case KeywordType::Yield:
+        case KeywordType::Async:
+        case KeywordType::Await:
+        case KeywordType::Enum:
+        case KeywordType::Let:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool Parser::isPropertyNameToken(const Token& token) {
+    return token.type == TokenType::Identifier || token.type == TokenType::Keyword ||
+           token.type == TokenType::Boolean || token.type == TokenType::Null;
+}
+
+std::string Parser::tokenWord(const Token& token) {
+    return token.text;
+}
+
 void Parser::addError(const std::string& message) {
     std::ostringstream oss;
-    oss << "Parse error at line " << currentToken().start.line
+    oss << "Parse error";
+    if (!_fileName.empty()) {
+        oss << " in " << _fileName;
+    }
+    oss << " at line " << currentToken().start.line
         << ", column " << currentToken().start.column << ": " << message;
     if (currentToken().type != TokenType::EndOfFile) {
         oss << " but found '" << currentToken().text << "'";
@@ -118,6 +132,17 @@ void Parser::addError(const std::string& message) {
         oss << " but found end of file";
     }
     _errors += oss.str() + "\n";
+}
+
+void Parser::addWarning(const std::string& message) {
+    std::ostringstream oss;
+    oss << "Warning";
+    if (!_fileName.empty()) {
+        oss << " in " << _fileName;
+    }
+    oss << " at line " << currentToken().start.line << ", column " << currentToken().start.column << ": "
+        << message;
+    _warnings += oss.str() + "\n";
 }
 
 void Parser::synchronize() {
@@ -132,7 +157,6 @@ void Parser::synchronize() {
             case KeywordType::Function:
             case KeywordType::Var:
             case KeywordType::Const:
-            case KeywordType::Let:
             case KeywordType::For:
             case KeywordType::If:
             case KeywordType::While:
@@ -140,7 +164,6 @@ void Parser::synchronize() {
             case KeywordType::Try:
             case KeywordType::Import:
             case KeywordType::Package:
-            case KeywordType::Namespace:
                 return;
             default:
                 break;
@@ -155,35 +178,199 @@ void Parser::synchronize() {
 }
 
 std::string Parser::parseQualifiedName() {
-    if (!check(TokenType::Identifier)) {
+    if (!isNameToken(currentToken())) {
         addError("Expected identifier in qualified name");
         return "";
     }
 
-    std::string name = currentToken().text;
+    std::string name = tokenWord(currentToken());
     advance();
 
-    while (match(TokenType::Dot)) {
-        if (!check(TokenType::Identifier)) {
-            addError("Expected identifier after '.' in qualified name");
-            return name;
-        }
-        name += "." + currentToken().text;
+    while (check(TokenType::Dot) && isPropertyNameToken(peek(1))) {
+        advance();
+        name += "." + tokenWord(currentToken());
         advance();
     }
 
     return name;
 }
 
+std::string Parser::parseTypeName() {
+    if (match(TokenType::Multiply)) {
+        return "*";
+    }
+    if (match(KeywordType::Void)) {
+        return "void";
+    }
+    if (!isNameToken(currentToken())) {
+        addError("Expected a type");
+        return "*";
+    }
+    std::string name = tokenWord(currentToken());
+    advance();
+    while (check(TokenType::Dot)) {
+        if (peek(1).type == TokenType::LessThan) {
+            advance();  // .
+            advance();  // <
+            name += ".<" + parseTypeName();
+            while (match(TokenType::Comma)) {
+                name += "," + parseTypeName();
+            }
+            expectTypeClose();
+            name += ">";
+            continue;
+        }
+        if (!isPropertyNameToken(peek(1))) {
+            break;
+        }
+        advance();
+        name += "." + tokenWord(currentToken());
+        advance();
+    }
+    return name;
+}
+
+void Parser::expectTypeClose() {
+    Token& token = _position < _tokens.size() ? _tokens[_position] : _eofToken;
+    switch (token.type) {
+        case TokenType::GreaterThan:
+            advance();
+            return;
+        case TokenType::RightShift:
+            token.type = TokenType::GreaterThan;
+            token.text = ">";
+            return;
+        case TokenType::UnsignedRightShift:
+            token.type = TokenType::RightShift;
+            token.text = ">>";
+            return;
+        case TokenType::GreaterThanOrEqual:
+            token.type = TokenType::Assign;
+            token.text = "=";
+            return;
+        case TokenType::RightShiftAssign:
+            token.type = TokenType::GreaterThanOrEqual;
+            token.text = ">=";
+            return;
+        default:
+            addError("Expected '>' after type arguments");
+            return;
+    }
+}
+
+IdentifierPtr Parser::parseTypeAnnotation() {
+    return std::make_unique<Identifier>(parseTypeName());
+}
+
+// [Name] or [Name(...)] before a definition, rather than an array: followed
+// by another tag or a definition.
+bool Parser::looksLikeMetadata() const {
+    if (!check(TokenType::LBracket) || peek(1).type != TokenType::Identifier) {
+        return false;
+    }
+    int depth = 0;
+    for (int i = 0;; ++i) {
+        const Token& token = peek(i);
+        if (token.type == TokenType::EndOfFile) {
+            return false;
+        }
+        if (token.type == TokenType::LBracket || token.type == TokenType::LParen) {
+            ++depth;
+        } else if (token.type == TokenType::RBracket || token.type == TokenType::RParen) {
+            if (--depth == 0) {
+                if (token.type != TokenType::RBracket) {
+                    return false;
+                }
+                const Token& next = peek(i + 1);
+                if (next.type == TokenType::LBracket) {
+                    return true;
+                }
+                if (next.type != TokenType::Keyword) {
+                    return false;
+                }
+                switch (next.keyword) {
+                    case KeywordType::Class: case KeywordType::Interface: case KeywordType::Public:
+                    case KeywordType::Private: case KeywordType::Protected: case KeywordType::Internal:
+                    case KeywordType::Final: case KeywordType::Dynamic: case KeywordType::Function:
+                    case KeywordType::Var: case KeywordType::Const: case KeywordType::Static:
+                    case KeywordType::Override:
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+        }
+    }
+}
+
+void Parser::parseMetadata() {
+    expectToken(TokenType::LBracket, "Expected '['");
+    Metadata tag;
+    tag.name = parseQualifiedName();
+    if (match(TokenType::LParen)) {
+        while (!check(TokenType::RParen) && !check(TokenType::EndOfFile)) {
+            std::string key;
+            std::string value;
+            if (isPropertyNameToken(currentToken()) && peek(1).type == TokenType::Assign) {
+                key = tokenWord(currentToken());
+                advance();
+                advance();
+            }
+            const Token& token = currentToken();
+            value = token.type == TokenType::String ? token.stringValue : token.text;
+            if (token.type == TokenType::Number && value.empty()) {
+                std::ostringstream number;
+                number << token.numericValue;
+                value = number.str();
+            }
+            advance();
+            tag.arguments.emplace_back(key, value);
+            if (!match(TokenType::Comma)) {
+                break;
+            }
+        }
+        expectToken(TokenType::RParen, "Expected ')' after metadata arguments");
+    }
+    expectToken(TokenType::RBracket, "Expected ']' after metadata");
+    _pendingMetadata.push_back(std::move(tag));
+}
+
+std::vector<Metadata> Parser::takeMetadata() {
+    std::vector<Metadata> taken;
+    taken.swap(_pendingMetadata);
+    return taken;
+}
+
 std::unique_ptr<Program> Parser::parse() {
     auto program = std::make_unique<Program>();
+    program->fileName = _fileName;
 
     while (!check(TokenType::EndOfFile)) {
+        const size_t before = _position;
         auto stmt = parseTopLevel();
         if (stmt) {
             program->statements.push_back(std::move(stmt));
         } else {
             synchronize();
+            // Stray closing brackets at the top level are skipped.
+            if (_position == before) {
+                advance();
+            }
+        }
+    }
+
+    // What the lexer found wrong, as parse errors.
+    if (!_lexer.getErrors().empty()) {
+        std::istringstream lines(_lexer.getErrors());
+        std::string line;
+        while (std::getline(lines, line)) {
+            const std::string at = "Error at line ";
+            if (line.compare(0, at.size(), at) == 0) {
+                const size_t colon = line.find(':');
+                _errors += "Parse error" + (_fileName.empty() ? std::string() : " in " + _fileName) + " at line " +
+                           line.substr(at.size(), colon - at.size()) + ", column 1:" + line.substr(colon + 1) +
+                           "\n";
+            }
         }
     }
 
@@ -194,25 +381,28 @@ std::vector<std::unique_ptr<ImportDirective>> Parser::parseImports() {
     std::vector<std::unique_ptr<ImportDirective>> imports;
 
     while (match(KeywordType::Import)) {
-        std::string path = parseQualifiedName();
+        std::string path = isNameToken(currentToken()) ? tokenWord(currentToken()) : std::string();
+        if (path.empty()) {
+            addError("Expected identifier in import");
+        } else {
+            advance();
+        }
 
         std::string name;
         bool isWildcard = false;
-
-        // Check for wildcard import: import com.example.*;
-        if (match(TokenType::Dot)) {
+        while (match(TokenType::Dot)) {
             if (match(TokenType::Multiply)) {
                 isWildcard = true;
                 name = "*";
-            } else {
-                addError("Expected '*' after '.' in import");
+                break;
             }
+            if (!isPropertyNameToken(currentToken())) {
+                addError("Expected identifier or '*' after '.' in import");
+                break;
+            }
+            path += "." + tokenWord(currentToken());
+            advance();
         }
-
-        // TODO: Handle 'as' alias for imports
-        // if (match(KeywordType::As)) {
-        //     name = parseIdentifier()->name;
-        // }
 
         if (!isWildcard && !path.empty()) {
             size_t lastDot = path.rfind('.');
@@ -225,7 +415,7 @@ std::vector<std::unique_ptr<ImportDirective>> Parser::parseImports() {
             }
         }
 
-        expectToken(TokenType::SemiColon, "Expected ';' after import");
+        endStatement("Expected ';' after import");
 
         auto id = std::make_unique<Identifier>(name);
         auto import = std::make_unique<ImportDirective>(path, std::move(id), isWildcard);
@@ -235,39 +425,83 @@ std::vector<std::unique_ptr<ImportDirective>> Parser::parseImports() {
     return imports;
 }
 
+bool Parser::atAttribute() const {
+    if (check(KeywordType::Public) || check(KeywordType::Private) || check(KeywordType::Protected) ||
+        check(KeywordType::Internal) || check(KeywordType::Final) || check(KeywordType::Dynamic) ||
+        check(KeywordType::Native) || check(KeywordType::Override)) {
+        return true;
+    }
+    // static, unless a name (static = 1 in a function).
+    if (check(KeywordType::Static)) {
+        const Token& next = peek(1);
+        return next.type == TokenType::Keyword || next.type == TokenType::Identifier;
+    }
+    // A namespace as an attribute: mx_internal function f().
+    if (check(TokenType::Identifier) && !currentToken().newLineBefore) {
+        const Token& next = peek(1);
+        if (next.type == TokenType::Keyword && !next.newLineBefore &&
+            (next.keyword == KeywordType::Function || next.keyword == KeywordType::Var ||
+             next.keyword == KeywordType::Const || next.keyword == KeywordType::Static ||
+             next.keyword == KeywordType::Override)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::unique_ptr<AstNode> Parser::parseTopLevel() {
     if (match(KeywordType::Package)) {
         return parsePackage();
     }
 
-    // public class Main ..., public function ..., in a package.
-    if (check(KeywordType::Public) || check(KeywordType::Private) || check(KeywordType::Protected) ||
-        check(KeywordType::Internal) || check(KeywordType::Static) || check(KeywordType::Final) ||
-        check(KeywordType::Dynamic) || check(KeywordType::Native) || check(KeywordType::Override)) {
-        auto attrs = parseAttributes();
-        if (check(KeywordType::Class)) {
-            return parseClassDeclaration();
-        }
-        if (check(KeywordType::Function)) {
-            return parseFunctionDefinitionWithAttributes(std::move(attrs));
-        }
-        if (check(KeywordType::Var) || check(KeywordType::Const)) {
-            return parseVariableStatementWithAttributes(std::move(attrs));
-        }
-        addError("Expected a class, function or variable after its attributes");
-        return nullptr;
+    if (looksLikeMetadata()) {
+        parseMetadata();
+        return parseTopLevel();
+    }
+
+    if (atAttribute() || check(KeywordType::Class) || check(KeywordType::Interface)) {
+        return parseDefinition(parseAttributes());
     }
 
     if (check(KeywordType::Import)) {
-        // Parse single import as a statement-like node
         auto imports = parseImports();
         if (!imports.empty()) {
-            // Return the first import (there should only be one)
             return std::move(imports[0]);
         }
     }
 
     return parseStatement();
+}
+
+std::unique_ptr<AstNode> Parser::parseDefinition(std::vector<AttributePtr> attrs) {
+    const int line = static_cast<int>(currentToken().start.line);
+    if (check(KeywordType::Class) || check(KeywordType::Interface)) {
+        const bool isInterface = check(KeywordType::Interface);
+        auto definition = parseClassDeclaration(std::move(attrs), isInterface);
+        if (definition) {
+            definition->line = line;
+        }
+        return definition;
+    }
+    if (check(KeywordType::Function)) {
+        auto function = parseFunctionDefinitionWithAttributes(std::move(attrs));
+        if (function) {
+            function->line = line;
+        }
+        return function;
+    }
+    if (check(KeywordType::Var) || check(KeywordType::Const) || check(KeywordType::Let)) {
+        auto variables = parseVariableStatement(std::move(attrs));
+        if (variables) {
+            variables->line = line;
+        }
+        return variables;
+    }
+    if (check(KeywordType::Namespace)) {
+        return parseNamespaceDeclaration();
+    }
+    addError("Expected a class, function or variable after its attributes");
+    return nullptr;
 }
 
 std::unique_ptr<PackageDefinition> Parser::parsePackage() {
@@ -280,11 +514,21 @@ std::unique_ptr<PackageDefinition> Parser::parsePackage() {
     auto package = std::make_unique<PackageDefinition>(std::move(name), parseImports(), std::vector<AstNodePtr>());
 
     while (!check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
+        if (check(KeywordType::Import)) {
+            for (auto& import : parseImports()) {
+                package->imports.push_back(std::move(import));
+            }
+            continue;
+        }
+        const size_t before = _position;
         auto member = parseTopLevel();
         if (member) {
             package->members.push_back(std::move(member));
         } else {
             synchronize();
+            if (_position == before) {
+                advance();
+            }
         }
     }
 
@@ -339,31 +583,58 @@ std::unique_ptr<Statement> Parser::parseStatementBody() {
     if (check(KeywordType::With)) {
         return parseWithStatement();
     }
-    if (check(KeywordType::Var) || check(KeywordType::Const) || check(KeywordType::Let)) {
+    if (check(KeywordType::Var) || check(KeywordType::Const) ||
+        (check(KeywordType::Let) && isNameToken(peek(1)))) {
         return parseVariableStatement();
     }
-    if (check(KeywordType::Function)) {
-        return parseFunctionDeclaration();
+    if (check(KeywordType::Function) && isNameToken(peek(1))) {
+        return parseFunctionDefinitionWithAttributes({});
     }
-    if (check(KeywordType::Class)) {
-        return parseClassDeclaration();
+    if (check(KeywordType::Class) || check(KeywordType::Interface)) {
+        return parseClassDeclaration({}, check(KeywordType::Interface));
     }
-    if (check(KeywordType::Namespace)) {
+    if (check(KeywordType::Namespace) && isNameToken(peek(1))) {
         return parseNamespaceDeclaration();
+    }
+    if (check(KeywordType::Import)) {
+        // An import in a function or a class: names only, nothing to run.
+        auto imports = parseImports();
+        return std::make_unique<EmptyStatement>();
+    }
+    if (check(KeywordType::Use) || (check(TokenType::Identifier) && currentToken().text == "include" &&
+                                    peek(1).type == TokenType::String)) {
+        return parseUseOrInclude();
     }
     if (check(TokenType::SemiColon)) {
         return parseEmptyStatement();
     }
+    if (isNameToken(currentToken()) && peek(1).type == TokenType::Colon) {
+        return parseLabeledStatement();
+    }
     if (check(TokenType::Identifier)) {
-        if (peek(1).type == TokenType::Colon) {
-            return parseLabeledStatement();
-        }
         if (auto legacy = parseLegacyBlock()) {
             return legacy;
         }
     }
 
     return parseExpressionStatement();
+}
+
+// use namespace x; and include "file.as"; are read and left out.
+std::unique_ptr<Statement> Parser::parseUseOrInclude() {
+    if (match(KeywordType::Use)) {
+        match(KeywordType::Namespace);
+        parseQualifiedName();
+        while (match(TokenType::Comma)) {
+            parseQualifiedName();
+        }
+    } else {
+        advance();  // include
+        addWarning("include \"" + currentToken().stringValue + "\" is not supported and was left out");
+        advance();
+    }
+    endStatement("Expected ';'");
+    return std::make_unique<EmptyStatement>();
 }
 
 // ActionScript 1 and 2 blocks, which name what they are for in parentheses
@@ -468,11 +739,15 @@ std::unique_ptr<Statement> Parser::parseBlockStatement() {
     expectToken(TokenType::LBrace, "Expected '{'");
 
     while (!check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
+        const size_t before = _position;
         auto stmt = parseStatement();
         if (stmt) {
             statements.push_back(std::move(stmt));
         } else {
             synchronize();
+            if (_position == before && !check(TokenType::RBrace)) {
+                advance();
+            }
         }
     }
 
@@ -503,6 +778,14 @@ std::unique_ptr<Statement> Parser::parseExpressionStatement() {
     if (!expr) {
         addError("Failed to parse expression");
         return nullptr;
+    }
+    // Something more on the line, with nothing between: as a.b 0.07; where
+    // an = was left out. Taken as two statements, with a warning, unless
+    // strict.
+    if (!_strict && !check(TokenType::SemiColon) && !check(TokenType::RBrace) && !check(TokenType::EndOfFile) &&
+        !currentToken().newLineBefore && !check(TokenType::Error)) {
+        addWarning("Expected ';' after expression; what follows is taken as another statement");
+        return std::make_unique<ExpressionStatement>(std::move(expr));
     }
     endStatement("Expected ';' after expression");
     return std::make_unique<ExpressionStatement>(std::move(expr));
@@ -544,38 +827,39 @@ std::unique_ptr<Statement> Parser::parseSwitchStatement() {
     std::vector<std::unique_ptr<CaseClause>> cases;
 
     while (!check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
+        ExpressionPtr caseExpr;
+        const int line = static_cast<int>(currentToken().start.line);
         if (match(KeywordType::Default)) {
-            expectToken(TokenType::Colon, "Expected ':'");
-            std::vector<StatementPtr> consequent;
-            while (!check(KeywordType::Case) && !check(KeywordType::Default) &&
-                   !check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
-                auto stmt = parseStatement();
-                if (stmt) {
-                    consequent.push_back(std::move(stmt));
-                }
-            }
-            cases.push_back(std::make_unique<CaseClause>(nullptr, std::move(consequent)));
         } else if (match(KeywordType::Case)) {
-            auto caseExpr = parseExpression();
+            caseExpr = parseExpression();
             if (!caseExpr) {
                 addError("Failed to parse case expression");
+                synchronize();
                 continue;
             }
-            expectToken(TokenType::Colon, "Expected ':'");
-            std::vector<StatementPtr> consequent;
-            while (!check(KeywordType::Case) && !check(KeywordType::Default) &&
-                   !check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
-                auto stmt = parseStatement();
-                if (stmt) {
-                    consequent.push_back(std::move(stmt));
-                }
-            }
-            cases.push_back(std::make_unique<CaseClause>(std::move(caseExpr), std::move(consequent)));
         } else {
             addError("Expected 'case' or 'default' in switch body");
             synchronize();
             break;
         }
+        expectToken(TokenType::Colon, "Expected ':'");
+        std::vector<StatementPtr> consequent;
+        while (!check(KeywordType::Case) && !check(KeywordType::Default) &&
+               !check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
+            const size_t before = _position;
+            auto stmt = parseStatement();
+            if (stmt) {
+                consequent.push_back(std::move(stmt));
+            } else {
+                synchronize();
+                if (_position == before) {
+                    advance();
+                }
+            }
+        }
+        auto clause = std::make_unique<CaseClause>(std::move(caseExpr), std::move(consequent));
+        clause->line = line;
+        cases.push_back(std::move(clause));
     }
 
     expectToken(TokenType::RBrace, "Expected '}'");
@@ -614,64 +898,82 @@ std::unique_ptr<Statement> Parser::parseDoWhileStatement() {
         return nullptr;
     }
     expectToken(TokenType::RParen, "Expected ')'");
-    endStatement("Expected ';'");
+    // The semicolon after do-while's ) may be left out, even on one line.
+    match(TokenType::SemiColon);
 
     return std::make_unique<DoWhileStatement>(std::move(body), std::move(test));
 }
 
 std::unique_ptr<Statement> Parser::parseForStatement() {
     expectKeyword(KeywordType::For, "Expected 'for'");
-    
-    bool isForEach = match(KeywordType::Each);
-    
+
+    const bool isForEach = match(KeywordType::Each);
+
     expectToken(TokenType::LParen, "Expected '(' after 'for'");
-    
-    if (isForEach) {
-        return parseForInOrOfStatement(isForEach);
-    }
-    
-    if (check(KeywordType::In)) {
-        return parseForInOrOfStatement(isForEach);
-    }
-    
-    if (check(KeywordType::Var) || check(KeywordType::Const) || check(KeywordType::Let)) {
-        if (peekForInOrOf()) {
-            return parseForInOrOfStatement(isForEach);
-        }
-    }
-    
+
     StatementPtr init = nullptr;
-    if (!check(TokenType::SemiColon)) {
-        if (check(KeywordType::Var) || check(KeywordType::Const) || check(KeywordType::Let)) {
-            // Parse variable declaration without expecting semicolon
-            bool isConst = false;
-            if (check(KeywordType::Const)) {
-                isConst = true;
-                advance();
-            } else if (match(KeywordType::Var) || match(KeywordType::Let)) {
-            }
-
-            VariableDeclarationList declarations;
-            do {
-                auto id = parseIdentifier();
-                IdentifierPtr type = nullptr;
-                if (match(TokenType::Colon)) {
-                    type = parseIdentifier();
-                }
-                ExpressionPtr initExpr = nullptr;
-                if (match(TokenType::Assign)) {
-                    initExpr = parseAssignmentExpression();
-                }
-                declarations.push_back(std::make_unique<VariableDeclaration>(std::move(id), std::move(type), std::move(initExpr)));
-            } while (match(TokenType::Comma));
-
-            init = std::make_unique<VariableDefinition>(std::vector<AttributePtr>(), std::move(declarations), isConst);
-        } else {
-            auto expr = parseExpression();
-            if (expr) {
-                init = std::make_unique<ExpressionStatement>(std::move(expr));
-            }
+    const int line = static_cast<int>(currentToken().start.line);
+    if (check(KeywordType::Var) || check(KeywordType::Const) || check(KeywordType::Let)) {
+        const bool isConst = check(KeywordType::Const);
+        advance();
+        // var name[:Type] in ..., or the first of a list of declarations.
+        auto id = parseIdentifier();
+        IdentifierPtr type = nullptr;
+        if (match(TokenType::Colon)) {
+            type = parseTypeAnnotation();
         }
+        if (check(KeywordType::In) || check(KeywordType::Of)) {
+            VariableDeclarationList decls;
+            decls.push_back(std::make_unique<VariableDeclaration>(std::move(id), std::move(type), nullptr));
+            init = std::make_unique<VariableDefinition>(std::vector<AttributePtr>(), std::move(decls), isConst);
+        } else {
+            VariableDeclarationList decls;
+            const bool savedNoIn = _noIn;
+            _noIn = true;
+            ExpressionPtr first;
+            if (match(TokenType::Assign)) {
+                first = parseAssignmentExpression();
+            }
+            decls.push_back(std::make_unique<VariableDeclaration>(std::move(id), std::move(type), std::move(first)));
+            while (match(TokenType::Comma)) {
+                auto nextId = parseIdentifier();
+                IdentifierPtr nextType = nullptr;
+                if (match(TokenType::Colon)) {
+                    nextType = parseTypeAnnotation();
+                }
+                ExpressionPtr nextInit;
+                if (match(TokenType::Assign)) {
+                    nextInit = parseAssignmentExpression();
+                }
+                decls.push_back(
+                    std::make_unique<VariableDeclaration>(std::move(nextId), std::move(nextType), std::move(nextInit)));
+            }
+            _noIn = savedNoIn;
+            init = std::make_unique<VariableDefinition>(std::vector<AttributePtr>(), std::move(decls), isConst);
+        }
+        init->line = line;
+    } else if (!check(TokenType::SemiColon)) {
+        const bool savedNoIn = _noIn;
+        _noIn = true;
+        auto expr = parseExpression();
+        _noIn = savedNoIn;
+        if (expr) {
+            init = std::make_unique<ExpressionStatement>(std::move(expr));
+            init->line = line;
+        }
+    }
+
+    if (match(KeywordType::In) || match(KeywordType::Of)) {
+        auto right = parseExpression();
+        expectToken(TokenType::RParen, "Expected ')'");
+        auto body = parseStatement();
+        if (!body) {
+            return nullptr;
+        }
+        return std::make_unique<ForInStatement>(std::move(init), std::move(right), std::move(body), isForEach);
+    }
+    if (isForEach) {
+        addError("Expected 'in' in for each");
     }
 
     expectToken(TokenType::SemiColon, "Expected ';'");
@@ -696,55 +998,10 @@ std::unique_ptr<Statement> Parser::parseForStatement() {
     return std::make_unique<ForStatement>(std::move(init), std::move(test), std::move(update), std::move(body));
 }
 
-std::unique_ptr<Statement> Parser::parseForInOrOfStatement(bool isForEach) {
-    StatementPtr init = nullptr;
-    if (check(KeywordType::Var) || check(KeywordType::Const) || check(KeywordType::Let)) {
-        bool isConst = check(KeywordType::Const);
-        advance();  // consume var/const/let
-
-        auto id = parseIdentifier();
-        IdentifierPtr type = nullptr;
-        if (match(TokenType::Colon)) {
-            type = parseIdentifier();
-        }
-        ExpressionPtr initExpr = nullptr;
-        if (match(TokenType::Assign)) {
-            initExpr = parseAssignmentExpression();
-        }
-        auto decl = std::make_unique<VariableDeclaration>(std::move(id), std::move(type), std::move(initExpr));
-        VariableDeclarationList decls;
-        decls.push_back(std::move(decl));
-        init = std::make_unique<VariableDefinition>(std::vector<AttributePtr>(), std::move(decls), isConst);
-    } else {
-        auto expr = parseExpression();
-        if (expr) {
-            init = std::make_unique<ExpressionStatement>(std::move(expr));
-        }
-    }
-
-    ExpressionPtr right = nullptr;
-    if (match(KeywordType::In)) {
-        right = parseExpression();
-    } else if (match(KeywordType::Of)) {
-        right = parseExpression();
-    } else {
-        addError("Expected 'in' or 'of' in for-in/for-each statement");
-    }
-
-    expectToken(TokenType::RParen, "Expected ')'");
-
-    auto body = parseStatement();
-    if (!body) {
-        return nullptr;
-    }
-
-    return std::make_unique<ForInStatement>(std::move(init), std::move(right), std::move(body));
-}
-
 std::unique_ptr<Statement> Parser::parseBreakStatement() {
     expectKeyword(KeywordType::Break, "Expected 'break'");
     IdentifierPtr label = nullptr;
-    if (check(TokenType::Identifier) && !currentToken().newLineBefore) {
+    if (isNameToken(currentToken()) && !currentToken().newLineBefore) {
         label = parseIdentifier();
     }
     endStatement("Expected ';'");
@@ -754,7 +1011,7 @@ std::unique_ptr<Statement> Parser::parseBreakStatement() {
 std::unique_ptr<Statement> Parser::parseContinueStatement() {
     expectKeyword(KeywordType::Continue, "Expected 'continue'");
     IdentifierPtr label = nullptr;
-    if (check(TokenType::Identifier) && !currentToken().newLineBefore) {
+    if (isNameToken(currentToken()) && !currentToken().newLineBefore) {
         label = parseIdentifier();
     }
     endStatement("Expected ';'");
@@ -790,29 +1047,28 @@ std::unique_ptr<Statement> Parser::parseTryStatement() {
         return nullptr;
     }
 
-    IdentifierPtr catchVar = nullptr;
-    StatementPtr catchBody = nullptr;
-
-    if (match(KeywordType::Catch)) {
+    std::vector<CatchClause> catches;
+    while (match(KeywordType::Catch)) {
         expectToken(TokenType::LParen, "Expected '(' after 'catch'");
-        catchVar = parseIdentifier();
-
-        if (check(TokenType::Colon)) {
-            advance();
-            parseIdentifier();
+        CatchClause clause;
+        clause.variable = parseIdentifier();
+        if (match(TokenType::Colon)) {
+            clause.type = parseTypeName();
         }
-
         expectToken(TokenType::RParen, "Expected ')'");
-        catchBody = parseBlockStatement();
+        clause.body = parseBlockStatement();
+        catches.push_back(std::move(clause));
     }
 
     StatementPtr finallyBody = nullptr;
     if (match(KeywordType::Finally)) {
         finallyBody = parseBlockStatement();
     }
+    if (catches.empty() && !finallyBody) {
+        addError("Expected 'catch' or 'finally' after try block");
+    }
 
-    return std::make_unique<TryStatement>(std::move(block), std::move(catchVar),
-                                          std::move(catchBody), std::move(finallyBody));
+    return std::make_unique<TryStatement>(std::move(block), std::move(catches), std::move(finallyBody));
 }
 
 std::unique_ptr<Statement> Parser::parseWithStatement() {
@@ -843,14 +1099,7 @@ std::unique_ptr<Statement> Parser::parseLabeledStatement() {
     return std::make_unique<LabeledStatement>(std::move(label), std::move(body));
 }
 
-std::unique_ptr<Statement> Parser::parseVariableStatement() {
-    bool isConst = false;
-    if (check(KeywordType::Const)) {
-        isConst = true;
-        advance();
-    } else if (match(KeywordType::Var) || match(KeywordType::Let)) {
-    }
-
+std::unique_ptr<VariableDefinition> Parser::parseVariableList(std::vector<AttributePtr> attrs, bool isConst) {
     VariableDeclarationList declarations;
 
     do {
@@ -858,7 +1107,7 @@ std::unique_ptr<Statement> Parser::parseVariableStatement() {
         IdentifierPtr type = nullptr;
 
         if (match(TokenType::Colon)) {
-            type = parseIdentifier();
+            type = parseTypeAnnotation();
         }
 
         ExpressionPtr init = nullptr;
@@ -870,52 +1119,40 @@ std::unique_ptr<Statement> Parser::parseVariableStatement() {
         declarations.push_back(std::make_unique<VariableDeclaration>(std::move(id), std::move(type), std::move(init)));
     } while (match(TokenType::Comma));
 
+    auto definition = std::make_unique<VariableDefinition>(std::move(attrs), std::move(declarations), isConst);
+    definition->metadata = takeMetadata();
+    return definition;
+}
+
+std::unique_ptr<Statement> Parser::parseVariableStatement(std::vector<AttributePtr> attrs) {
+    const bool isConst = check(KeywordType::Const);
+    advance();  // var, const or let
+    auto definition = parseVariableList(std::move(attrs), isConst);
     endStatement("Expected ';'");
-
-    return std::make_unique<VariableDefinition>(std::vector<AttributePtr>(), std::move(declarations), isConst);
+    return definition;
 }
 
-std::unique_ptr<Statement> Parser::parseFunctionDeclaration() {
-    expectKeyword(KeywordType::Function, "Expected 'function'");
-
-    auto name = parseIdentifier();
-    expectToken(TokenType::LParen, "Expected '('");
-
-    auto params = parseParameters();
-
-    IdentifierPtr returnType = nullptr;
-    if (match(TokenType::Colon)) {
-        returnType = parseIdentifier();
-    }
-
-    auto body = parseBlockStatement();
-    if (!body) {
-        return nullptr;
-    }
-
-    return std::make_unique<FunctionDefinition>(
-        std::vector<AttributePtr>(),
-        std::move(name),
-        std::move(params),
-        std::move(returnType),
-        std::move(body)
-    );
-}
-
-std::unique_ptr<Statement> Parser::parseClassDeclaration() {
-    expectKeyword(KeywordType::Class, "Expected 'class'");
+std::unique_ptr<Statement> Parser::parseClassDeclaration(std::vector<AttributePtr> attrs, bool isInterface) {
+    advance();  // class or interface
+    std::vector<Metadata> metadata = takeMetadata();
 
     auto name = parseIdentifier();
 
     IdentifierPtr superClass = nullptr;
+    std::vector<IdentifierPtr> interfaces;
     if (match(KeywordType::Extends)) {
-        superClass = parseIdentifier();
+        if (isInterface) {
+            do {
+                interfaces.push_back(std::make_unique<Identifier>(parseTypeName()));
+            } while (match(TokenType::Comma));
+        } else {
+            superClass = std::make_unique<Identifier>(parseTypeName());
+        }
     }
 
-    std::vector<IdentifierPtr> interfaces;
     if (match(KeywordType::Implements)) {
         do {
-            interfaces.push_back(parseIdentifier());
+            interfaces.push_back(std::make_unique<Identifier>(parseTypeName()));
         } while (match(TokenType::Comma));
     }
 
@@ -923,25 +1160,43 @@ std::unique_ptr<Statement> Parser::parseClassDeclaration() {
 
     std::vector<AstNodePtr> members;
     while (!check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
+        const size_t before = _position;
+        const int line = static_cast<int>(currentToken().start.line);
+        if (check(TokenType::LBracket)) {
+            // In a class body a [ only starts metadata.
+            parseMetadata();
+            continue;
+        }
+        if (match(TokenType::SemiColon)) {
+            continue;
+        }
+        if (check(KeywordType::Import)) {
+            parseImports();
+            continue;
+        }
+        if (check(KeywordType::Use) ||
+            (check(TokenType::Identifier) && currentToken().text == "include" && peek(1).type == TokenType::String)) {
+            parseUseOrInclude();
+            continue;
+        }
         auto attrs = parseAttributes();
 
         if (check(KeywordType::Function)) {
             auto func = parseFunctionDefinitionWithAttributes(std::move(attrs));
             if (func) {
+                func->line = line;
                 members.push_back(std::move(func));
             }
         } else if (check(KeywordType::Var) || check(KeywordType::Const) || check(KeywordType::Let)) {
-            auto var = parseVariableStatementWithAttributes(std::move(attrs));
+            auto var = parseVariableStatement(std::move(attrs));
             if (var) {
+                var->line = line;
                 members.push_back(std::move(var));
             }
-        } else if (check(KeywordType::Get) || check(KeywordType::Set)) {
-            auto prop = parsePropertyWithAttributes(std::move(attrs));
-            if (prop) {
-                members.push_back(std::move(prop));
-            }
+        } else if (check(KeywordType::Namespace)) {
+            parseNamespaceDeclaration();
         } else if (attrs.empty()) {
-            // Try parsing as a regular statement if no attributes
+            // A statement in the class body runs when the class is defined.
             auto member = parseStatement();
             if (member) {
                 members.push_back(std::move(member));
@@ -952,17 +1207,18 @@ std::unique_ptr<Statement> Parser::parseClassDeclaration() {
             addError("Expected function, variable, or property after attributes");
             synchronize();
         }
+        if (_position == before) {
+            advance();
+        }
     }
 
     expectToken(TokenType::RBrace, "Expected '}'");
 
-    return std::make_unique<ClassDefinition>(
-        std::vector<AttributePtr>(),
-        std::move(name),
-        std::move(superClass),
-        std::move(interfaces),
-        std::move(members)
-    );
+    auto definition = std::make_unique<ClassDefinition>(std::move(attrs), std::move(name), std::move(superClass),
+                                                        std::move(interfaces), std::move(members));
+    definition->isInterface = isInterface;
+    definition->metadata = std::move(metadata);
+    return definition;
 }
 
 std::unique_ptr<Statement> Parser::parseNamespaceDeclaration() {
@@ -970,27 +1226,44 @@ std::unique_ptr<Statement> Parser::parseNamespaceDeclaration() {
 
     auto name = parseIdentifier();
 
-    expectToken(TokenType::Assign, "Expected '=' after namespace name");
-
     IdentifierPtr uri = nullptr;
-    if (check(TokenType::String)) {
-        uri = std::make_unique<Identifier>(currentToken().stringValue);
-        advance();
-    } else {
-        addError("Expected string literal for namespace URI");
-        return nullptr;
+    if (match(TokenType::Assign)) {
+        if (check(TokenType::String)) {
+            uri = std::make_unique<Identifier>(currentToken().stringValue);
+            advance();
+        } else {
+            addError("Expected string literal for namespace URI");
+            return nullptr;
+        }
     }
 
-    expectToken(TokenType::SemiColon, "Expected ';' after namespace declaration");
+    endStatement("Expected ';' after namespace declaration");
 
     return std::make_unique<NamespaceDefinition>(std::move(name), std::move(uri));
 }
 
 std::unique_ptr<Expression> Parser::parseExpression() {
-    return parseAssignmentExpression();
+    const int line = static_cast<int>(currentToken().start.line);
+    auto first = parseAssignmentExpression();
+    if (!first || !check(TokenType::Comma)) {
+        return first;
+    }
+    ExpressionList list;
+    list.push_back(std::move(first));
+    while (match(TokenType::Comma)) {
+        auto next = parseAssignmentExpression();
+        if (!next) {
+            return nullptr;
+        }
+        list.push_back(std::move(next));
+    }
+    auto sequence = std::make_unique<SequenceExpression>(std::move(list));
+    sequence->line = line;
+    return sequence;
 }
 
 std::unique_ptr<Expression> Parser::parseAssignmentExpression() {
+    const int line = static_cast<int>(currentToken().start.line);
     auto left = parseConditionalExpression();
     if (!left) {
         return nullptr;
@@ -1014,24 +1287,26 @@ std::unique_ptr<Expression> Parser::parseAssignmentExpression() {
             return nullptr;
         }
 
-        return std::make_unique<AssignmentExpression>(
-            getBinaryOperator(op),
-            std::move(left),
-            std::move(right)
-        );
+        auto assignment = std::make_unique<AssignmentExpression>(getBinaryOperator(op), std::move(left), std::move(right));
+        assignment->line = line;
+        return assignment;
     }
 
     return left;
 }
 
 std::unique_ptr<Expression> Parser::parseConditionalExpression() {
-    auto test = parseNullCoalescingExpression();
+    const int line = static_cast<int>(currentToken().start.line);
+    auto test = parseBinaryExpression(0);
     if (!test) {
         return nullptr;
     }
 
     if (match(TokenType::Question)) {
+        const bool savedNoIn = _noIn;
+        _noIn = false;
         auto consequent = parseAssignmentExpression();
+        _noIn = savedNoIn;
         if (!consequent) {
             addError("Failed to parse consequent of conditional expression");
             return nullptr;
@@ -1043,317 +1318,123 @@ std::unique_ptr<Expression> Parser::parseConditionalExpression() {
             return nullptr;
         }
 
-        return std::make_unique<ConditionalExpression>(
-            std::move(test),
-            std::move(consequent),
-            std::move(alternate)
-        );
+        auto conditional = std::make_unique<ConditionalExpression>(std::move(test), std::move(consequent),
+                                                                   std::move(alternate));
+        conditional->line = line;
+        return conditional;
     }
 
     return test;
 }
 
-std::unique_ptr<Expression> Parser::parseNullCoalescingExpression() {
-    auto left = parseLogicalOrExpression();
+namespace {
+
+// The binary operators by precedence, loosest first.
+enum BinaryLevel {
+    kCoalesce, kLogicalOr, kLogicalXor, kLogicalAnd, kBitOr, kBitXor, kBitAnd, kEquality, kRelational, kShift,
+    kAdditive, kMultiplicative, kLevels
+};
+
+} // namespace
+
+std::unique_ptr<Expression> Parser::parseBinaryExpression(int level) {
+    if (level >= kLevels) {
+        return parseUnaryExpression();
+    }
+    const int line = static_cast<int>(currentToken().start.line);
+    auto left = parseBinaryExpression(level + 1);
     if (!left) {
         return nullptr;
     }
-
-    if (match(TokenType::NullCoalescing)) {
-        auto right = parseNullCoalescingExpression();
-        if (!right) {
-            addError("Failed to parse right operand of null coalescing expression");
-            return nullptr;
+    for (;;) {
+        const Token& token = currentToken();
+        bool found = true;
+        OperatorType op = OperatorType::Add;
+        switch (level) {
+            case kCoalesce:
+                found = token.type == TokenType::NullCoalescing;
+                op = OperatorType::NullCoalescing;
+                break;
+            case kLogicalOr:
+                found = token.type == TokenType::LogicalOr;
+                op = OperatorType::LogicalOr;
+                break;
+            case kLogicalXor:
+                found = token.type == TokenType::LogicalXor;
+                op = OperatorType::LogicalXor;
+                break;
+            case kLogicalAnd:
+                found = token.type == TokenType::LogicalAnd;
+                op = OperatorType::LogicalAnd;
+                break;
+            case kBitOr:
+                found = token.type == TokenType::Pipe;
+                op = OperatorType::BitwiseOr;
+                break;
+            case kBitXor:
+                found = token.type == TokenType::Caret;
+                op = OperatorType::BitwiseXor;
+                break;
+            case kBitAnd:
+                found = token.type == TokenType::Ampersand;
+                op = OperatorType::BitwiseAnd;
+                break;
+            case kEquality:
+                found = token.type == TokenType::Equals || token.type == TokenType::NotEquals ||
+                        token.type == TokenType::StrictEquals || token.type == TokenType::StrictNotEquals;
+                op = getBinaryOperator(token.type);
+                break;
+            case kRelational:
+                if (token.type == TokenType::LessThan || token.type == TokenType::GreaterThan ||
+                    token.type == TokenType::LessThanOrEqual || token.type == TokenType::GreaterThanOrEqual) {
+                    op = getBinaryOperator(token.type);
+                } else if (token.type == TokenType::Keyword && token.keyword == KeywordType::Instanceof) {
+                    op = OperatorType::Instanceof;
+                } else if (token.type == TokenType::Keyword && token.keyword == KeywordType::In && !_noIn) {
+                    op = OperatorType::In;
+                } else if (token.type == TokenType::Keyword && token.keyword == KeywordType::Is) {
+                    op = OperatorType::Is;
+                } else if (token.type == TokenType::Keyword && token.keyword == KeywordType::As) {
+                    op = OperatorType::As;
+                } else {
+                    found = false;
+                }
+                break;
+            case kShift:
+                found = token.type == TokenType::LeftShift || token.type == TokenType::RightShift ||
+                        token.type == TokenType::UnsignedRightShift;
+                op = getBinaryOperator(token.type);
+                break;
+            case kAdditive:
+                found = token.type == TokenType::Plus || token.type == TokenType::Minus;
+                op = getBinaryOperator(token.type);
+                break;
+            case kMultiplicative:
+                found = token.type == TokenType::Multiply || token.type == TokenType::Divide ||
+                        token.type == TokenType::Remainder;
+                op = getBinaryOperator(token.type);
+                break;
         }
-
-        return std::make_unique<BinaryExpression>(
-            OperatorType::NullCoalescing,
-            std::move(left),
-            std::move(right)
-        );
-    }
-
-    return left;
-}
-
-std::unique_ptr<Expression> Parser::parseLogicalOrExpression() {
-    auto left = parseLogicalAndExpression();
-    if (!left) {
-        return nullptr;
-    }
-
-    while (match(TokenType::LogicalOr)) {
-        auto right = parseLogicalAndExpression();
-        if (!right) {
-            addError("Failed to parse right operand of logical OR expression");
-            return nullptr;
+        if (!found) {
+            return left;
         }
-
-        left = std::make_unique<BinaryExpression>(
-            OperatorType::LogicalOr,
-            std::move(left),
-            std::move(right)
-        );
-    }
-
-    return left;
-}
-
-std::unique_ptr<Expression> Parser::parseLogicalAndExpression() {
-    auto left = parseBitwiseOrExpression();
-    if (!left) {
-        return nullptr;
-    }
-
-    while (match(TokenType::LogicalAnd)) {
-        auto right = parseBitwiseOrExpression();
-        if (!right) {
-            addError("Failed to parse right operand of logical AND expression");
-            return nullptr;
-        }
-
-        left = std::make_unique<BinaryExpression>(
-            OperatorType::LogicalAnd,
-            std::move(left),
-            std::move(right)
-        );
-    }
-
-    return left;
-}
-
-std::unique_ptr<Expression> Parser::parseBitwiseOrExpression() {
-    auto left = parseBitwiseXorExpression();
-    if (!left) {
-        return nullptr;
-    }
-
-    while (match(TokenType::Pipe)) {
-        auto right = parseBitwiseXorExpression();
-        if (!right) {
-            addError("Failed to parse right operand of bitwise OR expression");
-            return nullptr;
-        }
-
-        left = std::make_unique<BinaryExpression>(
-            OperatorType::BitwiseOr,
-            std::move(left),
-            std::move(right)
-        );
-    }
-
-    return left;
-}
-
-std::unique_ptr<Expression> Parser::parseBitwiseXorExpression() {
-    auto left = parseBitwiseAndExpression();
-    if (!left) {
-        return nullptr;
-    }
-
-    while (match(TokenType::Caret)) {
-        auto right = parseBitwiseAndExpression();
-        if (!right) {
-            addError("Failed to parse right operand of bitwise XOR expression");
-            return nullptr;
-        }
-
-        left = std::make_unique<BinaryExpression>(
-            OperatorType::BitwiseXor,
-            std::move(left),
-            std::move(right)
-        );
-    }
-
-    return left;
-}
-
-std::unique_ptr<Expression> Parser::parseBitwiseAndExpression() {
-    auto left = parseEqualityExpression();
-    if (!left) {
-        return nullptr;
-    }
-
-    while (match(TokenType::Ampersand)) {
-        auto right = parseEqualityExpression();
-        if (!right) {
-            addError("Failed to parse right operand of bitwise AND expression");
-            return nullptr;
-        }
-
-        left = std::make_unique<BinaryExpression>(
-            OperatorType::BitwiseAnd,
-            std::move(left),
-            std::move(right)
-        );
-    }
-
-    return left;
-}
-
-std::unique_ptr<Expression> Parser::parseEqualityExpression() {
-    auto left = parseRelationalExpression();
-    if (!left) {
-        return nullptr;
-    }
-
-    while (check(TokenType::Equals) || check(TokenType::NotEquals) ||
-           check(TokenType::StrictEquals) || check(TokenType::StrictNotEquals)) {
-
-        TokenType op = currentToken().type;
         advance();
-        auto right = parseRelationalExpression();
+        // ?? groups to the right, as a ?? (b ?? c).
+        auto right = op == OperatorType::NullCoalescing ? parseBinaryExpression(level) : parseBinaryExpression(level + 1);
         if (!right) {
-            addError("Failed to parse right operand of equality expression");
+            addError("Failed to parse right operand of binary expression");
             return nullptr;
         }
-
-        left = std::make_unique<BinaryExpression>(
-            getBinaryOperator(op),
-            std::move(left),
-            std::move(right)
-        );
-    }
-
-    return left;
-}
-
-std::unique_ptr<Expression> Parser::parseRelationalExpression() {
-    auto left = parseShiftExpression();
-    if (!left) {
-        return nullptr;
-    }
-
-    while (check(TokenType::LessThan) || check(TokenType::GreaterThan) ||
-           check(TokenType::LessThanOrEqual) || check(TokenType::GreaterThanOrEqual) ||
-           check(KeywordType::Instanceof) || check(KeywordType::In) ||
-           check(KeywordType::Is) || check(KeywordType::As)) {
-
-        TokenType op = currentToken().type;
-        KeywordType kw = currentToken().keyword;
-        advance();
-        auto right = parseShiftExpression();
-        if (!right) {
-            addError("Failed to parse right operand of relational expression");
-            return nullptr;
-        }
-
-        if (kw == KeywordType::Instanceof) {
-            left = std::make_unique<BinaryExpression>(
-                OperatorType::Instanceof,
-                std::move(left),
-                std::move(right)
-            );
-        } else if (kw == KeywordType::In) {
-            left = std::make_unique<BinaryExpression>(
-                OperatorType::In,
-                std::move(left),
-                std::move(right)
-            );
-        } else if (kw == KeywordType::Is) {
-            left = std::make_unique<BinaryExpression>(
-                OperatorType::Is,
-                std::move(left),
-                std::move(right)
-            );
-        } else if (kw == KeywordType::As) {
-            left = std::make_unique<BinaryExpression>(
-                OperatorType::As,
-                std::move(left),
-                std::move(right)
-            );
-        } else {
-            left = std::make_unique<BinaryExpression>(
-                getBinaryOperator(op),
-                std::move(left),
-                std::move(right)
-            );
+        left = std::make_unique<BinaryExpression>(op, std::move(left), std::move(right));
+        left->line = line;
+        if (op == OperatorType::NullCoalescing) {
+            return left;
         }
     }
-
-    return left;
-}
-
-std::unique_ptr<Expression> Parser::parseShiftExpression() {
-    auto left = parseAdditiveExpression();
-    if (!left) {
-        return nullptr;
-    }
-
-    while (check(TokenType::LeftShift) || check(TokenType::RightShift) ||
-           check(TokenType::UnsignedRightShift)) {
-
-        TokenType op = currentToken().type;
-        advance();
-        auto right = parseAdditiveExpression();
-        if (!right) {
-            addError("Failed to parse right operand of shift expression");
-            return nullptr;
-        }
-
-        left = std::make_unique<BinaryExpression>(
-            getBinaryOperator(op),
-            std::move(left),
-            std::move(right)
-        );
-    }
-
-    return left;
-}
-
-std::unique_ptr<Expression> Parser::parseAdditiveExpression() {
-    auto left = parseMultiplicativeExpression();
-    if (!left) {
-        return nullptr;
-    }
-
-    while (check(TokenType::Plus) || check(TokenType::Minus)) {
-        TokenType op = currentToken().type;
-        advance();
-        auto right = parseMultiplicativeExpression();
-        if (!right) {
-            addError("Failed to parse right operand of additive expression");
-            return nullptr;
-        }
-
-        left = std::make_unique<BinaryExpression>(
-            getBinaryOperator(op),
-            std::move(left),
-            std::move(right)
-        );
-    }
-
-    return left;
-}
-
-std::unique_ptr<Expression> Parser::parseMultiplicativeExpression() {
-    auto left = parseUnaryExpression();
-    if (!left) {
-        return nullptr;
-    }
-
-    while (check(TokenType::Multiply) || check(TokenType::Divide) ||
-           check(TokenType::Remainder)) {
-
-        TokenType op = currentToken().type;
-        advance();
-        auto right = parseUnaryExpression();
-        if (!right) {
-            addError("Failed to parse right operand of multiplicative expression");
-            return nullptr;
-        }
-
-        left = std::make_unique<BinaryExpression>(
-            getBinaryOperator(op),
-            std::move(left),
-            std::move(right)
-        );
-    }
-
-    return left;
 }
 
 std::unique_ptr<Expression> Parser::parseUnaryExpression() {
+    const int line = static_cast<int>(currentToken().start.line);
     // ++x and --x: the lexer makes the same token as for x++.
     if (check(TokenType::Increment) || check(TokenType::Decrement)) {
         const bool increment = check(TokenType::Increment);
@@ -1363,103 +1444,159 @@ std::unique_ptr<Expression> Parser::parseUnaryExpression() {
             addError("Failed to parse operand of ++ or --");
             return nullptr;
         }
-        return std::make_unique<UnaryExpression>(
+        auto unary = std::make_unique<UnaryExpression>(
             increment ? OperatorType::PreIncrement : OperatorType::PreDecrement, std::move(operand), false);
+        unary->line = line;
+        return unary;
     }
 
-    if (check(TokenType::PreIncrement) || check(TokenType::PreDecrement) ||
-        check(TokenType::Plus) || check(TokenType::Minus) || check(TokenType::Tilde) ||
-        check(TokenType::Exclamation) || check(KeywordType::Delete) ||
-        check(KeywordType::Void) || check(KeywordType::Typeof)) {
-
-        TokenType op = currentToken().type;
+    OperatorType op;
+    bool found = true;
+    if (check(TokenType::Plus)) {
+        op = OperatorType::Positive;
+    } else if (check(TokenType::Minus)) {
+        op = OperatorType::Negative;
+    } else if (check(TokenType::Tilde)) {
+        op = OperatorType::BitwiseNot;
+    } else if (check(TokenType::Exclamation)) {
+        op = OperatorType::LogicalNot;
+    } else if (check(KeywordType::Delete)) {
+        op = OperatorType::Delete;
+    } else if (check(KeywordType::Void)) {
+        op = OperatorType::Void;
+    } else if (check(KeywordType::Typeof)) {
+        op = OperatorType::Typeof;
+    } else {
+        found = false;
+        op = OperatorType::Add;
+    }
+    if (found) {
         advance();
         auto operand = parseUnaryExpression();
         if (!operand) {
             addError("Failed to parse operand of unary expression");
             return nullptr;
         }
-
-        return std::make_unique<UnaryExpression>(
-            getBinaryOperator(op),
-            std::move(operand),
-            false
-        );
+        // -5 is a number, as a default value or a case wants.
+        if (op == OperatorType::Negative && operand->kind == Expression::ExpressionKind::Literal) {
+            auto* literal = static_cast<Literal*>(operand.get());
+            if (literal->kind == Literal::LiteralKind::Numeric) {
+                literal->numberValue = -literal->numberValue;
+                return operand;
+            }
+        }
+        auto unary = std::make_unique<UnaryExpression>(op, std::move(operand), false);
+        unary->line = line;
+        return unary;
     }
 
     return parsePostfixExpression();
 }
 
 std::unique_ptr<Expression> Parser::parsePostfixExpression() {
+    const int line = static_cast<int>(currentToken().start.line);
     auto expr = parseCallMemberExpression();
     if (!expr) {
         return nullptr;
     }
 
-    if (check(TokenType::Increment) || check(TokenType::Decrement)) {
-        if (!check(TokenType::EndOfFile)) {
-            TokenType op = currentToken().type;
-            advance();
-
-            if (op == TokenType::Increment) {
-                return std::make_unique<UnaryExpression>(OperatorType::PostIncrement, std::move(expr), true);
-            } else {
-                return std::make_unique<UnaryExpression>(OperatorType::PostDecrement, std::move(expr), true);
-            }
-        }
+    // x++ on one line; a ++ on the next line is the next statement's.
+    if ((check(TokenType::Increment) || check(TokenType::Decrement)) && !currentToken().newLineBefore) {
+        const bool increment = check(TokenType::Increment);
+        advance();
+        auto unary = std::make_unique<UnaryExpression>(
+            increment ? OperatorType::PostIncrement : OperatorType::PostDecrement, std::move(expr), true);
+        unary->line = line;
+        return unary;
     }
 
     return expr;
 }
 
+ExpressionList Parser::parseArguments() {
+    ExpressionList args;
+    const bool savedNoIn = _noIn;
+    _noIn = false;
+    while (!check(TokenType::RParen) && !check(TokenType::EndOfFile)) {
+        auto arg = parseAssignmentExpression();
+        if (!arg) {
+            addError("Failed to parse function argument");
+            synchronize();
+            break;
+        }
+        args.push_back(std::move(arg));
+        if (!match(TokenType::Comma)) break;
+    }
+    _noIn = savedNoIn;
+    expectToken(TokenType::RParen, "Expected ')'");
+    return args;
+}
+
+std::vector<std::string> Parser::parseTypeArguments() {
+    // After .<
+    std::vector<std::string> types;
+    types.push_back(parseTypeName());
+    while (match(TokenType::Comma)) {
+        types.push_back(parseTypeName());
+    }
+    expectTypeClose();
+    return types;
+}
+
 std::unique_ptr<Expression> Parser::parseCallMemberExpression() {
+    const int line = static_cast<int>(currentToken().start.line);
     // new X(...) may be followed by a member or a call too: new Array().length.
     auto expr = check(KeywordType::New) ? parseNewExpression() : parsePrimaryExpression();
     if (!expr) {
         return nullptr;
     }
 
-    while (check(TokenType::Dot) || check(TokenType::LParen) ||
-           check(TokenType::LBracket) || check(TokenType::QuestionDot)) {
-
+    for (;;) {
         if (match(TokenType::LParen)) {
-            ExpressionList args;
-            while (!check(TokenType::RParen) && !check(TokenType::EndOfFile)) {
-                auto arg = parseAssignmentExpression();
-                if (!arg) {
-                    addError("Failed to parse function argument");
-                    synchronize();
-                    break;
-                }
-                args.push_back(std::move(arg));
-                if (!match(TokenType::Comma)) break;
-            }
-            expectToken(TokenType::RParen, "Expected ')'");
-
-            auto call = std::make_unique<CallExpression>(std::move(expr), std::move(args));
+            auto call = std::make_unique<CallExpression>(std::move(expr), parseArguments());
+            call->line = line;
             expr = std::move(call);
-        } else if (match(TokenType::Dot) || match(TokenType::QuestionDot)) {
-            auto property = parseIdentifier();
-            auto member = std::make_unique<MemberExpression>(
-                std::move(expr),
-                std::move(property),
-                false,
-                false
-            );
+        } else if (check(TokenType::Dot) && peek(1).type == TokenType::LessThan) {
+            advance();
+            advance();
+            auto applied = std::make_unique<TypeApplication>(std::move(expr), parseTypeArguments());
+            applied->line = line;
+            expr = std::move(applied);
+        } else if (check(TokenType::Dot) || check(TokenType::QuestionDot)) {
+            const bool optional = check(TokenType::QuestionDot);
+            advance();
+            if (check(TokenType::At) || check(TokenType::Dot)) {
+                addError("E4X (XML) expressions are not supported");
+                return nullptr;
+            }
+            if (!isPropertyNameToken(currentToken())) {
+                addError("Expected a property name after '.'");
+                return nullptr;
+            }
+            auto property = std::make_unique<Identifier>(tokenWord(currentToken()));
+            advance();
+            // ns::name after a dot: the name.
+            if (check(TokenType::DoubleColon) && isPropertyNameToken(peek(1))) {
+                advance();
+                property = std::make_unique<Identifier>(tokenWord(currentToken()));
+                advance();
+            }
+            auto member = std::make_unique<MemberExpression>(std::move(expr), std::move(property), false, optional);
+            member->line = line;
             expr = std::move(member);
-        } else if (match(TokenType::LBracket)) {
+        } else if (check(TokenType::LBracket)) {
+            advance();
+            const bool savedNoIn = _noIn;
+            _noIn = false;
             auto index = parseExpression();
+            _noIn = savedNoIn;
             if (!index) {
                 addError("Failed to parse computed property expression");
                 return nullptr;
             }
             expectToken(TokenType::RBracket, "Expected ']'");
-
-            auto member = std::make_unique<MemberExpression>(
-                std::move(expr),
-                std::move(index),
-                false  // optional
-            );
+            auto member = std::make_unique<MemberExpression>(std::move(expr), std::move(index), false);
+            member->line = line;
             expr = std::move(member);
         } else {
             break;
@@ -1470,371 +1607,348 @@ std::unique_ptr<Expression> Parser::parseCallMemberExpression() {
 }
 
 std::unique_ptr<Expression> Parser::parseNewExpression() {
+    const int line = static_cast<int>(currentToken().start.line);
     expectKeyword(KeywordType::New, "Expected 'new'");
-    auto callee = parsePrimaryExpression();
+
+    // new <int>[1, 2, 3]: a vector of the elements.
+    if (check(TokenType::LessThan)) {
+        advance();
+        const std::string type = parseTypeName();
+        expectTypeClose();
+        auto literal = parsePrimaryExpression();
+        if (!literal || literal->kind != Expression::ExpressionKind::Array) {
+            addError("Expected '[' after new <Type>");
+            return nullptr;
+        }
+        static_cast<ArrayExpression*>(literal.get())->vectorType = type;
+        return literal;
+    }
+
+    // What is made: a name or a member, not a call (new a.b.C(), new
+    // Vector.<int>(), new (getClass())()).
+    auto callee = check(KeywordType::New) ? parseNewExpression() : parsePrimaryExpression();
     if (!callee) {
         addError("Failed to parse new expression callee");
         return nullptr;
     }
+    for (;;) {
+        if (check(TokenType::Dot) && peek(1).type == TokenType::LessThan) {
+            advance();
+            advance();
+            callee = std::make_unique<TypeApplication>(std::move(callee), parseTypeArguments());
+        } else if (check(TokenType::Dot) && isPropertyNameToken(peek(1))) {
+            advance();
+            auto property = std::make_unique<Identifier>(tokenWord(currentToken()));
+            advance();
+            callee = std::make_unique<MemberExpression>(std::move(callee), std::move(property), false, false);
+        } else if (check(TokenType::LBracket)) {
+            advance();
+            auto index = parseExpression();
+            expectToken(TokenType::RBracket, "Expected ']'");
+            callee = std::make_unique<MemberExpression>(std::move(callee), std::move(index), false);
+        } else {
+            break;
+        }
+    }
 
     ExpressionList args;
     if (match(TokenType::LParen)) {
-        while (!check(TokenType::RParen) && !check(TokenType::EndOfFile)) {
-            auto arg = parseAssignmentExpression();
-            if (!arg) {
-                addError("Failed to parse constructor argument");
-                synchronize();
-                break;
-            }
-            args.push_back(std::move(arg));
-            if (!match(TokenType::Comma)) break;
-        }
-        expectToken(TokenType::RParen, "Expected ')'");
+        args = parseArguments();
     }
 
-    return std::make_unique<NewExpression>(std::move(callee), std::move(args));
+    auto made = std::make_unique<NewExpression>(std::move(callee), std::move(args));
+    made->line = line;
+    return made;
+}
+
+std::unique_ptr<Expression> Parser::parseFunctionExpression() {
+    const int line = static_cast<int>(currentToken().start.line);
+    advance();  // function
+    auto name = isNameToken(currentToken()) ? parseIdentifier() : nullptr;
+    expectToken(TokenType::LParen, "Expected '('");
+    auto params = parseParameters();
+    IdentifierPtr returnType = nullptr;
+    if (match(TokenType::Colon)) {
+        returnType = parseTypeAnnotation();
+    }
+    const bool savedNoIn = _noIn;
+    _noIn = false;
+    auto body = parseBlockStatement();
+    _noIn = savedNoIn;
+
+    auto function = std::make_unique<FunctionExpression>(std::move(name), std::move(params), std::move(returnType),
+                                                         std::move(body));
+    function->line = line;
+    return function;
 }
 
 std::unique_ptr<Expression> Parser::parsePrimaryExpression() {
-    if (check(TokenType::Identifier)) {
+    const int line = static_cast<int>(currentToken().start.line);
+    if (isNameToken(currentToken())) {
         auto id = parseIdentifier();
+        // ns::name and CONFIG::debug: the name.
+        if (check(TokenType::DoubleColon) && isPropertyNameToken(peek(1))) {
+            advance();
+            auto qualified = std::make_unique<Identifier>(tokenWord(currentToken()));
+            qualified->namespacePrefix = id->name;
+            qualified->line = line;
+            advance();
+            return qualified;
+        }
+        id->line = line;
         return id;
     }
-    
+
     if (check(TokenType::Number)) {
         auto lit = std::make_unique<Literal>(Literal::LiteralKind::Numeric);
         lit->valueType = Literal::LiteralValueType::Number;
         lit->numberValue = currentToken().numericValue;
+        lit->line = line;
         advance();
         return lit;
     }
-    
+
     if (check(TokenType::String)) {
         auto lit = std::make_unique<Literal>(Literal::LiteralKind::String);
         lit->valueType = Literal::LiteralValueType::String;
         lit->stringValue = currentToken().stringValue;
+        lit->line = line;
         advance();
         return lit;
     }
-    
+
+    if (check(TokenType::RegularExpression)) {
+        auto lit = std::make_unique<Literal>(Literal::LiteralKind::RegExp);
+        lit->stringValue = currentToken().text;
+        lit->flags = currentToken().stringValue;
+        lit->line = line;
+        advance();
+        return lit;
+    }
+
     if (check(TokenType::Null)) {
         auto lit = std::make_unique<Literal>(Literal::LiteralKind::Null);
+        lit->line = line;
         advance();
         return lit;
     }
-    
+
     if (check(TokenType::Boolean)) {
         auto lit = std::make_unique<Literal>(Literal::LiteralKind::Boolean);
         lit->valueType = Literal::LiteralValueType::Bool;
         lit->boolValue = currentToken().numericValue != 0;
+        lit->line = line;
         advance();
         return lit;
     }
-    
+
     if (check(KeywordType::This)) {
         advance();
-        return std::make_unique<ThisExpression>();
+        auto self = std::make_unique<ThisExpression>();
+        self->line = line;
+        return self;
     }
-    
-    if (check(KeywordType::Function)) {
+
+    if (check(KeywordType::Super)) {
         advance();
-        auto name = check(TokenType::Identifier) ? parseIdentifier() : nullptr;
-        expectToken(TokenType::LParen, "Expected '('");
-        auto params = parseParameters();
-        IdentifierPtr returnType = nullptr;
-        if (match(TokenType::Colon)) {
-            returnType = parseIdentifier();
-        }
-        auto body = parseBlockStatement();
-        
-        return std::make_unique<FunctionExpression>(
-            std::move(name),
-            std::move(params),
-            std::move(returnType),
-            std::move(body)
-        );
+        auto super = std::make_unique<SuperExpression>();
+        super->line = line;
+        return super;
     }
-    
+
+    if (check(KeywordType::Function)) {
+        return parseFunctionExpression();
+    }
+
     if (match(TokenType::LBracket)) {
+        const bool savedNoIn = _noIn;
+        _noIn = false;
         ExpressionList elements;
         while (!check(TokenType::RBracket) && !check(TokenType::EndOfFile)) {
-            elements.push_back(parseAssignmentExpression());
+            if (check(TokenType::Comma)) {
+                // A hole: [a,,b].
+                advance();
+                elements.push_back(nullptr);
+                continue;
+            }
+            auto element = parseAssignmentExpression();
+            if (!element) {
+                break;
+            }
+            elements.push_back(std::move(element));
             if (!match(TokenType::Comma)) break;
         }
+        _noIn = savedNoIn;
         expectToken(TokenType::RBracket, "Expected ']'");
-        return std::make_unique<ArrayExpression>(std::move(elements));
+        auto array = std::make_unique<ArrayExpression>(std::move(elements));
+        array->line = line;
+        return array;
     }
-    
+
     if (match(TokenType::LBrace)) {
+        const bool savedNoIn = _noIn;
+        _noIn = false;
         std::vector<std::pair<ExpressionPtr, ExpressionPtr>> props;
         while (!check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
-            auto key = parseAssignmentExpression();
+            ExpressionPtr key;
+            const Token& token = currentToken();
+            if (token.type == TokenType::String) {
+                auto literal = std::make_unique<Literal>(Literal::LiteralKind::String);
+                literal->valueType = Literal::LiteralValueType::String;
+                literal->stringValue = token.stringValue;
+                key = std::move(literal);
+                advance();
+            } else if (token.type == TokenType::Number) {
+                auto literal = std::make_unique<Literal>(Literal::LiteralKind::Numeric);
+                literal->valueType = Literal::LiteralValueType::Number;
+                literal->numberValue = token.numericValue;
+                key = std::move(literal);
+                advance();
+            } else if (isPropertyNameToken(token)) {
+                key = std::make_unique<Identifier>(tokenWord(token));
+                advance();
+            } else {
+                addError("Expected a property name in object literal");
+                break;
+            }
             expectToken(TokenType::Colon, "Expected ':'");
             auto value = parseAssignmentExpression();
+            if (!value) {
+                break;
+            }
             props.emplace_back(std::move(key), std::move(value));
             if (!match(TokenType::Comma)) break;
         }
+        _noIn = savedNoIn;
         expectToken(TokenType::RBrace, "Expected '}'");
-        return std::make_unique<ObjectExpression>(std::move(props));
+        auto object = std::make_unique<ObjectExpression>(std::move(props));
+        object->line = line;
+        return object;
     }
-    
+
     if (match(TokenType::LParen)) {
+        const bool savedNoIn = _noIn;
+        _noIn = false;
         auto expr = parseExpression();
+        _noIn = savedNoIn;
         expectToken(TokenType::RParen, "Expected ')'");
         return expr;
     }
-    
+
+    if (check(TokenType::LessThan) || check(TokenType::At)) {
+        addError("E4X (XML) expressions are not supported");
+        advance();
+        return nullptr;
+    }
+
     addError("Unexpected token in expression");
     advance();
     return nullptr;
 }
 
 std::unique_ptr<Identifier> Parser::parseIdentifier() {
-    if (check(TokenType::Identifier)) {
-        auto id = std::make_unique<Identifier>(currentToken().text);
+    if (isNameToken(currentToken())) {
+        auto id = std::make_unique<Identifier>(tokenWord(currentToken()));
         advance();
         return id;
     }
-    
+
     if (check(KeywordType::Void)) {
         auto id = std::make_unique<Identifier>("void");
         advance();
         return id;
     }
-    
+
     addError("Expected identifier");
     return std::make_unique<Identifier>("");
 }
 
 std::vector<std::unique_ptr<Attribute>> Parser::parseAttributes() {
     std::vector<AttributePtr> attrs;
-    
-    while (check(KeywordType::Public) || check(KeywordType::Private) ||
-           check(KeywordType::Protected) || check(KeywordType::Internal) ||
-           check(KeywordType::Static) || check(KeywordType::Override) ||
-           check(KeywordType::Final) || check(KeywordType::Native) ||
-           check(KeywordType::Dynamic)) {
-        
-        attrs.push_back(parseAttribute());
-    }
-    
-    return attrs;
-}
 
-std::unique_ptr<Attribute> Parser::parseAttribute() {
-    if (match(KeywordType::Public)) {
-        return std::make_unique<Attribute>(AttributeType::Public);
-    }
-    if (match(KeywordType::Private)) {
-        return std::make_unique<Attribute>(AttributeType::Private);
-    }
-    if (match(KeywordType::Protected)) {
-        return std::make_unique<Attribute>(AttributeType::Protected);
-    }
-    if (match(KeywordType::Internal)) {
-        return std::make_unique<Attribute>(AttributeType::Internal);
-    }
-    if (match(KeywordType::Static)) {
-        return std::make_unique<Attribute>(AttributeType::Static);
-    }
-    if (match(KeywordType::Override)) {
-        return std::make_unique<Attribute>(AttributeType::Override);
-    }
-    if (match(KeywordType::Final)) {
-        return std::make_unique<Attribute>(AttributeType::Final);
-    }
-    if (match(KeywordType::Native)) {
-        return std::make_unique<Attribute>(AttributeType::Native);
-    }
-    if (match(KeywordType::Dynamic)) {
-        return std::make_unique<Attribute>(AttributeType::Dynamic);
-    }
-    
-    addError("Expected attribute");
-    return nullptr;
-}
-
-std::unique_ptr<FunctionDefinition> Parser::parseFunctionDefinition(bool isDeclaration) {
-    expectKeyword(KeywordType::Function, "Expected 'function'");
-    
-    auto name = parseIdentifier();
-    expectToken(TokenType::LParen, "Expected '('");
-    
-    auto params = parseParameters();
-    
-    IdentifierPtr returnType = nullptr;
-    if (match(TokenType::Colon)) {
-        returnType = parseIdentifier();
-    }
-    
-    auto body = parseBlockStatement();
-    
-    return std::make_unique<FunctionDefinition>(
-        std::vector<AttributePtr>(),
-        std::move(name),
-        std::move(params),
-        std::move(returnType),
-        std::move(body)
-    );
-}
-
-std::unique_ptr<ClassDefinition> Parser::parseClassDefinition() {
-    expectKeyword(KeywordType::Class, "Expected 'class'");
-    
-    auto name = parseIdentifier();
-    
-    IdentifierPtr superClass = nullptr;
-    if (match(KeywordType::Extends)) {
-        superClass = parseIdentifier();
-    }
-    
-    std::vector<IdentifierPtr> interfaces;
-    if (match(KeywordType::Implements)) {
-        do {
-            interfaces.push_back(parseIdentifier());
-        } while (match(TokenType::Comma));
-    }
-    
-    expectToken(TokenType::LBrace, "Expected '{'");
-    
-    std::vector<AstNodePtr> members;
-    while (!check(TokenType::RBrace) && !check(TokenType::EndOfFile)) {
-        auto attrs = parseAttributes();
-        
-        if (check(KeywordType::Function)) {
-            auto func = parseFunctionDefinitionWithAttributes(std::move(attrs));
-            if (func) {
-                members.push_back(std::move(func));
-            }
-        } else if (check(KeywordType::Var) || check(KeywordType::Const) || check(KeywordType::Let)) {
-            auto var = parseVariableStatementWithAttributes(std::move(attrs));
-            if (var) {
-                members.push_back(std::move(var));
-            }
-        } else if (check(KeywordType::Get) || check(KeywordType::Set)) {
-            auto prop = parsePropertyWithAttributes(std::move(attrs));
-            if (prop) {
-                members.push_back(std::move(prop));
-            }
-        } else {
-            addError("Unexpected token in class body");
+    while (atAttribute()) {
+        const Token& token = currentToken();
+        if (token.type == TokenType::Identifier) {
+            // A namespace: kept as nothing.
             advance();
+            continue;
         }
+        switch (token.keyword) {
+            case KeywordType::Public: attrs.push_back(std::make_unique<Attribute>(AttributeType::Public)); break;
+            case KeywordType::Private: attrs.push_back(std::make_unique<Attribute>(AttributeType::Private)); break;
+            case KeywordType::Protected: attrs.push_back(std::make_unique<Attribute>(AttributeType::Protected)); break;
+            case KeywordType::Internal: attrs.push_back(std::make_unique<Attribute>(AttributeType::Internal)); break;
+            case KeywordType::Static: attrs.push_back(std::make_unique<Attribute>(AttributeType::Static)); break;
+            case KeywordType::Override: attrs.push_back(std::make_unique<Attribute>(AttributeType::Override)); break;
+            case KeywordType::Final: attrs.push_back(std::make_unique<Attribute>(AttributeType::Final)); break;
+            case KeywordType::Native: attrs.push_back(std::make_unique<Attribute>(AttributeType::Native)); break;
+            case KeywordType::Dynamic: attrs.push_back(std::make_unique<Attribute>(AttributeType::Dynamic)); break;
+            default: break;
+        }
+        advance();
     }
-    
-    expectToken(TokenType::RBrace, "Expected '}'");
-    
-    return std::make_unique<ClassDefinition>(
-        std::vector<AttributePtr>(),
-        std::move(name),
-        std::move(superClass),
-        std::move(interfaces),
-        std::move(members)
-    );
+
+    return attrs;
 }
 
 std::unique_ptr<FunctionDefinition> Parser::parseFunctionDefinitionWithAttributes(std::vector<AttributePtr> attrs) {
     expectKeyword(KeywordType::Function, "Expected 'function'");
-    
+    std::vector<Metadata> metadata = takeMetadata();
+
+    // function get x() and function set x(v); but function get() is a
+    // method called get.
     bool isGetter = false;
     bool isSetter = false;
-    if (check(KeywordType::Get)) {
-        isGetter = true;
-        advance();
-    } else if (check(KeywordType::Set)) {
-        isSetter = true;
+    if ((check(KeywordType::Get) || check(KeywordType::Set)) && isPropertyNameToken(peek(1)) &&
+        peek(1).type != TokenType::LParen) {
+        isGetter = check(KeywordType::Get);
+        isSetter = !isGetter;
         advance();
     }
-    
-    auto name = parseIdentifier();
+
+    IdentifierPtr name;
+    if (isPropertyNameToken(currentToken())) {
+        name = std::make_unique<Identifier>(tokenWord(currentToken()));
+        advance();
+    } else {
+        name = parseIdentifier();
+    }
     expectToken(TokenType::LParen, "Expected '('");
-    
+
     auto params = parseParameters();
-    
+
     IdentifierPtr returnType = nullptr;
     if (match(TokenType::Colon)) {
-        returnType = parseIdentifier();
-    }
-    
-    auto body = parseBlockStatement();
-    
-    return std::make_unique<FunctionDefinition>(
-        std::move(attrs),
-        std::move(name),
-        std::move(params),
-        std::move(returnType),
-        std::move(body),
-        isGetter,
-        isSetter
-    );
-}
-
-std::unique_ptr<Statement> Parser::parseVariableStatementWithAttributes(std::vector<AttributePtr> attrs) {
-    bool isConst = false;
-    if (check(KeywordType::Const)) {
-        isConst = true;
-        advance();
-    } else if (match(KeywordType::Var)) {
-        // var keyword matched
-    } else if (match(KeywordType::Let)) {
-        // let keyword matched
+        returnType = parseTypeAnnotation();
     }
 
-    VariableDeclarationList declarations;
+    // An interface's method, or a native one, has no body.
+    StatementPtr body;
+    if (check(TokenType::LBrace)) {
+        const bool savedNoIn = _noIn;
+        _noIn = false;
+        body = parseBlockStatement();
+        _noIn = savedNoIn;
+    } else {
+        endStatement("Expected '{' or ';' after function declaration");
+    }
 
-    do {
-        auto id = parseIdentifier();
-        IdentifierPtr type = nullptr;
-
-        if (match(TokenType::Colon)) {
-            type = parseIdentifier();
-        }
-
-        ExpressionPtr init = nullptr;
-
-        if (match(TokenType::Assign)) {
-            init = parseAssignmentExpression();
-        }
-
-        declarations.push_back(std::make_unique<VariableDeclaration>(std::move(id), std::move(type), std::move(init)));
-    } while (match(TokenType::Comma));
-
-    endStatement("Expected ';'");
-
-    return std::make_unique<VariableDefinition>(std::move(attrs), std::move(declarations), isConst);
-}
-
-std::unique_ptr<AstNode> Parser::parsePropertyWithAttributes(std::vector<AttributePtr> attrs) {
-    bool isGetter = match(KeywordType::Get);
-    bool isSetter = !isGetter && match(KeywordType::Set);
-    
-    auto name = parseIdentifier();
-    expectToken(TokenType::LParen, "Expected '('");
-    expectToken(TokenType::RParen, "Expected ')'");
-    
-    auto body = parseBlockStatement();
-    
-    return std::make_unique<FunctionDefinition>(
-        std::move(attrs),
-        std::move(name),
-        std::vector<std::unique_ptr<Parameter>>(),
-        nullptr,
-        std::move(body),
-        isGetter,
-        isSetter
-    );
+    auto function = std::make_unique<FunctionDefinition>(std::move(attrs), std::move(name), std::move(params),
+                                                         std::move(returnType), std::move(body), isGetter, isSetter);
+    function->metadata = std::move(metadata);
+    return function;
 }
 
 std::vector<std::unique_ptr<Parameter>> Parser::parseParameters() {
     std::vector<std::unique_ptr<Parameter>> params;
-    
+
     while (!check(TokenType::RParen) && !check(TokenType::EndOfFile)) {
         params.push_back(parseParameter());
         if (!match(TokenType::Comma)) break;
     }
-    
+
     expectToken(TokenType::RParen, "Expected ')'");
-    
+
     return params;
 }
 
@@ -1844,19 +1958,19 @@ std::unique_ptr<Parameter> Parser::parseParameter() {
         rest = true;
         advance();
     }
-    
+
     auto name = parseIdentifier();
     IdentifierPtr type = nullptr;
-    
+
     if (match(TokenType::Colon)) {
-        type = parseIdentifier();
+        type = parseTypeAnnotation();
     }
-    
+
     ExpressionPtr defaultValue = nullptr;
     if (match(TokenType::Assign)) {
         defaultValue = parseAssignmentExpression();
     }
-    
+
     return std::make_unique<Parameter>(std::move(name), std::move(type), std::move(defaultValue), rest);
 }
 

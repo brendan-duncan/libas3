@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <functional>
+#include <cctype>
 
 namespace as3test {
 
@@ -74,7 +75,8 @@ public:
         suites.push_back(suite);
     }
 
-    int runAll() {
+    // Runs every suite, or with a filter the one of that name (any case).
+    int runAll(const std::string& filter = "all") {
         std::cout << "\n===== Test Suite =====" << std::endl;
         std::cout << "Running " << suites.size() << " test suites" << std::endl;
 
@@ -82,7 +84,14 @@ public:
         int totalPassed = 0;
         int totalFailed = 0;
 
+        const auto lower = [](std::string text) {
+            for (char& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return text;
+        };
         for (auto* suite : suites) {
+            if (filter != "all" && lower(suite->getName()) != lower(filter)) {
+                continue;
+            }
             auto results = suite->run();
 
             int passed = 0;

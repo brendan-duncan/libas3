@@ -6,127 +6,140 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <set>
+#include <stdexcept>
 
 namespace as3 {
 
-// Local variable info
-struct Local {
-    std::string name;
-    int depth;          // Scope depth (0 = global)
-    bool isCaptured;    // Is this captured by a closure?
-
-    Local(const std::string& n, int d)
-        : name(n)
-        , depth(d)
-        , isCaptured(false) {
-    }
-};
-
-// Upvalue info (captured variables)
-struct Upvalue {
-    uint8_t index;
-    bool isLocal;  // Is it a local in the enclosing function?
-
-    Upvalue(uint8_t i, bool local)
-        : index(i)
-        , isLocal(local) {
-    }
-};
-
-// Compiler context for a function
-class CompilerContext {
+// A compile error: what was wrong, and where.
+class CompileError : public std::runtime_error {
 public:
-    CompilerContext* enclosing;
-    BytecodeFunction* function;
-    std::vector<Local> locals;
-    std::vector<Upvalue> upvalues;
-    int scopeDepth;
-    int loopStart;          // For break/continue
-    int loopScopeDepth;     // Scope depth of current loop
-
-    explicit CompilerContext(CompilerContext* parent = nullptr);
-
-    // Local variables
-    int addLocal(const std::string& name);
-    int resolveLocal(const std::string& name);
-    int resolveUpvalue(const std::string& name);
-
-    // Scope management
-    void beginScope();
-    void endScope(Chunk& chunk);
-
-    // Helper to mark local as initialized
-    void markInitialized();
+    CompileError(const std::string& message, const std::string& file, int line)
+        : std::runtime_error(message), fileName(file), lineNumber(line) {
+    }
+    std::string fileName;
+    int lineNumber;
 };
 
 // Bytecode compiler: AST -> Bytecode
 class Compiler {
 public:
     Compiler();
+    ~Compiler();
 
-    // Compile a program to bytecode
+    // Compile a program to bytecode. Throws CompileError (a
+    // std::runtime_error) for code that cannot be compiled, with every
+    // error found, a line each.
     std::shared_ptr<BytecodeFunction> compile(Program* program);
 
+    // What was accepted though not quite right, a line each.
+    const std::vector<std::string>& getWarnings() const { return warnings; }
+
+    struct FunctionState;
+    struct ClassContext;
+    struct ControlEntry;
+    struct VarInfo;
+
 private:
-    CompilerContext* current;
-    bool hadError;
-    std::string errorMessage;
+    FunctionState* fs = nullptr;
+    std::vector<std::string> errors;
+    std::vector<std::string> warnings;
+    std::string fileName;
     // The line of the statement being compiled, for what it emits.
     int currentLine = 0;
 
-    // Statement compilation
-    void compileStatement(Statement* stmt, Chunk& chunk);
-    void compileBlockStatement(BlockStatement* stmt, Chunk& chunk);
-    void compileExpressionStatement(ExpressionStatement* stmt, Chunk& chunk);
-    void compileIfStatement(IfStatement* stmt, Chunk& chunk);
-    void compileWhileStatement(WhileStatement* stmt, Chunk& chunk);
-    void compileDoWhileStatement(DoWhileStatement* stmt, Chunk& chunk);
-    void compileForStatement(ForStatement* stmt, Chunk& chunk);
-    void compileForInStatement(ForInStatement* stmt, Chunk& chunk);
-    void compileSwitchStatement(SwitchStatement* stmt, Chunk& chunk);
-    void compileReturnStatement(ReturnStatement* stmt, Chunk& chunk);
-    void compileVariableDefinition(VariableDefinition* stmt, Chunk& chunk);
-    void compileFunctionDefinition(FunctionDefinition* stmt, Chunk& chunk);
-    void compileClassDefinition(ClassDefinition* stmt, Chunk& chunk);
+    // Functions
+    std::shared_ptr<BytecodeFunction> compileFunction(const std::string& name,
+                                                      const std::vector<std::unique_ptr<Parameter>>& params,
+                                                      Identifier* returnType, Statement* body,
+                                                      ClassContext* cls, bool isStatic, bool isMethod,
+                                                      bool isConstructor, int line,
+                                                      const std::vector<std::pair<std::string, Expression*>>* fieldInits = nullptr,
+                                                      const std::string& selfName = std::string());
+    void emitClosure(const std::shared_ptr<BytecodeFunction>& function);
+    void compileClass(ClassDefinition* definition, const std::shared_ptr<CompileUnit>& unit);
+    void compileUnitMembers(std::vector<AstNode*>& members, const std::shared_ptr<CompileUnit>& unit);
 
-    // Expression compilation
-    void compileExpression(Expression* expr, Chunk& chunk);
-    void compileIdentifier(Identifier* expr, Chunk& chunk);
-    void compileLiteral(Literal* expr, Chunk& chunk);
-    void compileBinaryExpression(BinaryExpression* expr, Chunk& chunk);
-    // The opcode of a binary operator; false when there is none.
-    bool emitBinaryOperator(OperatorType op, Chunk& chunk);
-    // ++ and --, before or after: the target read, stepped by one and
-    // written back, leaving the new value or, after, the old one.
-    void compileIncrement(Expression* target, bool increment, bool postfix, Chunk& chunk);
-    void compileUnaryExpression(UnaryExpression* expr, Chunk& chunk);
-    void compileConditionalExpression(ConditionalExpression* expr, Chunk& chunk);
-    void compileAssignmentExpression(AssignmentExpression* expr, Chunk& chunk);
-    void compileCallExpression(CallExpression* expr, Chunk& chunk);
-    void compileNewExpression(NewExpression* expr, Chunk& chunk);
-    void compileMemberExpression(MemberExpression* expr, Chunk& chunk);
-    void compileArrayExpression(ArrayExpression* expr, Chunk& chunk);
-    void compileObjectExpression(ObjectExpression* expr, Chunk& chunk);
-    void compileFunctionExpression(FunctionExpression* expr, Chunk& chunk);
+    // Statements
+    void compileStatement(Statement* stmt);
+    void compileBlockStatement(BlockStatement* stmt);
+    void compileIfStatement(IfStatement* stmt);
+    void compileWhileStatement(WhileStatement* stmt, const std::vector<std::string>& labels);
+    void compileDoWhileStatement(DoWhileStatement* stmt, const std::vector<std::string>& labels);
+    void compileForStatement(ForStatement* stmt, const std::vector<std::string>& labels);
+    void compileForInStatement(ForInStatement* stmt, const std::vector<std::string>& labels);
+    void compileSwitchStatement(SwitchStatement* stmt, const std::vector<std::string>& labels);
+    void compileLabeledStatement(LabeledStatement* stmt);
+    void compileTryStatement(TryStatement* stmt);
+    void compileReturnStatement(ReturnStatement* stmt);
+    void compileBreakContinue(const std::string& label, bool isContinue);
+    void compileVariableDefinition(VariableDefinition* stmt);
+    void compileLoopBody(Statement* body, const std::vector<std::string>& labels, bool isLoop);
 
-    // Helpers
-    uint16_t makeConstant(ValuePtr value, Chunk& chunk);
-    uint16_t identifierConstant(const std::string& name, Chunk& chunk);
-    void emitByte(uint8_t byte, Chunk& chunk);
-    void emitBytes(uint8_t byte1, uint8_t byte2, Chunk& chunk);
-    void emitOpCode(OpCode op, Chunk& chunk);
-    void emitConstant(ValuePtr value, Chunk& chunk);
-    void emitReturn(Chunk& chunk);
-    size_t emitJump(OpCode jumpOp, Chunk& chunk);
-    void patchJump(size_t offset, Chunk& chunk);
-    void emitLoop(size_t loopStart, Chunk& chunk);
+    // Expressions. With discard, the value is not left on the stack.
+    void compileExpression(Expression* expr);
+    void compileDiscarded(Expression* expr);
+    void compileIdentifier(Identifier* expr);
+    void compileLiteral(Literal* expr);
+    void compileBinaryExpression(BinaryExpression* expr);
+    void compileUnaryExpression(UnaryExpression* expr, bool discard);
+    void compileIncrement(Expression* target, bool increment, bool postfix, bool discard);
+    void compileAssignment(AssignmentExpression* expr, bool discard);
+    void compileCallExpression(CallExpression* expr);
+    void compileNewExpression(NewExpression* expr);
+    void compileMemberExpression(MemberExpression* expr);
+    void compileArrayExpression(ArrayExpression* expr);
+    void compileObjectExpression(ObjectExpression* expr);
+    void compileFunctionExpression(FunctionExpression* expr);
+    void compileTypeExpression(const std::string& typeName);
+    int compileArguments(const ExpressionList& args);
+    bool emitBinaryOperator(OperatorType op);
 
-    // Variable handling
-    void namedVariable(const std::string& name, bool isAssignment, Chunk& chunk);
-    void defineVariable(uint16_t global, Chunk& chunk);
+    // Names
+    enum class NameKind { Local, Cell, Upvalue, Member, Static, OwnClass, Global };
+    struct Resolved {
+        NameKind kind = NameKind::Global;
+        uint16_t index = 0;
+        Coerce coerce = Coerce::None;
+        bool isConst = false;
+    };
+    Resolved resolve(const std::string& name);
+    int resolveUpvalue(FunctionState* state, const std::string& name);
+    void emitLoad(const Resolved& where, const std::string& name);
+    // The value on top stored; with keep it is left on the stack.
+    void emitStore(const Resolved& where, const std::string& name, bool keep);
+    // a.b.C as a qualified name, when its root names a package.
+    bool qualifiedName(Expression* expr, std::string& name, std::vector<std::string>& rest);
 
-    // Error handling
+    // Emission
+    void emitOp(OpCode op);
+    void emitU8(uint8_t value);
+    void emitU16(uint16_t value);
+    void emitS32(int32_t value);
+    void adjust(int delta);
+    void emitConstant(const Val& value);
+    void emitNumber(double value);
+    void emitString(const std::string& value);
+    uint16_t nameIndex(const std::string& name);
+    uint16_t newCache();
+    size_t emitJump(OpCode op);
+    void patchJump(size_t at);
+    void patchJumpTo(size_t at, size_t target);
+    void emitJumpTo(OpCode op, size_t target);
+    size_t here() const;
+    uint16_t allocTemp();
+    void emitGetProp(const std::string& name);
+    void emitSetProp(const std::string& name);
+    void emitCallProp(const std::string& name, int argc);
+    void emitCoerce(Coerce coerce);
+
+    // Exceptions and jumps out of try blocks
+    void pauseRegions(size_t from);
+    void resumeRegions(size_t from);
+    void emitFinallyFor(size_t entryIndex);
+
     void error(const std::string& message);
+    void warning(const std::string& message);
 };
 
 } // namespace as3

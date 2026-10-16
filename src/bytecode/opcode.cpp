@@ -4,201 +4,163 @@ namespace as3 {
 
 const char* getOpCodeName(OpCode op) {
     switch (op) {
-        case OpCode::OP_CONSTANT: return "OP_CONSTANT";
-        case OpCode::OP_CONSTANT_LONG: return "OP_CONSTANT_LONG";
-        case OpCode::OP_TRUE: return "OP_TRUE";
-        case OpCode::OP_FALSE: return "OP_FALSE";
-        case OpCode::OP_NULL: return "OP_NULL";
-        case OpCode::OP_UNDEFINED: return "OP_UNDEFINED";
-
-        case OpCode::OP_NUMBER_0: return "OP_NUMBER_0";
-        case OpCode::OP_NUMBER_1: return "OP_NUMBER_1";
-        case OpCode::OP_NUMBER_NEG1: return "OP_NUMBER_NEG1";
-        case OpCode::OP_NUMBER: return "OP_NUMBER";
-
-        case OpCode::OP_POP: return "OP_POP";
-        case OpCode::OP_DUP: return "OP_DUP";
-        case OpCode::OP_SWAP: return "OP_SWAP";
-
-        case OpCode::OP_GET_GLOBAL: return "OP_GET_GLOBAL";
-        case OpCode::OP_SET_GLOBAL: return "OP_SET_GLOBAL";
-        case OpCode::OP_DEFINE_GLOBAL: return "OP_DEFINE_GLOBAL";
-        case OpCode::OP_GET_LOCAL: return "OP_GET_LOCAL";
-        case OpCode::OP_SET_LOCAL: return "OP_SET_LOCAL";
-        case OpCode::OP_GET_UPVALUE: return "OP_GET_UPVALUE";
-        case OpCode::OP_SET_UPVALUE: return "OP_SET_UPVALUE";
-        case OpCode::OP_CLOSE_UPVALUE: return "OP_CLOSE_UPVALUE";
-
-        case OpCode::OP_ADD: return "OP_ADD";
-        case OpCode::OP_SUBTRACT: return "OP_SUBTRACT";
-        case OpCode::OP_MULTIPLY: return "OP_MULTIPLY";
-        case OpCode::OP_DIVIDE: return "OP_DIVIDE";
-        case OpCode::OP_MODULO: return "OP_MODULO";
-        case OpCode::OP_POWER: return "OP_POWER";
-        case OpCode::OP_NEGATE: return "OP_NEGATE";
-
-        case OpCode::OP_EQUAL: return "OP_EQUAL";
-        case OpCode::OP_NOT_EQUAL: return "OP_NOT_EQUAL";
-        case OpCode::OP_STRICT_EQUAL: return "OP_STRICT_EQUAL";
-        case OpCode::OP_STRICT_NOT_EQUAL: return "OP_STRICT_NOT_EQUAL";
-        case OpCode::OP_GREATER: return "OP_GREATER";
-        case OpCode::OP_GREATER_EQUAL: return "OP_GREATER_EQUAL";
-        case OpCode::OP_LESS: return "OP_LESS";
-        case OpCode::OP_LESS_EQUAL: return "OP_LESS_EQUAL";
-
-        case OpCode::OP_NOT: return "OP_NOT";
-        case OpCode::OP_AND: return "OP_AND";
-        case OpCode::OP_OR: return "OP_OR";
-
-        case OpCode::OP_BIT_AND: return "OP_BIT_AND";
-        case OpCode::OP_BIT_OR: return "OP_BIT_OR";
-        case OpCode::OP_BIT_XOR: return "OP_BIT_XOR";
-        case OpCode::OP_BIT_NOT: return "OP_BIT_NOT";
-        case OpCode::OP_LEFT_SHIFT: return "OP_LEFT_SHIFT";
-        case OpCode::OP_RIGHT_SHIFT: return "OP_RIGHT_SHIFT";
-        case OpCode::OP_UNSIGNED_RIGHT_SHIFT: return "OP_UNSIGNED_RIGHT_SHIFT";
-
-        case OpCode::OP_INCREMENT: return "OP_INCREMENT";
-        case OpCode::OP_DECREMENT: return "OP_DECREMENT";
-        case OpCode::OP_POST_INCREMENT: return "OP_POST_INCREMENT";
-        case OpCode::OP_POST_DECREMENT: return "OP_POST_DECREMENT";
-
-        case OpCode::OP_JUMP: return "OP_JUMP";
-        case OpCode::OP_JUMP_IF_FALSE: return "OP_JUMP_IF_FALSE";
-        case OpCode::OP_JUMP_IF_TRUE: return "OP_JUMP_IF_TRUE";
-        case OpCode::OP_LOOP: return "OP_LOOP";
-
-        case OpCode::OP_CALL: return "OP_CALL";
-        case OpCode::OP_CALL_METHOD: return "OP_CALL_METHOD";
-        case OpCode::OP_CLOSURE: return "OP_CLOSURE";
-        case OpCode::OP_RETURN: return "OP_RETURN";
-        case OpCode::OP_THIS: return "OP_THIS";
-
-        case OpCode::OP_NEW_ARRAY: return "OP_NEW_ARRAY";
-        case OpCode::OP_NEW_OBJECT: return "OP_NEW_OBJECT";
-        case OpCode::OP_GET_PROPERTY: return "OP_GET_PROPERTY";
-        case OpCode::OP_SET_PROPERTY: return "OP_SET_PROPERTY";
-        case OpCode::OP_GET_INDEX: return "OP_GET_INDEX";
-        case OpCode::OP_SET_INDEX: return "OP_SET_INDEX";
-
-        case OpCode::OP_CLASS: return "OP_CLASS";
-        case OpCode::OP_METHOD: return "OP_METHOD";
-        case OpCode::OP_INHERIT: return "OP_INHERIT";
-        case OpCode::OP_INSTANTIATE: return "OP_INSTANTIATE";
-        case OpCode::OP_GET_SUPER: return "OP_GET_SUPER";
-        case OpCode::OP_INVOKE: return "OP_INVOKE";
-        case OpCode::OP_SUPER_INVOKE: return "OP_SUPER_INVOKE";
-
-        case OpCode::OP_TYPEOF: return "OP_TYPEOF";
-        case OpCode::OP_INSTANCEOF: return "OP_INSTANCEOF";
-        case OpCode::OP_IN: return "OP_IN";
-        case OpCode::OP_DELETE: return "OP_DELETE";
-
-        case OpCode::OP_PRINT: return "OP_PRINT";
-        case OpCode::OP_BREAKPOINT: return "OP_BREAKPOINT";
-
-        default: return "OP_UNKNOWN";
+        case OpCode::OP_CONSTANT: return "CONSTANT";
+        case OpCode::OP_UNDEFINED: return "UNDEFINED";
+        case OpCode::OP_NULL: return "NULL";
+        case OpCode::OP_TRUE: return "TRUE";
+        case OpCode::OP_FALSE: return "FALSE";
+        case OpCode::OP_ZERO: return "ZERO";
+        case OpCode::OP_ONE: return "ONE";
+        case OpCode::OP_POP: return "POP";
+        case OpCode::OP_DUP: return "DUP";
+        case OpCode::OP_DUP2: return "DUP2";
+        case OpCode::OP_SWAP: return "SWAP";
+        case OpCode::OP_DUP_X1: return "DUP_X1";
+        case OpCode::OP_DUP_X2: return "DUP_X2";
+        case OpCode::OP_GET_LOCAL: return "GET_LOCAL";
+        case OpCode::OP_SET_LOCAL: return "SET_LOCAL";
+        case OpCode::OP_PUT_LOCAL: return "PUT_LOCAL";
+        case OpCode::OP_GET_CELL: return "GET_CELL";
+        case OpCode::OP_SET_CELL: return "SET_CELL";
+        case OpCode::OP_PUT_CELL: return "PUT_CELL";
+        case OpCode::OP_GET_UPVALUE: return "GET_UPVALUE";
+        case OpCode::OP_SET_UPVALUE: return "SET_UPVALUE";
+        case OpCode::OP_PUT_UPVALUE: return "PUT_UPVALUE";
+        case OpCode::OP_INC_LOCAL: return "INC_LOCAL";
+        case OpCode::OP_GET_NAME: return "GET_NAME";
+        case OpCode::OP_SET_NAME: return "SET_NAME";
+        case OpCode::OP_TYPEOF_NAME: return "TYPEOF_NAME";
+        case OpCode::OP_DEFINE_VAR: return "DEFINE_VAR";
+        case OpCode::OP_DEFINE_FUNCTION: return "DEFINE_FUNCTION";
+        case OpCode::OP_GET_QNAME: return "GET_QNAME";
+        case OpCode::OP_GET_PROP: return "GET_PROP";
+        case OpCode::OP_SET_PROP: return "SET_PROP";
+        case OpCode::OP_DELETE_PROP: return "DELETE_PROP";
+        case OpCode::OP_GET_INDEX: return "GET_INDEX";
+        case OpCode::OP_SET_INDEX: return "SET_INDEX";
+        case OpCode::OP_DELETE_INDEX: return "DELETE_INDEX";
+        case OpCode::OP_GET_SUPER: return "GET_SUPER";
+        case OpCode::OP_SET_SUPER: return "SET_SUPER";
+        case OpCode::OP_ADD: return "ADD";
+        case OpCode::OP_SUBTRACT: return "SUBTRACT";
+        case OpCode::OP_MULTIPLY: return "MULTIPLY";
+        case OpCode::OP_DIVIDE: return "DIVIDE";
+        case OpCode::OP_MODULO: return "MODULO";
+        case OpCode::OP_NEGATE: return "NEGATE";
+        case OpCode::OP_TO_NUMBER: return "TO_NUMBER";
+        case OpCode::OP_INCREMENT: return "INCREMENT";
+        case OpCode::OP_DECREMENT: return "DECREMENT";
+        case OpCode::OP_EQUAL: return "EQUAL";
+        case OpCode::OP_NOT_EQUAL: return "NOT_EQUAL";
+        case OpCode::OP_STRICT_EQUAL: return "STRICT_EQUAL";
+        case OpCode::OP_STRICT_NOT_EQUAL: return "STRICT_NOT_EQUAL";
+        case OpCode::OP_GREATER: return "GREATER";
+        case OpCode::OP_GREATER_EQUAL: return "GREATER_EQUAL";
+        case OpCode::OP_LESS: return "LESS";
+        case OpCode::OP_LESS_EQUAL: return "LESS_EQUAL";
+        case OpCode::OP_NOT: return "NOT";
+        case OpCode::OP_BIT_AND: return "BIT_AND";
+        case OpCode::OP_BIT_OR: return "BIT_OR";
+        case OpCode::OP_BIT_XOR: return "BIT_XOR";
+        case OpCode::OP_BIT_NOT: return "BIT_NOT";
+        case OpCode::OP_LEFT_SHIFT: return "LEFT_SHIFT";
+        case OpCode::OP_RIGHT_SHIFT: return "RIGHT_SHIFT";
+        case OpCode::OP_UNSIGNED_RIGHT_SHIFT: return "UNSIGNED_RIGHT_SHIFT";
+        case OpCode::OP_TYPEOF: return "TYPEOF";
+        case OpCode::OP_INSTANCEOF: return "INSTANCEOF";
+        case OpCode::OP_IN: return "IN";
+        case OpCode::OP_IS: return "IS";
+        case OpCode::OP_AS: return "AS";
+        case OpCode::OP_COERCE: return "COERCE";
+        case OpCode::OP_JUMP: return "JUMP";
+        case OpCode::OP_JUMP_IF_FALSE: return "JUMP_IF_FALSE";
+        case OpCode::OP_JUMP_IF_TRUE: return "JUMP_IF_TRUE";
+        case OpCode::OP_JUMP_IF_FALSE_KEEP: return "JUMP_IF_FALSE_KEEP";
+        case OpCode::OP_JUMP_IF_TRUE_KEEP: return "JUMP_IF_TRUE_KEEP";
+        case OpCode::OP_JUMP_IF_NOT_NULLISH_KEEP: return "JUMP_IF_NOT_NULLISH_KEEP";
+        case OpCode::OP_CALL: return "CALL";
+        case OpCode::OP_CALL_PROP: return "CALL_PROP";
+        case OpCode::OP_CALL_NAME: return "CALL_NAME";
+        case OpCode::OP_CALL_INDEX: return "CALL_INDEX";
+        case OpCode::OP_CALL_SUPER: return "CALL_SUPER";
+        case OpCode::OP_SUPER_CTOR: return "SUPER_CTOR";
+        case OpCode::OP_NEW: return "NEW";
+        case OpCode::OP_RETURN: return "RETURN";
+        case OpCode::OP_RETURN_UNDEFINED: return "RETURN_UNDEFINED";
+        case OpCode::OP_THIS: return "THIS";
+        case OpCode::OP_SCOPE_THIS: return "SCOPE_THIS";
+        case OpCode::OP_OWNER_CLASS: return "OWNER_CLASS";
+        case OpCode::OP_CLOSURE: return "CLOSURE";
+        case OpCode::OP_DEFAULT_ARG: return "DEFAULT_ARG";
+        case OpCode::OP_NEW_ARRAY: return "NEW_ARRAY";
+        case OpCode::OP_NEW_OBJECT: return "NEW_OBJECT";
+        case OpCode::OP_NEW_VECTOR: return "NEW_VECTOR";
+        case OpCode::OP_NEW_REGEXP: return "NEW_REGEXP";
+        case OpCode::OP_APPLY_TYPE: return "APPLY_TYPE";
+        case OpCode::OP_DEFINE_CLASS: return "DEFINE_CLASS";
+        case OpCode::OP_THROW: return "THROW";
+        case OpCode::OP_ITER_INIT: return "ITER_INIT";
+        case OpCode::OP_ITER_NEXT: return "ITER_NEXT";
+        case OpCode::OP_NOP: return "NOP";
     }
+    return "UNKNOWN";
 }
 
 int getOpCodeOperandCount(OpCode op) {
     switch (op) {
-        // No operands
-        case OpCode::OP_TRUE:
-        case OpCode::OP_FALSE:
-        case OpCode::OP_NULL:
-        case OpCode::OP_UNDEFINED:
-        case OpCode::OP_NUMBER_0:
-        case OpCode::OP_NUMBER_1:
-        case OpCode::OP_NUMBER_NEG1:
-        case OpCode::OP_POP:
-        case OpCode::OP_DUP:
-        case OpCode::OP_SWAP:
-        case OpCode::OP_ADD:
-        case OpCode::OP_SUBTRACT:
-        case OpCode::OP_MULTIPLY:
-        case OpCode::OP_DIVIDE:
-        case OpCode::OP_MODULO:
-        case OpCode::OP_POWER:
-        case OpCode::OP_NEGATE:
-        case OpCode::OP_EQUAL:
-        case OpCode::OP_NOT_EQUAL:
-        case OpCode::OP_STRICT_EQUAL:
-        case OpCode::OP_STRICT_NOT_EQUAL:
-        case OpCode::OP_GREATER:
-        case OpCode::OP_GREATER_EQUAL:
-        case OpCode::OP_LESS:
-        case OpCode::OP_LESS_EQUAL:
-        case OpCode::OP_NOT:
-        case OpCode::OP_AND:
-        case OpCode::OP_OR:
-        case OpCode::OP_BIT_AND:
-        case OpCode::OP_BIT_OR:
-        case OpCode::OP_BIT_XOR:
-        case OpCode::OP_BIT_NOT:
-        case OpCode::OP_LEFT_SHIFT:
-        case OpCode::OP_RIGHT_SHIFT:
-        case OpCode::OP_UNSIGNED_RIGHT_SHIFT:
-        case OpCode::OP_INCREMENT:
-        case OpCode::OP_DECREMENT:
-        case OpCode::OP_POST_INCREMENT:
-        case OpCode::OP_POST_DECREMENT:
-        case OpCode::OP_RETURN:
-        case OpCode::OP_THIS:
-        case OpCode::OP_GET_INDEX:
-        case OpCode::OP_SET_INDEX:
-        case OpCode::OP_INHERIT:
-        case OpCode::OP_TYPEOF:
-        case OpCode::OP_INSTANCEOF:
-        case OpCode::OP_IN:
-        case OpCode::OP_DELETE:
-        case OpCode::OP_PRINT:
-        case OpCode::OP_BREAKPOINT:
-        case OpCode::OP_CLOSE_UPVALUE:
-            return 0;
-
-        // 1 byte operand
+        case OpCode::OP_CONSTANT:
         case OpCode::OP_GET_LOCAL:
         case OpCode::OP_SET_LOCAL:
+        case OpCode::OP_PUT_LOCAL:
+        case OpCode::OP_GET_CELL:
+        case OpCode::OP_SET_CELL:
+        case OpCode::OP_PUT_CELL:
         case OpCode::OP_GET_UPVALUE:
         case OpCode::OP_SET_UPVALUE:
-        case OpCode::OP_CALL:
-        case OpCode::OP_CALL_METHOD:
-        case OpCode::OP_INSTANTIATE:
-            return 1;
-
-        // 2 byte operand
-        case OpCode::OP_CONSTANT:
-        case OpCode::OP_GET_GLOBAL:
-        case OpCode::OP_SET_GLOBAL:
-        case OpCode::OP_DEFINE_GLOBAL:
-        case OpCode::OP_JUMP:
-        case OpCode::OP_JUMP_IF_FALSE:
-        case OpCode::OP_JUMP_IF_TRUE:
-        case OpCode::OP_LOOP:
+        case OpCode::OP_PUT_UPVALUE:
+        case OpCode::OP_TYPEOF_NAME:
+        case OpCode::OP_DEFINE_VAR:
+        case OpCode::OP_DEFINE_FUNCTION:
+        case OpCode::OP_GET_QNAME:
+        case OpCode::OP_DELETE_PROP:
+        case OpCode::OP_GET_SUPER:
+        case OpCode::OP_SET_SUPER:
         case OpCode::OP_CLOSURE:
         case OpCode::OP_NEW_ARRAY:
         case OpCode::OP_NEW_OBJECT:
-        case OpCode::OP_GET_PROPERTY:
-        case OpCode::OP_SET_PROPERTY:
-        case OpCode::OP_CLASS:
-        case OpCode::OP_METHOD:
-        case OpCode::OP_GET_SUPER:
+        case OpCode::OP_NEW_VECTOR:
+        case OpCode::OP_DEFINE_CLASS:
             return 2;
-
-        // 3 byte operand (2 byte index + 1 byte count)
-        case OpCode::OP_INVOKE:
-        case OpCode::OP_SUPER_INVOKE:
-            return 3;
-
-        // 4 byte operand
-        case OpCode::OP_CONSTANT_LONG:
+        case OpCode::OP_INC_LOCAL:
+        case OpCode::OP_GET_NAME:
+        case OpCode::OP_SET_NAME:
+        case OpCode::OP_GET_PROP:
+        case OpCode::OP_SET_PROP:
+        case OpCode::OP_NEW_REGEXP:
             return 4;
-
-        // 8 byte operand (inline double)
-        case OpCode::OP_NUMBER:
-            return 8;
-
+        case OpCode::OP_COERCE:
+        case OpCode::OP_CALL:
+        case OpCode::OP_CALL_INDEX:
+        case OpCode::OP_SUPER_CTOR:
+        case OpCode::OP_NEW:
+        case OpCode::OP_APPLY_TYPE:
+        case OpCode::OP_ITER_INIT:
+            return 1;
+        case OpCode::OP_CALL_SUPER:
+            return 3;
+        case OpCode::OP_CALL_PROP:
+        case OpCode::OP_CALL_NAME:
+            return 5;
+        case OpCode::OP_JUMP:
+        case OpCode::OP_JUMP_IF_FALSE:
+        case OpCode::OP_JUMP_IF_TRUE:
+        case OpCode::OP_JUMP_IF_FALSE_KEEP:
+        case OpCode::OP_JUMP_IF_TRUE_KEEP:
+        case OpCode::OP_JUMP_IF_NOT_NULLISH_KEEP:
+            return 4;
+        case OpCode::OP_DEFAULT_ARG:
+        case OpCode::OP_ITER_NEXT:
+            return 6;
         default:
             return 0;
     }

@@ -12,43 +12,77 @@ namespace as3 {
 
 class Parser {
 public:
-    explicit Parser(const std::string& source);
+    // The file name, when given, is kept on the program and named in
+    // messages.
+    explicit Parser(const std::string& source, const std::string& fileName = std::string());
 
     ~Parser();
 
     std::unique_ptr<Program> parse();
 
+    // Errors, a line each: "Parse error at line N, column C: what".
     const std::string& getErrors() const { return _errors; }
 
     bool hasErrors() const { return !_errors.empty(); }
+
+    // What was accepted though not quite right, a line each, as two
+    // expressions on one line with nothing between them (a.b 0.07;), which
+    // is taken as two statements. In strict mode these are errors.
+    const std::string& getWarnings() const { return _warnings; }
+    void setStrict(bool strict) { _strict = strict; }
 
 private:
     Lexer _lexer;
     std::vector<Token> _tokens;
     size_t _position;
     std::string _errors;
+    std::string _warnings;
+    std::string _fileName;
     Token _eofToken;
+    bool _strict = false;
+    // In a for statement's first part, where "in" is not an operator.
+    bool _noIn = false;
+    // Metadata read before a definition, for it.
+    std::vector<Metadata> _pendingMetadata;
 
     const Token& currentToken() const;
     const Token& peek(int offset = 0) const;
-    bool peekForInOrOf();
     void advance();
     bool check(TokenType type) const;
     bool check(KeywordType keyword) const;
     bool match(TokenType type);
     bool match(KeywordType keyword);
-    void expect(bool condition, const std::string& message);
     void expectToken(TokenType type, const std::string& message);
     void expectKeyword(KeywordType keyword, const std::string& message);
 
+    // Whether a token can be a name: an identifier, or a keyword that is
+    // only one in some places (get, set, each, namespace...).
+    static bool isNameToken(const Token& token);
+    // Whether a token can name a property after a dot: any word.
+    static bool isPropertyNameToken(const Token& token);
+    static std::string tokenWord(const Token& token);
+
     void addError(const std::string& message);
+    void addWarning(const std::string& message);
     void synchronize();
     std::string parseQualifiedName();
+    // A type as written: *, void, a.b.C, Vector.<T>.
+    std::string parseTypeName();
+    // The > closing type arguments, taken from >> or >>> when nested.
+    void expectTypeClose();
+    IdentifierPtr parseTypeAnnotation();
+    bool looksLikeMetadata() const;
+    void parseMetadata();
+    std::vector<Metadata> takeMetadata();
 
     std::unique_ptr<Program> parseProgram();
     std::vector<std::unique_ptr<ImportDirective>> parseImports();
     std::unique_ptr<PackageDefinition> parsePackage();
     std::unique_ptr<AstNode> parseTopLevel();
+    // What attributes and metadata come before: a class, interface,
+    // function, variable or namespace.
+    std::unique_ptr<AstNode> parseDefinition(std::vector<AttributePtr> attrs);
+    bool atAttribute() const;
 
     std::unique_ptr<Statement> parseStatement();
     std::unique_ptr<Statement> parseStatementBody();
@@ -60,7 +94,6 @@ private:
     std::unique_ptr<Statement> parseWhileStatement();
     std::unique_ptr<Statement> parseDoWhileStatement();
     std::unique_ptr<Statement> parseForStatement();
-    std::unique_ptr<Statement> parseForInOrOfStatement(bool isForEach);
     std::unique_ptr<Statement> parseBreakStatement();
     std::unique_ptr<Statement> parseContinueStatement();
     std::unique_ptr<Statement> parseReturnStatement();
@@ -68,41 +101,30 @@ private:
     std::unique_ptr<Statement> parseTryStatement();
     std::unique_ptr<Statement> parseWithStatement();
     std::unique_ptr<Statement> parseLabeledStatement();
-    std::unique_ptr<Statement> parseVariableStatement();
-    std::unique_ptr<Statement> parseFunctionDeclaration();
-    std::unique_ptr<Statement> parseClassDeclaration();
+    std::unique_ptr<Statement> parseVariableStatement(std::vector<AttributePtr> attrs = {});
+    std::unique_ptr<VariableDefinition> parseVariableList(std::vector<AttributePtr> attrs, bool isConst);
+    std::unique_ptr<Statement> parseClassDeclaration(std::vector<AttributePtr> attrs, bool isInterface);
     std::unique_ptr<Statement> parseNamespaceDeclaration();
     std::unique_ptr<Statement> parseLegacyBlock();
+    std::unique_ptr<Statement> parseUseOrInclude();
     void endStatement(const std::string& message);
 
     std::unique_ptr<Expression> parseExpression();
     std::unique_ptr<Expression> parseAssignmentExpression();
     std::unique_ptr<Expression> parseConditionalExpression();
-    std::unique_ptr<Expression> parseNullCoalescingExpression();
-    std::unique_ptr<Expression> parseLogicalOrExpression();
-    std::unique_ptr<Expression> parseLogicalAndExpression();
-    std::unique_ptr<Expression> parseBitwiseOrExpression();
-    std::unique_ptr<Expression> parseBitwiseXorExpression();
-    std::unique_ptr<Expression> parseBitwiseAndExpression();
-    std::unique_ptr<Expression> parseEqualityExpression();
-    std::unique_ptr<Expression> parseRelationalExpression();
-    std::unique_ptr<Expression> parseShiftExpression();
-    std::unique_ptr<Expression> parseAdditiveExpression();
-    std::unique_ptr<Expression> parseMultiplicativeExpression();
+    std::unique_ptr<Expression> parseBinaryExpression(int level);
     std::unique_ptr<Expression> parseUnaryExpression();
     std::unique_ptr<Expression> parsePostfixExpression();
     std::unique_ptr<Expression> parseCallMemberExpression();
     std::unique_ptr<Expression> parseNewExpression();
     std::unique_ptr<Expression> parsePrimaryExpression();
+    ExpressionList parseArguments();
+    std::vector<std::string> parseTypeArguments();
 
     std::unique_ptr<Identifier> parseIdentifier();
     std::vector<std::unique_ptr<Attribute>> parseAttributes();
-    std::unique_ptr<Attribute> parseAttribute();
-    std::unique_ptr<FunctionDefinition> parseFunctionDefinition(bool isDeclaration = true);
     std::unique_ptr<FunctionDefinition> parseFunctionDefinitionWithAttributes(std::vector<AttributePtr> attrs);
-    std::unique_ptr<Statement> parseVariableStatementWithAttributes(std::vector<AttributePtr> attrs);
-    std::unique_ptr<AstNode> parsePropertyWithAttributes(std::vector<AttributePtr> attrs);
-    std::unique_ptr<ClassDefinition> parseClassDefinition();
+    std::unique_ptr<Expression> parseFunctionExpression();
     std::vector<std::unique_ptr<Parameter>> parseParameters();
     std::unique_ptr<Parameter> parseParameter();
 

@@ -41,9 +41,12 @@ class Expression : public AstNode {
 public:
     enum class ExpressionKind {
         Identifier, Literal, Binary, Unary, Conditional, Assignment,
-        Call, New, Member, Function, Array, Object, This, Sequence
+        Call, New, Member, Function, Array, Object, This, Sequence,
+        Super, TypeApplication
     };
     ExpressionKind kind;
+    // The line it starts on, from 1; 0 when not known.
+    int line = 0;
 
     explicit Expression(ExpressionKind k)
         : kind(k) {
@@ -78,6 +81,8 @@ enum class OperatorType {
     Assign,
 };
 
+// A name. As a type annotation it is the type as written, qualified or
+// not: "int", "*", "flash.display.Sprite", "Vector.<int>".
 class Identifier : public Expression {
 public:
     std::string name;
@@ -95,14 +100,17 @@ using IdentifierPtr = std::unique_ptr<Identifier>;
 class Literal : public Expression {
 public:
     enum class LiteralKind {
-        Null, Boolean, Numeric, String, RegExp, Xml, Array, Object, Vector
+        Null, Boolean, Numeric, String, RegExp, Xml, Array, Object, Vector, Undefined
     };
     LiteralKind kind;
     enum class LiteralValueType { None, Bool, Number, String };
     LiteralValueType valueType;
     bool boolValue;
     double numberValue;
+    // A string's text, or a regular expression's pattern.
     std::string stringValue;
+    // A regular expression's flags.
+    std::string flags;
 
     explicit Literal(LiteralKind k)
         : Expression(ExpressionKind::Literal)
@@ -242,9 +250,12 @@ public:
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
+// [a, b, c]; with a vector type, new <int>[a, b, c]. A hole, as in [a,,b],
+// is a null element.
 class ArrayExpression : public Expression {
 public:
     ExpressionList elements;
+    std::string vectorType;
 
     explicit ArrayExpression(ExpressionList elems)
         : Expression(ExpressionKind::Array)
@@ -267,6 +278,39 @@ public:
 class ThisExpression : public Expression {
 public:
     ThisExpression() : Expression(ExpressionKind::This) {}
+    AstNodeType getType() const override { return AstNodeType::Expression; }
+};
+
+// super, in super(...), super.name and super.name(...).
+class SuperExpression : public Expression {
+public:
+    SuperExpression() : Expression(ExpressionKind::Super) {}
+    AstNodeType getType() const override { return AstNodeType::Expression; }
+};
+
+// a, b: each evaluated, the last one's value given.
+class SequenceExpression : public Expression {
+public:
+    ExpressionList expressions;
+
+    explicit SequenceExpression(ExpressionList list)
+        : Expression(ExpressionKind::Sequence)
+        , expressions(std::move(list)) {
+    }
+    AstNodeType getType() const override { return AstNodeType::Expression; }
+};
+
+// Vector.<int>: a parameterized type, its arguments as written.
+class TypeApplication : public Expression {
+public:
+    ExpressionPtr base;
+    std::vector<std::string> typeArguments;
+
+    TypeApplication(ExpressionPtr b, std::vector<std::string> args)
+        : Expression(ExpressionKind::TypeApplication)
+        , base(std::move(b))
+        , typeArguments(std::move(args)) {
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 
@@ -347,16 +391,20 @@ public:
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
+// for (x in o) and, with each, for each (x in o). The left is a variable
+// definition of one name, or an expression statement giving the target.
 class ForInStatement : public Statement {
 public:
     StatementPtr left;
     ExpressionPtr right;
     StatementPtr body;
+    bool each = false;
 
-    ForInStatement(StatementPtr l, ExpressionPtr r, StatementPtr b)
+    ForInStatement(StatementPtr l, ExpressionPtr r, StatementPtr b, bool isEach = false)
         : left(std::move(l))
         , right(std::move(r))
-        , body(std::move(b)) {
+        , body(std::move(b))
+        , each(isEach) {
     }
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
@@ -439,17 +487,22 @@ public:
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
+// catch (name:Type) { body }; the type is empty when not given.
+struct CatchClause {
+    IdentifierPtr variable;
+    std::string type;
+    StatementPtr body;
+};
+
 class TryStatement : public Statement {
 public:
     StatementPtr block;
-    IdentifierPtr catchVar;
-    StatementPtr catchBody;
+    std::vector<CatchClause> catches;
     StatementPtr finallyBody;
 
-    TryStatement(StatementPtr b, IdentifierPtr cv, StatementPtr cb, StatementPtr fb)
+    TryStatement(StatementPtr b, std::vector<CatchClause> c, StatementPtr fb)
         : block(std::move(b))
-        , catchVar(std::move(cv))
-        , catchBody(std::move(cb))
+        , catches(std::move(c))
         , finallyBody(std::move(fb)) {
     }
     AstNodeType getType() const override { return AstNodeType::Statement; }
@@ -495,6 +548,24 @@ public:
 
 using AttributePtr = std::unique_ptr<Attribute>;
 
+// Whether attributes include one of a type.
+inline bool hasAttribute(const std::vector<AttributePtr>& attributes, AttributeType type) {
+    for (const auto& attribute : attributes) {
+        if (attribute && attribute->type == type) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A metadata tag, as [Embed(source="a.png")] or [Event(name="change",
+// type="flash.events.Event")]: its name, and its arguments as key and value
+// (the key empty for one given without a name).
+struct Metadata {
+    std::string name;
+    std::vector<std::pair<std::string, std::string>> arguments;
+};
+
 class VariableDeclaration : public AstNode {
 public:
     IdentifierPtr id;
@@ -516,6 +587,7 @@ public:
     std::vector<AttributePtr> attributes;
     VariableDeclarationList declarations;
     bool isConst;
+    std::vector<Metadata> metadata;
 
     VariableDefinition(std::vector<AttributePtr> attrs, VariableDeclarationList decls, bool constFlag)
         : attributes(std::move(attrs))
@@ -547,9 +619,11 @@ public:
     IdentifierPtr name;
     std::vector<std::unique_ptr<Parameter>> parameters;
     IdentifierPtr returnType;
+    // Null for a method an interface declares, or a native one.
     StatementPtr body;
     bool isGetter;
     bool isSetter;
+    std::vector<Metadata> metadata;
 
     FunctionDefinition(
         std::vector<AttributePtr> attrs,
@@ -569,6 +643,8 @@ public:
     AstNodeType getType() const override { return AstNodeType::FunctionDefinition; }
 };
 
+// A class, or with isInterface an interface (whose superclass is empty and
+// whose interfaces are the ones it extends).
 class ClassDefinition : public Statement {
 public:
     std::vector<AttributePtr> attributes;
@@ -576,6 +652,8 @@ public:
     IdentifierPtr superClass;
     std::vector<IdentifierPtr> interfaces;
     std::vector<AstNodePtr> members;
+    bool isInterface = false;
+    std::vector<Metadata> metadata;
 
     ClassDefinition(
         std::vector<AttributePtr> attrs,
@@ -587,20 +665,6 @@ public:
         , name(std::move(n))
         , superClass(std::move(super_))
         , interfaces(std::move(interfaces_))
-        , members(std::move(mems)) {
-    }
-    AstNodeType getType() const override { return AstNodeType::ClassDefinition; }
-};
-
-class InterfaceDefinition : public AstNode {
-public:
-    IdentifierPtr name;
-    std::vector<IdentifierPtr> extends;
-    std::vector<AstNodePtr> members;
-
-    InterfaceDefinition(IdentifierPtr n, std::vector<IdentifierPtr> ext, std::vector<AstNodePtr> mems)
-        : name(std::move(n))
-        , extends(std::move(ext))
         , members(std::move(mems)) {
     }
     AstNodeType getType() const override { return AstNodeType::ClassDefinition; }
@@ -618,6 +682,8 @@ public:
     AstNodeType getType() const override { return AstNodeType::Statement; }
 };
 
+// import a.b.C (path "a.b", name "C") or import a.b.* (path "a.b", name
+// "*", isPackage).
 class ImportDirective : public AstNode {
 public:
     std::string path;
@@ -652,6 +718,8 @@ class Program : public AstNode {
 public:
     std::vector<ImportDirectivePtr> imports;
     std::vector<AstNodePtr> statements;
+    // The file it was read from, for messages; empty when not known.
+    std::string fileName;
 
     AstNodeType getType() const override { return AstNodeType::Program; }
 };

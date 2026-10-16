@@ -34,14 +34,6 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Note: With the current simple test runner, we can't filter by suite name easily
-    // For now, we'll just run all tests
-    // TODO: Enhance test runner to support filtering
-
-    if (suite_filter != "all") {
-        std::cout << "Note: Suite filtering not yet implemented. Running all tests." << std::endl;
-    }
-
-    int result = as3test::TestRunner::getInstance().runAll();
+    int result = as3test::TestRunner::getInstance().runAll(suite_filter);
     return result;
 }

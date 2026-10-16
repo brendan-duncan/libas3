@@ -1,132 +1,1160 @@
 #include "compiler.h"
+#include <algorithm>
 #include <cmath>
 #include <functional>
-#include <iostream>
-#include <stdexcept>
+#include <limits>
+#include <sstream>
 
 namespace as3 {
 
-// CompilerContext implementation
+// What the compiler knows of a variable of the function being compiled.
+struct Compiler::VarInfo {
+    bool isCell = false;
+    uint16_t index = 0;
+    Coerce coerce = Coerce::None;
+    bool isConst = false;
+};
 
-CompilerContext::CompilerContext(CompilerContext* parent)
-    : enclosing(parent)
-    , function(nullptr)
-    , scopeDepth(0)
-    , loopStart(-1)
-    , loopScopeDepth(-1) {
-}
+// The class whose members are being compiled: what its names are.
+struct Compiler::ClassContext {
+    std::string name;
+    std::map<std::string, Coerce> instanceMembers;
+    std::map<std::string, Coerce> staticMembers;
+};
 
-int CompilerContext::addLocal(const std::string& name) {
-    if (locals.size() >= UINT8_MAX) {
-        throw std::runtime_error("Too many local variables in function");
+// A statement break, continue or return can leave: a loop, a switch, a
+// labeled statement, or a try whose finally block must run on the way.
+struct Compiler::ControlEntry {
+    enum class Kind { Loop, Switch, Label, Try };
+    Kind kind = Kind::Loop;
+    std::vector<std::string> labels;
+    std::vector<size_t> breakJumps;
+    std::vector<size_t> continueJumps;
+    // A try's finally block, and the code its handler covers so far.
+    Statement* finallyBody = nullptr;
+    bool regionOpen = false;
+    bool paused = false;
+    uint32_t regionStart = 0;
+    std::vector<std::pair<uint32_t, uint32_t>> ranges;
+};
+
+struct Compiler::FunctionState {
+    FunctionState* parent = nullptr;
+    std::shared_ptr<BytecodeFunction> proto;
+    std::map<std::string, VarInfo> vars;
+    std::map<std::string, uint16_t> upvalueIndex;
+    ClassContext* cls = nullptr;
+    bool isStatic = false;
+    bool isScript = false;
+    std::shared_ptr<CompileUnit> unit;
+    // A script's typed top-level vars.
+    std::map<std::string, Coerce> scriptVars;
+    std::vector<ControlEntry> controls;
+    int depth = 0;
+    int maxDepth = 0;
+    int tempCount = 0;
+};
+
+namespace {
+
+// What a function declares and what names it and the functions in it use,
+// to find which of its variables a closure captures.
+struct Scan {
+    std::vector<std::pair<std::string, std::string>> vars;
+    std::vector<FunctionDefinition*> functions;
+    std::set<std::string> refs;
+    std::set<std::string> innerFree;
+    bool usesArguments = false;
+    bool callsSuper = false;
+};
+
+void scanStatement(Statement* stmt, Scan& scan);
+void scanExpression(Expression* expr, Scan& scan);
+std::set<std::string> freeNames(const std::vector<std::unique_ptr<Parameter>>& params, Statement* body,
+                                const std::string& selfName);
+
+void scanExpression(Expression* expr, Scan& scan) {
+    if (!expr) {
+        return;
     }
-
-    locals.emplace_back(name, -1);  // -1 means uninitialized
-    return static_cast<int>(locals.size() - 1);
-}
-
-int CompilerContext::resolveLocal(const std::string& name) {
-    // Walk backwards to find most recent declaration
-    for (int i = static_cast<int>(locals.size()) - 1; i >= 0; i--) {
-        if (locals[i].name == name) {
-            if (locals[i].depth == -1) {
-                throw std::runtime_error("Can't read local variable in its own initializer");
+    switch (expr->kind) {
+        case Expression::ExpressionKind::Identifier: {
+            auto* id = static_cast<Identifier*>(expr);
+            scan.refs.insert(id->name);
+            if (id->name == "arguments") {
+                scan.usesArguments = true;
             }
-            return i;
+            break;
         }
-    }
-    return -1;  // Not found
-}
-
-int CompilerContext::resolveUpvalue(const std::string& name) {
-    if (enclosing == nullptr) return -1;
-
-    // Try to resolve in enclosing function's locals
-    int local = enclosing->resolveLocal(name);
-    if (local != -1) {
-        enclosing->locals[local].isCaptured = true;
-        upvalues.emplace_back(static_cast<uint8_t>(local), true);
-        return static_cast<int>(upvalues.size() - 1);
-    }
-
-    // Try to resolve in enclosing function's upvalues
-    int upvalue = enclosing->resolveUpvalue(name);
-    if (upvalue != -1) {
-        upvalues.emplace_back(static_cast<uint8_t>(upvalue), false);
-        return static_cast<int>(upvalues.size() - 1);
-    }
-
-    return -1;
-}
-
-void CompilerContext::beginScope() {
-    scopeDepth++;
-}
-
-void CompilerContext::endScope(Chunk& chunk) {
-    scopeDepth--;
-
-    // Pop all locals from this scope
-    while (!locals.empty() && locals.back().depth > scopeDepth) {
-        if (locals.back().isCaptured) {
-            chunk.writeOpCode(OpCode::OP_CLOSE_UPVALUE);
-        } else {
-            chunk.writeOpCode(OpCode::OP_POP);
+        case Expression::ExpressionKind::Binary: {
+            auto* binary = static_cast<BinaryExpression*>(expr);
+            scanExpression(binary->left.get(), scan);
+            scanExpression(binary->right.get(), scan);
+            break;
         }
-        locals.pop_back();
+        case Expression::ExpressionKind::Unary:
+            scanExpression(static_cast<UnaryExpression*>(expr)->operand.get(), scan);
+            break;
+        case Expression::ExpressionKind::Conditional: {
+            auto* conditional = static_cast<ConditionalExpression*>(expr);
+            scanExpression(conditional->test.get(), scan);
+            scanExpression(conditional->consequent.get(), scan);
+            scanExpression(conditional->alternate.get(), scan);
+            break;
+        }
+        case Expression::ExpressionKind::Assignment: {
+            auto* assignment = static_cast<AssignmentExpression*>(expr);
+            scanExpression(assignment->left.get(), scan);
+            scanExpression(assignment->right.get(), scan);
+            break;
+        }
+        case Expression::ExpressionKind::Call: {
+            auto* call = static_cast<CallExpression*>(expr);
+            if (call->callee && call->callee->kind == Expression::ExpressionKind::Super) {
+                scan.callsSuper = true;
+            }
+            scanExpression(call->callee.get(), scan);
+            for (auto& arg : call->arguments) {
+                scanExpression(arg.get(), scan);
+            }
+            break;
+        }
+        case Expression::ExpressionKind::New: {
+            auto* made = static_cast<NewExpression*>(expr);
+            scanExpression(made->callee.get(), scan);
+            for (auto& arg : made->arguments) {
+                scanExpression(arg.get(), scan);
+            }
+            break;
+        }
+        case Expression::ExpressionKind::Member: {
+            auto* member = static_cast<MemberExpression*>(expr);
+            scanExpression(member->object.get(), scan);
+            if (member->computed) {
+                scanExpression(member->computedProperty.get(), scan);
+            }
+            break;
+        }
+        case Expression::ExpressionKind::Function: {
+            auto* function = static_cast<FunctionExpression*>(expr);
+            const auto free = freeNames(function->parameters, function->body.get(),
+                                        function->name ? function->name->name : std::string());
+            scan.innerFree.insert(free.begin(), free.end());
+            break;
+        }
+        case Expression::ExpressionKind::Array:
+            for (auto& element : static_cast<ArrayExpression*>(expr)->elements) {
+                scanExpression(element.get(), scan);
+            }
+            break;
+        case Expression::ExpressionKind::Object:
+            for (auto& property : static_cast<ObjectExpression*>(expr)->properties) {
+                if (property.first && property.first->kind != Expression::ExpressionKind::Identifier) {
+                    scanExpression(property.first.get(), scan);
+                }
+                scanExpression(property.second.get(), scan);
+            }
+            break;
+        case Expression::ExpressionKind::Sequence:
+            for (auto& part : static_cast<SequenceExpression*>(expr)->expressions) {
+                scanExpression(part.get(), scan);
+            }
+            break;
+        case Expression::ExpressionKind::TypeApplication:
+            scanExpression(static_cast<TypeApplication*>(expr)->base.get(), scan);
+            break;
+        default:
+            break;
     }
 }
 
-void CompilerContext::markInitialized() {
-    if (scopeDepth == 0) return;  // Global variables
-    if (!locals.empty()) {
-        locals.back().depth = scopeDepth;
+void scanStatement(Statement* stmt, Scan& scan) {
+    if (!stmt) {
+        return;
+    }
+    if (auto* block = dynamic_cast<BlockStatement*>(stmt)) {
+        for (auto& s : block->statements) {
+            scanStatement(s.get(), scan);
+        }
+    } else if (auto* expression = dynamic_cast<ExpressionStatement*>(stmt)) {
+        scanExpression(expression->expression.get(), scan);
+    } else if (auto* variables = dynamic_cast<VariableDefinition*>(stmt)) {
+        for (auto& decl : variables->declarations) {
+            scan.vars.emplace_back(decl->id->name, decl->type ? decl->type->name : std::string());
+            scanExpression(decl->init.get(), scan);
+        }
+    } else if (auto* function = dynamic_cast<FunctionDefinition*>(stmt)) {
+        scan.functions.push_back(function);
+        scan.vars.emplace_back(function->name->name, std::string());
+        const auto free = freeNames(function->parameters, function->body.get(), std::string());
+        scan.innerFree.insert(free.begin(), free.end());
+    } else if (auto* branch = dynamic_cast<IfStatement*>(stmt)) {
+        scanExpression(branch->test.get(), scan);
+        scanStatement(branch->consequent.get(), scan);
+        scanStatement(branch->alternate.get(), scan);
+    } else if (auto* loop = dynamic_cast<WhileStatement*>(stmt)) {
+        scanExpression(loop->test.get(), scan);
+        scanStatement(loop->body.get(), scan);
+    } else if (auto* doLoop = dynamic_cast<DoWhileStatement*>(stmt)) {
+        scanStatement(doLoop->body.get(), scan);
+        scanExpression(doLoop->test.get(), scan);
+    } else if (auto* forLoop = dynamic_cast<ForStatement*>(stmt)) {
+        scanStatement(forLoop->init.get(), scan);
+        scanExpression(forLoop->test.get(), scan);
+        scanExpression(forLoop->update.get(), scan);
+        scanStatement(forLoop->body.get(), scan);
+    } else if (auto* forIn = dynamic_cast<ForInStatement*>(stmt)) {
+        scanStatement(forIn->left.get(), scan);
+        scanExpression(forIn->right.get(), scan);
+        scanStatement(forIn->body.get(), scan);
+    } else if (auto* choice = dynamic_cast<SwitchStatement*>(stmt)) {
+        scanExpression(choice->discriminant.get(), scan);
+        for (auto& clause : choice->cases) {
+            scanExpression(clause->test.get(), scan);
+            for (auto& s : clause->consequent) {
+                scanStatement(s.get(), scan);
+            }
+        }
+    } else if (auto* labeled = dynamic_cast<LabeledStatement*>(stmt)) {
+        scanStatement(labeled->body.get(), scan);
+    } else if (auto* attempt = dynamic_cast<TryStatement*>(stmt)) {
+        scanStatement(attempt->block.get(), scan);
+        for (auto& clause : attempt->catches) {
+            scan.vars.emplace_back(clause.variable->name, std::string());
+            scanStatement(clause.body.get(), scan);
+        }
+        scanStatement(attempt->finallyBody.get(), scan);
+    } else if (auto* result = dynamic_cast<ReturnStatement*>(stmt)) {
+        scanExpression(result->argument.get(), scan);
+    } else if (auto* thrown = dynamic_cast<ThrowStatement*>(stmt)) {
+        scanExpression(thrown->argument.get(), scan);
+    } else if (auto* with = dynamic_cast<WithStatement*>(stmt)) {
+        scanExpression(with->object.get(), scan);
+        scanStatement(with->body.get(), scan);
     }
 }
 
-// Compiler implementation
-
-Compiler::Compiler()
-    : current(nullptr)
-    , hadError(false) {
+std::set<std::string> freeNames(const std::vector<std::unique_ptr<Parameter>>& params, Statement* body,
+                                const std::string& selfName) {
+    Scan scan;
+    scanStatement(body, scan);
+    std::set<std::string> declared;
+    for (const auto& param : params) {
+        declared.insert(param->name->name);
+    }
+    for (const auto& var : scan.vars) {
+        declared.insert(var.first);
+    }
+    declared.insert("arguments");
+    if (!selfName.empty()) {
+        declared.insert(selfName);
+    }
+    std::set<std::string> free;
+    for (const auto& name : scan.refs) {
+        if (!declared.count(name)) free.insert(name);
+    }
+    for (const auto& name : scan.innerFree) {
+        if (!declared.count(name)) free.insert(name);
+    }
+    return free;
 }
+
+// A literal's value, for a field's default or a constant.
+bool literalValue(Expression* expr, Val& out) {
+    if (!expr || expr->kind != Expression::ExpressionKind::Literal) {
+        return false;
+    }
+    auto* literal = static_cast<Literal*>(expr);
+    switch (literal->kind) {
+        case Literal::LiteralKind::Numeric:
+            out = Val::number(literal->numberValue);
+            return true;
+        case Literal::LiteralKind::String:
+            out = Val::string(literal->stringValue);
+            return true;
+        case Literal::LiteralKind::Boolean:
+            out = Val::boolean(literal->boolValue);
+            return true;
+        case Literal::LiteralKind::Null:
+            out = Val::null();
+            return true;
+        default:
+            return false;
+    }
+}
+
+// The roots of package names that a.b.C may start with when nothing else
+// has that name.
+bool isPackageRoot(const std::string& name, const CompileUnit* unit) {
+    static const char* known[] = {"flash", "fl", "mx", "com", "org", "net", "air", "adobe", "spark", "de", "uk"};
+    for (const char* root : known) {
+        if (name == root) return true;
+    }
+    if (!unit) {
+        return false;
+    }
+    const auto rootOf = [](const std::string& path) { return path.substr(0, path.find('.')); };
+    if (!unit->packageName.empty() && rootOf(unit->packageName) == name) {
+        return true;
+    }
+    for (const auto& import : unit->imports) {
+        if (rootOf(import.second) == name) return true;
+    }
+    for (const auto& wildcard : unit->wildcards) {
+        if (rootOf(wildcard) == name) return true;
+    }
+    return false;
+}
+
+} // namespace
+
+Compiler::Compiler() {
+}
+
+Compiler::~Compiler() {
+}
+
+// Emission
+
+size_t Compiler::here() const {
+    return fs->proto->chunk.getCurrentOffset();
+}
+
+void Compiler::adjust(int delta) {
+    fs->depth += delta;
+    if (fs->depth > fs->maxDepth) {
+        fs->maxDepth = fs->depth;
+    }
+    if (fs->depth < 0) {
+        fs->depth = 0;
+    }
+}
+
+void Compiler::emitOp(OpCode op) {
+    fs->proto->chunk.writeOpCode(op, currentLine);
+    switch (op) {
+        case OpCode::OP_CONSTANT: case OpCode::OP_UNDEFINED: case OpCode::OP_NULL: case OpCode::OP_TRUE:
+        case OpCode::OP_FALSE: case OpCode::OP_ZERO: case OpCode::OP_ONE: case OpCode::OP_DUP:
+        case OpCode::OP_DUP_X1: case OpCode::OP_DUP_X2: case OpCode::OP_GET_LOCAL: case OpCode::OP_GET_CELL:
+        case OpCode::OP_GET_UPVALUE: case OpCode::OP_GET_NAME: case OpCode::OP_TYPEOF_NAME:
+        case OpCode::OP_GET_QNAME: case OpCode::OP_GET_SUPER: case OpCode::OP_THIS: case OpCode::OP_SCOPE_THIS:
+        case OpCode::OP_OWNER_CLASS: case OpCode::OP_CLOSURE: case OpCode::OP_NEW_REGEXP:
+        case OpCode::OP_DEFINE_CLASS: case OpCode::OP_ITER_NEXT:
+            adjust(1);
+            break;
+        case OpCode::OP_DUP2:
+            adjust(2);
+            break;
+        case OpCode::OP_POP: case OpCode::OP_PUT_LOCAL: case OpCode::OP_PUT_CELL: case OpCode::OP_PUT_UPVALUE:
+        case OpCode::OP_DEFINE_VAR: case OpCode::OP_DEFINE_FUNCTION: case OpCode::OP_SET_PROP:
+        case OpCode::OP_GET_INDEX: case OpCode::OP_DELETE_INDEX: case OpCode::OP_ADD: case OpCode::OP_SUBTRACT:
+        case OpCode::OP_MULTIPLY: case OpCode::OP_DIVIDE: case OpCode::OP_MODULO: case OpCode::OP_EQUAL:
+        case OpCode::OP_NOT_EQUAL: case OpCode::OP_STRICT_EQUAL: case OpCode::OP_STRICT_NOT_EQUAL:
+        case OpCode::OP_GREATER: case OpCode::OP_GREATER_EQUAL: case OpCode::OP_LESS: case OpCode::OP_LESS_EQUAL:
+        case OpCode::OP_BIT_AND: case OpCode::OP_BIT_OR: case OpCode::OP_BIT_XOR: case OpCode::OP_LEFT_SHIFT:
+        case OpCode::OP_RIGHT_SHIFT: case OpCode::OP_UNSIGNED_RIGHT_SHIFT: case OpCode::OP_INSTANCEOF:
+        case OpCode::OP_IN: case OpCode::OP_IS: case OpCode::OP_AS: case OpCode::OP_JUMP_IF_FALSE:
+        case OpCode::OP_JUMP_IF_TRUE: case OpCode::OP_JUMP_IF_FALSE_KEEP: case OpCode::OP_JUMP_IF_TRUE_KEEP:
+        case OpCode::OP_JUMP_IF_NOT_NULLISH_KEEP: case OpCode::OP_RETURN: case OpCode::OP_THROW:
+            adjust(-1);
+            break;
+        case OpCode::OP_SET_INDEX:
+            adjust(-2);
+            break;
+        default:
+            break;
+    }
+}
+
+void Compiler::emitU8(uint8_t value) {
+    fs->proto->chunk.writeByte(value, currentLine);
+}
+
+void Compiler::emitU16(uint16_t value) {
+    fs->proto->chunk.writeU16(value);
+}
+
+void Compiler::emitS32(int32_t value) {
+    fs->proto->chunk.writeS32(value);
+}
+
+void Compiler::emitConstant(const Val& value) {
+    const uint16_t index = fs->proto->chunk.addConstant(value);
+    emitOp(OpCode::OP_CONSTANT);
+    emitU16(index);
+}
+
+void Compiler::emitNumber(double value) {
+    if (value == 0 && !std::signbit(value)) {
+        emitOp(OpCode::OP_ZERO);
+    } else if (value == 1) {
+        emitOp(OpCode::OP_ONE);
+    } else {
+        emitConstant(Val::number(value));
+    }
+}
+
+void Compiler::emitString(const std::string& value) {
+    emitConstant(Val::string(value));
+}
+
+uint16_t Compiler::nameIndex(const std::string& name) {
+    return fs->proto->chunk.addName(name);
+}
+
+uint16_t Compiler::newCache() {
+    fs->proto->caches.emplace_back();
+    return static_cast<uint16_t>(fs->proto->caches.size() - 1);
+}
+
+size_t Compiler::emitJump(OpCode op) {
+    emitOp(op);
+    const size_t at = here();
+    emitS32(0);
+    return at;
+}
+
+void Compiler::patchJump(size_t at) {
+    patchJumpTo(at, here());
+}
+
+void Compiler::patchJumpTo(size_t at, size_t target) {
+    // Relative to the end of the jump's operand.
+    fs->proto->chunk.patchS32(at, static_cast<int32_t>(static_cast<int64_t>(target) - static_cast<int64_t>(at + 4)));
+}
+
+void Compiler::emitJumpTo(OpCode op, size_t target) {
+    const size_t at = emitJump(op);
+    patchJumpTo(at, target);
+}
+
+uint16_t Compiler::allocTemp() {
+    const uint16_t slot = fs->proto->numLocals++;
+    fs->proto->localInit.push_back(Coerce::None);
+    return slot;
+}
+
+void Compiler::emitGetProp(const std::string& name) {
+    emitOp(OpCode::OP_GET_PROP);
+    emitU16(nameIndex(name));
+    emitU16(newCache());
+}
+
+void Compiler::emitSetProp(const std::string& name) {
+    emitOp(OpCode::OP_SET_PROP);
+    emitU16(nameIndex(name));
+    emitU16(newCache());
+}
+
+void Compiler::emitCallProp(const std::string& name, int argc) {
+    emitOp(OpCode::OP_CALL_PROP);
+    emitU16(nameIndex(name));
+    emitU8(static_cast<uint8_t>(argc));
+    emitU16(newCache());
+    adjust(-argc);
+}
+
+void Compiler::emitCoerce(Coerce coerce) {
+    if (coerce == Coerce::None) {
+        return;
+    }
+    emitOp(OpCode::OP_COERCE);
+    emitU8(static_cast<uint8_t>(coerce));
+}
+
+void Compiler::error(const std::string& message) {
+    std::ostringstream text;
+    if (!fileName.empty()) {
+        text << fileName << ":";
+    }
+    text << currentLine << ": " << message;
+    errors.push_back(text.str());
+}
+
+void Compiler::warning(const std::string& message) {
+    std::ostringstream text;
+    if (!fileName.empty()) {
+        text << fileName << ":";
+    }
+    text << currentLine << ": " << message;
+    warnings.push_back(text.str());
+}
+
+// Programs
 
 std::shared_ptr<BytecodeFunction> Compiler::compile(Program* program) {
-    // Create top-level script function
-    auto scriptFunction = std::make_shared<BytecodeFunction>("<script>", 0);
-    CompilerContext context(nullptr);
-    context.function = scriptFunction.get();
-    current = &context;
+    errors.clear();
+    fileName = program ? program->fileName : std::string();
+    auto script = std::make_shared<BytecodeFunction>("<script>", 0);
+    script->isScript = true;
+    FunctionState state;
+    state.proto = script;
+    state.isScript = true;
+    FunctionState* saved = fs;
+    fs = &state;
 
-    Chunk& chunk = scriptFunction->chunk;
-
-    // Compile all statements; what a package holds is compiled as if at the
-    // top level, so its classes and functions are globals by their names.
-    std::function<void(AstNode*)> compileNode = [&](AstNode* node) {
-        if (auto* package = dynamic_cast<PackageDefinition*>(node)) {
-            for (auto& member : package->members) {
-                compileNode(member.get());
-            }
-        } else if (auto* s = dynamic_cast<Statement*>(node)) {
-            compileStatement(s, chunk);
+    // The file's imports, outside any package, and what its packages
+    // import too.
+    auto topUnit = std::make_shared<CompileUnit>();
+    topUnit->fileName = fileName;
+    const auto addImport = [](CompileUnit& unit, ImportDirective* import) {
+        if (import->isPackage) {
+            unit.wildcards.push_back(import->path);
+        } else {
+            unit.imports[import->name->name] =
+                import->path.empty() ? import->name->name : import->path + "." + import->name->name;
         }
     };
-    for (auto& stmt : program->statements) {
-        compileNode(stmt.get());
+    if (program) {
+        for (auto& import : program->imports) {
+            addImport(*topUnit, import.get());
+        }
+        for (auto& node : program->statements) {
+            if (auto* import = dynamic_cast<ImportDirective*>(node.get())) {
+                addImport(*topUnit, import);
+            }
+        }
+    }
+    script->unit = topUnit;
+    state.unit = topUnit;
+
+    if (program) {
+        // Packages first, each with its imports, then what is outside
+        // them, in order.
+        std::vector<AstNode*> outside;
+        for (auto& node : program->statements) {
+            if (auto* package = dynamic_cast<PackageDefinition*>(node.get())) {
+                auto unit = std::make_shared<CompileUnit>(*topUnit);
+                unit->packageName = package->name ? package->name->name : std::string();
+                for (auto& import : package->imports) {
+                    addImport(*unit, import.get());
+                }
+                std::vector<AstNode*> members;
+                for (auto& member : package->members) {
+                    if (auto* import = dynamic_cast<ImportDirective*>(member.get())) {
+                        addImport(*unit, import);
+                    } else {
+                        members.push_back(member.get());
+                    }
+                }
+                compileUnitMembers(members, unit);
+            } else if (!dynamic_cast<ImportDirective*>(node.get())) {
+                outside.push_back(node.get());
+            }
+        }
+        compileUnitMembers(outside, topUnit);
     }
 
-    // Implicit return undefined at end
-    emitOpCode(OpCode::OP_UNDEFINED, chunk);
-    emitReturn(chunk);
+    emitOp(OpCode::OP_RETURN_UNDEFINED);
+    script->maxStack = static_cast<uint16_t>(std::min(state.maxDepth + 8, 65535));
+    fs = saved;
 
-    if (hadError) {
-        throw std::runtime_error("Compilation failed: " + errorMessage);
+    if (!errors.empty()) {
+        std::string all;
+        for (const auto& message : errors) {
+            all += message + "\n";
+        }
+        throw CompileError("Compilation failed: " + all, fileName, 0);
     }
-
-    return scriptFunction;
+    return script;
 }
 
-void Compiler::compileStatement(Statement* stmt, Chunk& chunk) {
+void Compiler::compileUnitMembers(std::vector<AstNode*>& members, const std::shared_ptr<CompileUnit>& unit) {
+    std::shared_ptr<CompileUnit> savedUnit = fs->unit;
+    fs->unit = unit;
+    const std::string prefix = unit->packageName.empty() ? std::string() : unit->packageName + ".";
+
+    // Classes first, a base before the classes that extend it, then
+    // functions, then the rest in order.
+    std::vector<ClassDefinition*> classes;
+    for (AstNode* node : members) {
+        if (auto* definition = dynamic_cast<ClassDefinition*>(node)) {
+            classes.push_back(definition);
+        }
+    }
+    std::vector<ClassDefinition*> ordered;
+    std::set<ClassDefinition*> placed;
+    std::function<void(ClassDefinition*, int)> place = [&](ClassDefinition* definition, int depth) {
+        if (placed.count(definition) || depth > 64) {
+            return;
+        }
+        std::vector<std::string> bases;
+        if (definition->superClass) bases.push_back(definition->superClass->name);
+        for (auto& face : definition->interfaces) bases.push_back(face->name);
+        for (const auto& base : bases) {
+            const std::string shortName = base.substr(base.find_last_of('.') == std::string::npos ? 0 : base.find_last_of('.') + 1);
+            for (ClassDefinition* other : classes) {
+                if (other != definition && other->name->name == shortName) {
+                    place(other, depth + 1);
+                }
+            }
+        }
+        placed.insert(definition);
+        ordered.push_back(definition);
+    };
+    for (ClassDefinition* definition : classes) {
+        place(definition, 0);
+    }
+    for (ClassDefinition* definition : ordered) {
+        currentLine = definition->line;
+        compileClass(definition, unit);
+    }
+
+    for (AstNode* node : members) {
+        if (auto* function = dynamic_cast<FunctionDefinition*>(node)) {
+            currentLine = function->line;
+            auto code = compileFunction(function->name->name, function->parameters, function->returnType.get(),
+                                        function->body.get(), nullptr, false, false, false, function->line);
+            emitClosure(code);
+            emitOp(OpCode::OP_DEFINE_FUNCTION);
+            emitU16(nameIndex(prefix + function->name->name));
+        }
+    }
+
+    for (AstNode* node : members) {
+        if (dynamic_cast<ClassDefinition*>(node) || dynamic_cast<FunctionDefinition*>(node)) {
+            continue;
+        }
+        if (auto* variables = dynamic_cast<VariableDefinition*>(node); variables && !prefix.empty()) {
+            // A package-level variable: by its qualified name.
+            currentLine = variables->line;
+            for (auto& decl : variables->declarations) {
+                const Coerce coerce = coerceForType(decl->type ? decl->type->name : std::string());
+                if (decl->init) {
+                    compileExpression(decl->init.get());
+                    emitCoerce(coerce);
+                } else {
+                    emitConstant(defaultForCoerce(coerce));
+                }
+                emitOp(OpCode::OP_DEFINE_VAR);
+                emitU16(nameIndex(prefix + decl->id->name));
+            }
+            continue;
+        }
+        if (auto* stmt = dynamic_cast<Statement*>(node)) {
+            compileStatement(stmt);
+        }
+    }
+    fs->unit = savedUnit;
+}
+
+// Functions
+
+std::shared_ptr<BytecodeFunction> Compiler::compileFunction(
+    const std::string& name, const std::vector<std::unique_ptr<Parameter>>& params, Identifier* returnType,
+    Statement* body, ClassContext* cls, bool isStatic, bool isMethod, bool isConstructor, int line,
+    const std::vector<std::pair<std::string, Expression*>>* fieldInits, const std::string& selfName) {
+    int arity = 0;
+    for (const auto& param : params) {
+        if (!param->rest) ++arity;
+    }
+    auto proto = std::make_shared<BytecodeFunction>(name, arity);
+    proto->isMethod = isMethod;
+    proto->isStatic = isStatic;
+    proto->isConstructor = isConstructor;
+    proto->line = line;
+    proto->returnCoerce = returnType ? coerceForType(returnType->name) : Coerce::None;
+    if (proto->returnCoerce == Coerce::Nullable) {
+        proto->returnCoerce = Coerce::None;
+    }
+
+    FunctionState state;
+    state.parent = fs;
+    state.proto = proto;
+    state.cls = cls ? cls : (fs ? fs->cls : nullptr);
+    state.isStatic = cls ? isStatic : (fs ? fs->isStatic : false);
+    state.unit = fs ? fs->unit : nullptr;
+    proto->unit = state.unit;
+    FunctionState* saved = fs;
+    const int savedLine = currentLine;
+    fs = &state;
+    if (line > 0) {
+        currentLine = line;
+    }
+
+    // What it declares, and which of those a closure in it captures.
+    Scan scan;
+    scanStatement(body, scan);
+    if (fieldInits) {
+        for (const auto& init : *fieldInits) {
+            scanExpression(init.second, scan);
+        }
+    }
+    for (const auto& param : params) {
+        scanExpression(param->defaultValue.get(), scan);
+    }
+    const std::set<std::string>& captured = scan.innerFree;
+
+    const auto declare = [&](const std::string& varName, Coerce coerce, bool forceLocal) -> VarInfo& {
+        auto found = state.vars.find(varName);
+        if (found != state.vars.end()) {
+            return found->second;
+        }
+        VarInfo info;
+        info.coerce = coerce;
+        if (!forceLocal && captured.count(varName)) {
+            info.isCell = true;
+            info.index = proto->numCells++;
+            proto->cellInit.push_back(static_cast<int32_t>(coerce));
+        } else {
+            info.index = proto->numLocals++;
+            proto->localInit.push_back(coerce);
+        }
+        return state.vars.emplace(varName, info).first->second;
+    };
+
+    // Parameters take the first locals, captured or not (a captured one is
+    // copied to its cell on entry).
+    for (const auto& param : params) {
+        if (param->rest) continue;
+        const Coerce coerce = param->type ? coerceForType(param->type->name) : Coerce::None;
+        VarInfo info;
+        info.coerce = coerce;
+        info.index = proto->numLocals++;
+        proto->localInit.push_back(Coerce::None);
+        proto->paramCoerce.push_back(coerce);
+        if (captured.count(param->name->name)) {
+            VarInfo cell;
+            cell.isCell = true;
+            cell.coerce = coerce;
+            cell.index = proto->numCells++;
+            proto->cellInit.push_back(-1);
+            proto->paramCells.push_back(cell.index);
+            state.vars[param->name->name] = cell;
+        } else {
+            proto->paramCells.push_back(-1);
+            state.vars[param->name->name] = info;
+        }
+    }
+    for (const auto& param : params) {
+        if (!param->rest) continue;
+        VarInfo& rest = declare(param->name->name, Coerce::None, false);
+        if (rest.isCell) {
+            proto->restCell = rest.index;
+        } else {
+            proto->restLocal = rest.index;
+        }
+    }
+    if (scan.usesArguments && !state.vars.count("arguments")) {
+        VarInfo& arguments = declare("arguments", Coerce::None, false);
+        if (arguments.isCell) {
+            proto->argumentsCell = arguments.index;
+        } else {
+            proto->argumentsLocal = arguments.index;
+        }
+    }
+    for (const auto& var : scan.vars) {
+        declare(var.first, coerceForType(var.second), false);
+    }
+    // A function expression's own name, inside it: the function.
+    if (!selfName.empty() && !state.vars.count(selfName)) {
+        VarInfo& self = declare(selfName, Coerce::None, false);
+        if (self.isCell) {
+            proto->selfCell = self.index;
+        } else {
+            proto->selfLocal = self.index;
+        }
+    }
+
+    // Default values for arguments not given.
+    int paramIndex = 0;
+    for (const auto& param : params) {
+        if (param->rest) continue;
+        if (param->defaultValue) {
+            emitOp(OpCode::OP_DEFAULT_ARG);
+            emitU16(static_cast<uint16_t>(paramIndex));
+            const size_t skip = here();
+            emitS32(0);
+            compileExpression(param->defaultValue.get());
+            const VarInfo& info = state.vars[param->name->name];
+            emitCoerce(info.coerce);
+            emitOp(info.isCell ? OpCode::OP_PUT_CELL : OpCode::OP_PUT_LOCAL);
+            emitU16(info.index);
+            patchJump(skip);
+        }
+        ++paramIndex;
+    }
+
+    // Nested function declarations are there from the start.
+    for (FunctionDefinition* nested : scan.functions) {
+        auto code = compileFunction(nested->name->name, nested->parameters, nested->returnType.get(),
+                                    nested->body.get(), nullptr, false, false, false, nested->line);
+        emitClosure(code);
+        const VarInfo& info = state.vars[nested->name->name];
+        emitOp(info.isCell ? OpCode::OP_PUT_CELL : OpCode::OP_PUT_LOCAL);
+        emitU16(info.index);
+    }
+
+    if (isConstructor) {
+        // Fields first, then the superclass's constructor unless the body
+        // calls it itself.
+        if (fieldInits) {
+            for (const auto& init : *fieldInits) {
+                emitOp(OpCode::OP_SCOPE_THIS);
+                compileExpression(init.second);
+                emitSetProp(init.first);
+                emitOp(OpCode::OP_POP);
+            }
+        }
+        if (!scan.callsSuper) {
+            emitOp(OpCode::OP_SUPER_CTOR);
+            emitU8(0);
+            adjust(1);
+            emitOp(OpCode::OP_POP);
+        }
+    }
+
+    if (auto* block = dynamic_cast<BlockStatement*>(body)) {
+        for (auto& stmt : block->statements) {
+            compileStatement(stmt.get());
+        }
+    } else if (body) {
+        compileStatement(body);
+    }
+    emitOp(OpCode::OP_RETURN_UNDEFINED);
+
+    proto->maxStack = static_cast<uint16_t>(std::min(state.maxDepth + 8, 65535));
+    fs = saved;
+    currentLine = savedLine;
+    return proto;
+}
+
+void Compiler::emitClosure(const std::shared_ptr<BytecodeFunction>& function) {
+    fs->proto->functions.push_back(function);
+    emitOp(OpCode::OP_CLOSURE);
+    emitU16(static_cast<uint16_t>(fs->proto->functions.size() - 1));
+}
+
+void Compiler::compileClass(ClassDefinition* definition, const std::shared_ptr<CompileUnit>& unit) {
+    auto klass = std::make_shared<ClassTemplate>();
+    klass->name = definition->name->name;
+    klass->packageName = unit->packageName;
+    klass->qualifiedName = unit->packageName.empty() ? klass->name : unit->packageName + "." + klass->name;
+    klass->superName = definition->superClass ? definition->superClass->name : std::string();
+    for (auto& face : definition->interfaces) {
+        klass->interfaceNames.push_back(face->name);
+    }
+    klass->isInterface = definition->isInterface;
+    klass->isDynamic = hasAttribute(definition->attributes, AttributeType::Dynamic);
+    klass->isFinal = hasAttribute(definition->attributes, AttributeType::Final);
+    klass->metadata = definition->metadata;
+    klass->unit = unit;
+    klass->line = definition->line;
+
+    ClassContext context;
+    context.name = klass->name;
+    FunctionDefinition* constructorDefinition = nullptr;
+    for (auto& member : definition->members) {
+        if (auto* function = dynamic_cast<FunctionDefinition*>(member.get())) {
+            const bool isStatic = hasAttribute(function->attributes, AttributeType::Static);
+            if (!isStatic && !function->isGetter && !function->isSetter && function->name->name == klass->name) {
+                constructorDefinition = function;
+                continue;
+            }
+            Coerce coerce = Coerce::None;
+            if (function->isGetter && function->returnType) {
+                coerce = coerceForType(function->returnType->name);
+            }
+            (isStatic ? context.staticMembers : context.instanceMembers)[function->name->name] = coerce;
+        } else if (auto* variables = dynamic_cast<VariableDefinition*>(member.get())) {
+            const bool isStatic = hasAttribute(variables->attributes, AttributeType::Static);
+            for (auto& decl : variables->declarations) {
+                (isStatic ? context.staticMembers : context.instanceMembers)[decl->id->name] =
+                    coerceForType(decl->type ? decl->type->name : std::string());
+            }
+        }
+    }
+
+    std::vector<std::pair<std::string, Expression*>> instanceInits;
+    std::vector<StatementPtr> staticBody;
+    for (auto& member : definition->members) {
+        if (auto* function = dynamic_cast<FunctionDefinition*>(member.get())) {
+            if (function == constructorDefinition) {
+                continue;
+            }
+            MemberTemplate made;
+            made.name = function->name->name;
+            made.isStatic = hasAttribute(function->attributes, AttributeType::Static);
+            made.isOverride = hasAttribute(function->attributes, AttributeType::Override);
+            made.isFinal = hasAttribute(function->attributes, AttributeType::Final);
+            made.kind = function->isGetter ? MemberTemplate::Kind::Getter
+                        : function->isSetter ? MemberTemplate::Kind::Setter
+                                             : MemberTemplate::Kind::Method;
+            made.typeName = function->returnType ? function->returnType->name : std::string();
+            if (function->isSetter && !function->parameters.empty() && function->parameters[0]->type) {
+                made.typeName = function->parameters[0]->type->name;
+            }
+            made.metadata = function->metadata;
+            if (function->body) {
+                made.function = compileFunction(made.name, function->parameters, function->returnType.get(),
+                                                 function->body.get(), &context, made.isStatic, !made.isStatic,
+                                                 false, function->line);
+                made.function->qualifiedName = klass->qualifiedName + "/" + made.name;
+            }
+            klass->members.push_back(std::move(made));
+        } else if (auto* variables = dynamic_cast<VariableDefinition*>(member.get())) {
+            const bool isStatic = hasAttribute(variables->attributes, AttributeType::Static);
+            for (auto& decl : variables->declarations) {
+                MemberTemplate made;
+                made.name = decl->id->name;
+                made.kind = variables->isConst ? MemberTemplate::Kind::Const : MemberTemplate::Kind::Var;
+                made.isStatic = isStatic;
+                made.typeName = decl->type ? decl->type->name : std::string();
+                made.metadata = variables->metadata;
+                made.hasLiteral = literalValue(decl->init.get(), made.literal);
+                if (made.hasLiteral) {
+                    made.literal = coerceValue(made.literal, coerceForType(made.typeName));
+                }
+                if (decl->init && !(made.hasLiteral && !isStatic)) {
+                    if (isStatic) {
+                        // ClassName.field = init, when the class is defined.
+                        auto assign = std::make_unique<AssignmentExpression>(
+                            OperatorType::Assign, std::make_unique<Identifier>(made.name), std::move(decl->init));
+                        auto stmt = std::make_unique<ExpressionStatement>(std::move(assign));
+                        stmt->line = variables->line;
+                        staticBody.push_back(std::move(stmt));
+                    } else {
+                        instanceInits.emplace_back(made.name, decl->init.get());
+                    }
+                }
+                klass->members.push_back(std::move(made));
+            }
+        } else if (auto* stmt = dynamic_cast<Statement*>(member.get())) {
+            if (!dynamic_cast<NamespaceDefinition*>(stmt) && !dynamic_cast<EmptyStatement*>(stmt)) {
+                staticBody.push_back(StatementPtr(static_cast<Statement*>(member.release())));
+            }
+        }
+    }
+
+    if (!klass->isInterface) {
+        static const std::vector<std::unique_ptr<Parameter>> noParams;
+        klass->constructor = compileFunction(
+            klass->name, constructorDefinition ? constructorDefinition->parameters : noParams, nullptr,
+            constructorDefinition ? constructorDefinition->body.get() : nullptr, &context, false, true, true,
+            constructorDefinition ? constructorDefinition->line : definition->line, &instanceInits);
+        klass->constructor->qualifiedName = klass->qualifiedName;
+        if (!staticBody.empty()) {
+            BlockStatement block(std::move(staticBody));
+            klass->staticInit = compileFunction("$cinit", noParams, nullptr, &block, &context, true, false, false,
+                                                definition->line);
+            klass->staticInit->qualifiedName = klass->qualifiedName + "$cinit";
+        }
+    }
+
+    fs->proto->classes.push_back(klass);
+    emitOp(OpCode::OP_DEFINE_CLASS);
+    emitU16(static_cast<uint16_t>(fs->proto->classes.size() - 1));
+    emitOp(OpCode::OP_POP);
+}
+
+// Names
+
+int Compiler::resolveUpvalue(FunctionState* state, const std::string& name) {
+    auto known = state->upvalueIndex.find(name);
+    if (known != state->upvalueIndex.end()) {
+        return known->second;
+    }
+    FunctionState* parent = state->parent;
+    if (!parent) {
+        return -1;
+    }
+    UpvalueSource source{};
+    auto var = parent->vars.find(name);
+    if (var != parent->vars.end()) {
+        if (!var->second.isCell) {
+            return -1;
+        }
+        source.fromCell = true;
+        source.index = var->second.index;
+    } else {
+        const int outer = resolveUpvalue(parent, name);
+        if (outer < 0) {
+            return -1;
+        }
+        source.fromCell = false;
+        source.index = static_cast<uint16_t>(outer);
+    }
+    state->proto->upvalues.push_back(source);
+    const uint16_t index = static_cast<uint16_t>(state->proto->upvalues.size() - 1);
+    state->upvalueIndex[name] = index;
+    return index;
+}
+
+Compiler::Resolved Compiler::resolve(const std::string& name) {
+    Resolved where;
+    auto var = fs->vars.find(name);
+    if (var != fs->vars.end()) {
+        where.kind = var->second.isCell ? NameKind::Cell : NameKind::Local;
+        where.index = var->second.index;
+        where.coerce = var->second.coerce;
+        where.isConst = var->second.isConst;
+        return where;
+    }
+    const int upvalue = resolveUpvalue(fs, name);
+    if (upvalue >= 0) {
+        where.kind = NameKind::Upvalue;
+        where.index = static_cast<uint16_t>(upvalue);
+        // Its type, from where it is declared.
+        for (FunctionState* at = fs->parent; at; at = at->parent) {
+            auto found = at->vars.find(name);
+            if (found != at->vars.end()) {
+                where.coerce = found->second.coerce;
+                break;
+            }
+        }
+        return where;
+    }
+    if (fs->cls) {
+        if (!fs->isStatic) {
+            auto member = fs->cls->instanceMembers.find(name);
+            if (member != fs->cls->instanceMembers.end()) {
+                where.kind = NameKind::Member;
+                where.coerce = member->second;
+                return where;
+            }
+        }
+        auto member = fs->cls->staticMembers.find(name);
+        if (member != fs->cls->staticMembers.end()) {
+            where.kind = NameKind::Static;
+            where.coerce = member->second;
+            return where;
+        }
+        if (name == fs->cls->name) {
+            where.kind = NameKind::OwnClass;
+            return where;
+        }
+    }
+    where.kind = NameKind::Global;
+    for (FunctionState* at = fs; at; at = at->parent) {
+        if (at->isScript) {
+            auto typed = at->scriptVars.find(name);
+            if (typed != at->scriptVars.end()) {
+                where.coerce = typed->second;
+            }
+            break;
+        }
+    }
+    return where;
+}
+
+void Compiler::emitLoad(const Resolved& where, const std::string& name) {
+    switch (where.kind) {
+        case NameKind::Local:
+            emitOp(OpCode::OP_GET_LOCAL);
+            emitU16(where.index);
+            break;
+        case NameKind::Cell:
+            emitOp(OpCode::OP_GET_CELL);
+            emitU16(where.index);
+            break;
+        case NameKind::Upvalue:
+            emitOp(OpCode::OP_GET_UPVALUE);
+            emitU16(where.index);
+            break;
+        case NameKind::Member:
+            emitOp(OpCode::OP_SCOPE_THIS);
+            emitGetProp(name);
+            break;
+        case NameKind::Static:
+            emitOp(OpCode::OP_OWNER_CLASS);
+            emitGetProp(name);
+            break;
+        case NameKind::OwnClass:
+            emitOp(OpCode::OP_OWNER_CLASS);
+            break;
+        case NameKind::Global:
+            emitOp(OpCode::OP_GET_NAME);
+            emitU16(nameIndex(name));
+            emitU16(newCache());
+            break;
+    }
+}
+
+void Compiler::emitStore(const Resolved& where, const std::string& name, bool keep) {
+    if (where.isConst) {
+        error("Cannot assign to the constant '" + name + "'");
+    }
+    switch (where.kind) {
+        case NameKind::Local:
+            emitCoerce(where.coerce);
+            emitOp(keep ? OpCode::OP_SET_LOCAL : OpCode::OP_PUT_LOCAL);
+            emitU16(where.index);
+            break;
+        case NameKind::Cell:
+            emitCoerce(where.coerce);
+            emitOp(keep ? OpCode::OP_SET_CELL : OpCode::OP_PUT_CELL);
+            emitU16(where.index);
+            break;
+        case NameKind::Upvalue:
+            emitCoerce(where.coerce);
+            emitOp(keep ? OpCode::OP_SET_UPVALUE : OpCode::OP_PUT_UPVALUE);
+            emitU16(where.index);
+            break;
+        case NameKind::Member:
+        case NameKind::Static:
+            emitOp(where.kind == NameKind::Member ? OpCode::OP_SCOPE_THIS : OpCode::OP_OWNER_CLASS);
+            emitOp(OpCode::OP_SWAP);
+            emitSetProp(name);
+            if (!keep) emitOp(OpCode::OP_POP);
+            break;
+        case NameKind::OwnClass:
+            error("Cannot assign to the class '" + name + "'");
+            if (!keep) emitOp(OpCode::OP_POP);
+            break;
+        case NameKind::Global:
+            emitCoerce(where.coerce);
+            emitOp(OpCode::OP_SET_NAME);
+            emitU16(nameIndex(name));
+            emitU16(newCache());
+            if (!keep) emitOp(OpCode::OP_POP);
+            break;
+    }
+}
+
+bool Compiler::qualifiedName(Expression* expr, std::string& name, std::vector<std::string>& rest) {
+    std::vector<std::string> parts;
+    Expression* at = expr;
+    while (at && at->kind == Expression::ExpressionKind::Member) {
+        auto* member = static_cast<MemberExpression*>(at);
+        if (member->computed || !member->property) {
+            return false;
+        }
+        parts.push_back(member->property->name);
+        at = member->object.get();
+    }
+    if (!at || at->kind != Expression::ExpressionKind::Identifier || parts.empty()) {
+        return false;
+    }
+    const std::string& root = static_cast<Identifier*>(at)->name;
+    if (!isPackageRoot(root, fs->unit.get())) {
+        return false;
+    }
+    const Resolved where = resolve(root);
+    if (where.kind != NameKind::Global) {
+        return false;
+    }
+    parts.push_back(root);
+    std::reverse(parts.begin(), parts.end());
+    // The package, then the class (its first capital): what follows is
+    // its members.
+    size_t classAt = parts.size() - 1;
+    for (size_t i = 1; i < parts.size(); ++i) {
+        if (!parts[i].empty() && std::isupper(static_cast<unsigned char>(parts[i][0]))) {
+            classAt = i;
+            break;
+        }
+    }
+    name = parts[0];
+    for (size_t i = 1; i <= classAt; ++i) {
+        name += "." + parts[i];
+    }
+    rest.assign(parts.begin() + static_cast<long>(classAt) + 1, parts.end());
+    return true;
+}
+
+// Statements
+
+void Compiler::compileStatement(Statement* stmt) {
     if (!stmt) return;
     // What it compiles to is on its line.
     if (stmt->line > 0) {
@@ -134,908 +1162,1306 @@ void Compiler::compileStatement(Statement* stmt, Chunk& chunk) {
     }
 
     if (auto* block = dynamic_cast<BlockStatement*>(stmt)) {
-        compileBlockStatement(block, chunk);
+        compileBlockStatement(block);
     } else if (auto* exprStmt = dynamic_cast<ExpressionStatement*>(stmt)) {
-        compileExpressionStatement(exprStmt, chunk);
+        compileDiscarded(exprStmt->expression.get());
     } else if (auto* ifStmt = dynamic_cast<IfStatement*>(stmt)) {
-        compileIfStatement(ifStmt, chunk);
+        compileIfStatement(ifStmt);
     } else if (auto* whileStmt = dynamic_cast<WhileStatement*>(stmt)) {
-        compileWhileStatement(whileStmt, chunk);
+        compileWhileStatement(whileStmt, {});
     } else if (auto* doWhileStmt = dynamic_cast<DoWhileStatement*>(stmt)) {
-        compileDoWhileStatement(doWhileStmt, chunk);
+        compileDoWhileStatement(doWhileStmt, {});
     } else if (auto* forStmt = dynamic_cast<ForStatement*>(stmt)) {
-        compileForStatement(forStmt, chunk);
+        compileForStatement(forStmt, {});
     } else if (auto* forInStmt = dynamic_cast<ForInStatement*>(stmt)) {
-        compileForInStatement(forInStmt, chunk);
+        compileForInStatement(forInStmt, {});
     } else if (auto* switchStmt = dynamic_cast<SwitchStatement*>(stmt)) {
-        compileSwitchStatement(switchStmt, chunk);
+        compileSwitchStatement(switchStmt, {});
+    } else if (auto* labeled = dynamic_cast<LabeledStatement*>(stmt)) {
+        compileLabeledStatement(labeled);
     } else if (auto* returnStmt = dynamic_cast<ReturnStatement*>(stmt)) {
-        compileReturnStatement(returnStmt, chunk);
+        compileReturnStatement(returnStmt);
     } else if (auto* varDef = dynamic_cast<VariableDefinition*>(stmt)) {
-        compileVariableDefinition(varDef, chunk);
+        compileVariableDefinition(varDef);
     } else if (auto* funcDef = dynamic_cast<FunctionDefinition*>(stmt)) {
-        compileFunctionDefinition(funcDef, chunk);
+        if (fs->isScript) {
+            // A function at the top level of a script: the timeline's, or
+            // a global.
+            auto code = compileFunction(funcDef->name->name, funcDef->parameters, funcDef->returnType.get(),
+                                        funcDef->body.get(), nullptr, false, false, false, funcDef->line);
+            emitClosure(code);
+            emitOp(OpCode::OP_DEFINE_FUNCTION);
+            emitU16(nameIndex(funcDef->name->name));
+        }
+        // In a function it was made at the start.
     } else if (auto* classDef = dynamic_cast<ClassDefinition*>(stmt)) {
-        compileClassDefinition(classDef, chunk);
+        compileClass(classDef, fs->unit ? fs->unit : std::make_shared<CompileUnit>());
     } else if (auto* breakStmt = dynamic_cast<BreakStatement*>(stmt)) {
-        emitJump(OpCode::OP_JUMP, chunk);
+        compileBreakContinue(breakStmt->label ? breakStmt->label->name : std::string(), false);
     } else if (auto* continueStmt = dynamic_cast<ContinueStatement*>(stmt)) {
-        emitLoop(current->loopStart, chunk);
+        compileBreakContinue(continueStmt->label ? continueStmt->label->name : std::string(), true);
+    } else if (auto* throwStmt = dynamic_cast<ThrowStatement*>(stmt)) {
+        compileExpression(throwStmt->argument.get());
+        emitOp(OpCode::OP_THROW);
+    } else if (auto* tryStmt = dynamic_cast<TryStatement*>(stmt)) {
+        compileTryStatement(tryStmt);
+    } else if (auto* with = dynamic_cast<WithStatement*>(stmt)) {
+        // with is not supported: its object is evaluated, and the body run
+        // as it is.
+        warning("'with' is not supported: names in its body are not looked up on its object");
+        compileDiscarded(with->object.get());
+        compileStatement(with->body.get());
     }
-    // EmptyStatement does nothing
+    // EmptyStatement, NamespaceDefinition do nothing
 }
 
-void Compiler::compileBlockStatement(BlockStatement* stmt, Chunk& chunk) {
-    current->beginScope();
+void Compiler::compileBlockStatement(BlockStatement* stmt) {
     for (auto& s : stmt->statements) {
-        compileStatement(s.get(), chunk);
+        compileStatement(s.get());
     }
-    current->endScope(chunk);
 }
 
-void Compiler::compileExpressionStatement(ExpressionStatement* stmt, Chunk& chunk) {
-    compileExpression(stmt->expression.get(), chunk);
-    emitOpCode(OpCode::OP_POP, chunk);  // Discard result
-}
-
-void Compiler::compileIfStatement(IfStatement* stmt, Chunk& chunk) {
-    // Compile condition
-    compileExpression(stmt->test.get(), chunk);
-
-    // Jump if false
-    size_t thenJump = emitJump(OpCode::OP_JUMP_IF_FALSE, chunk);
-    emitOpCode(OpCode::OP_POP, chunk);  // Pop condition
-
-    // Compile then branch
-    compileStatement(stmt->consequent.get(), chunk);
-
-    // The then branch goes on past the false path's pop of the condition,
-    // which it has popped already.
-    size_t elseJump = emitJump(OpCode::OP_JUMP, chunk);
-    patchJump(thenJump, chunk);
-    emitOpCode(OpCode::OP_POP, chunk);  // Pop condition
+void Compiler::compileIfStatement(IfStatement* stmt) {
+    compileExpression(stmt->test.get());
+    const size_t elseJump = emitJump(OpCode::OP_JUMP_IF_FALSE);
+    compileStatement(stmt->consequent.get());
     if (stmt->alternate) {
-        // Compile else branch
-        compileStatement(stmt->alternate.get(), chunk);
+        const size_t endJump = emitJump(OpCode::OP_JUMP);
+        patchJump(elseJump);
+        compileStatement(stmt->alternate.get());
+        patchJump(endJump);
+    } else {
+        patchJump(elseJump);
     }
-    patchJump(elseJump, chunk);
 }
 
-void Compiler::compileWhileStatement(WhileStatement* stmt, Chunk& chunk) {
-    size_t loopStart = chunk.getCurrentOffset();
-    int previousLoopStart = current->loopStart;
-    int previousLoopDepth = current->loopScopeDepth;
-
-    current->loopStart = static_cast<int>(loopStart);
-    current->loopScopeDepth = current->scopeDepth;
-
-    // Compile condition
-    compileExpression(stmt->test.get(), chunk);
-
-    // Jump if false (exit loop)
-    size_t exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE, chunk);
-    emitOpCode(OpCode::OP_POP, chunk);
-
-    // Compile body
-    compileStatement(stmt->body.get(), chunk);
-
-    // Loop back
-    emitLoop(loopStart, chunk);
-
-    // Exit
-    patchJump(exitJump, chunk);
-    emitOpCode(OpCode::OP_POP, chunk);
-
-    current->loopStart = previousLoopStart;
-    current->loopScopeDepth = previousLoopDepth;
+void Compiler::compileLoopBody(Statement* body, const std::vector<std::string>& labels, bool isLoop) {
+    ControlEntry entry;
+    entry.kind = isLoop ? ControlEntry::Kind::Loop : ControlEntry::Kind::Switch;
+    entry.labels = labels;
+    fs->controls.push_back(std::move(entry));
+    compileStatement(body);
 }
 
-void Compiler::compileDoWhileStatement(DoWhileStatement* stmt, Chunk& chunk) {
-    size_t loopStart = chunk.getCurrentOffset();
-    int previousLoopStart = current->loopStart;
-    int previousLoopDepth = current->loopScopeDepth;
-
-    current->loopStart = static_cast<int>(loopStart);
-    current->loopScopeDepth = current->scopeDepth;
-
-    // Compile body
-    compileStatement(stmt->body.get(), chunk);
-
-    // Compile condition
-    compileExpression(stmt->test.get(), chunk);
-
-    // Loop if true
-    size_t exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE, chunk);
-    emitOpCode(OpCode::OP_POP, chunk);
-    emitLoop(loopStart, chunk);
-
-    // Exit
-    patchJump(exitJump, chunk);
-    emitOpCode(OpCode::OP_POP, chunk);
-
-    current->loopStart = previousLoopStart;
-    current->loopScopeDepth = previousLoopDepth;
+void Compiler::compileWhileStatement(WhileStatement* stmt, const std::vector<std::string>& labels) {
+    const size_t start = here();
+    compileExpression(stmt->test.get());
+    const size_t exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE);
+    compileLoopBody(stmt->body.get(), labels, true);
+    ControlEntry entry = std::move(fs->controls.back());
+    fs->controls.pop_back();
+    for (size_t jump : entry.continueJumps) patchJumpTo(jump, start);
+    emitJumpTo(OpCode::OP_JUMP, start);
+    patchJump(exitJump);
+    for (size_t jump : entry.breakJumps) patchJump(jump);
 }
 
-void Compiler::compileForStatement(ForStatement* stmt, Chunk& chunk) {
-    current->beginScope();
+void Compiler::compileDoWhileStatement(DoWhileStatement* stmt, const std::vector<std::string>& labels) {
+    const size_t start = here();
+    compileLoopBody(stmt->body.get(), labels, true);
+    ControlEntry entry = std::move(fs->controls.back());
+    fs->controls.pop_back();
+    for (size_t jump : entry.continueJumps) patchJump(jump);
+    compileExpression(stmt->test.get());
+    emitJumpTo(OpCode::OP_JUMP_IF_TRUE, start);
+    for (size_t jump : entry.breakJumps) patchJump(jump);
+}
 
-    // Initialize
+void Compiler::compileForStatement(ForStatement* stmt, const std::vector<std::string>& labels) {
     if (stmt->init) {
-        compileStatement(stmt->init.get(), chunk);
+        compileStatement(stmt->init.get());
     }
-
-    size_t loopStart = chunk.getCurrentOffset();
-    int previousLoopStart = current->loopStart;
-    int previousLoopDepth = current->loopScopeDepth;
-
-    current->loopStart = static_cast<int>(loopStart);
-    current->loopScopeDepth = current->scopeDepth;
-
-    // Condition
-    size_t exitJump = SIZE_MAX;
+    const size_t start = here();
+    size_t exitJump = 0;
+    bool hasExit = false;
     if (stmt->test) {
-        compileExpression(stmt->test.get(), chunk);
-        exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE, chunk);
-        emitOpCode(OpCode::OP_POP, chunk);
+        compileExpression(stmt->test.get());
+        exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE);
+        hasExit = true;
     }
-
-    // Body
-    compileStatement(stmt->body.get(), chunk);
-
-    // Update
+    compileLoopBody(stmt->body.get(), labels, true);
+    ControlEntry entry = std::move(fs->controls.back());
+    fs->controls.pop_back();
+    // continue goes on to the update, not past it.
+    for (size_t jump : entry.continueJumps) patchJump(jump);
     if (stmt->update) {
-        compileExpression(stmt->update.get(), chunk);
-        emitOpCode(OpCode::OP_POP, chunk);
+        compileDiscarded(stmt->update.get());
     }
-
-    // Loop back
-    emitLoop(loopStart, chunk);
-
-    // Exit
-    if (exitJump != SIZE_MAX) {
-        patchJump(exitJump, chunk);
-        emitOpCode(OpCode::OP_POP, chunk);
-    }
-
-    current->loopStart = previousLoopStart;
-    current->loopScopeDepth = previousLoopDepth;
-
-    current->endScope(chunk);
+    emitJumpTo(OpCode::OP_JUMP, start);
+    if (hasExit) patchJump(exitJump);
+    for (size_t jump : entry.breakJumps) patchJump(jump);
 }
 
-void Compiler::compileForInStatement(ForInStatement* stmt, Chunk& chunk) {
-    // TODO: Implement for-in properly
-    // For now, just compile as empty statement
-    error("for-in not yet implemented in bytecode compiler");
-}
+void Compiler::compileForInStatement(ForInStatement* stmt, const std::vector<std::string>& labels) {
+    compileExpression(stmt->right.get());
+    emitOp(OpCode::OP_ITER_INIT);
+    emitU8(stmt->each ? 1 : 0);
+    const uint16_t iterator = allocTemp();
+    emitOp(OpCode::OP_PUT_LOCAL);
+    emitU16(iterator);
 
-void Compiler::compileSwitchStatement(SwitchStatement* stmt, Chunk& chunk) {
-    // TODO: Implement switch
-    error("switch not yet implemented in bytecode compiler");
-}
+    const size_t start = here();
+    emitOp(OpCode::OP_ITER_NEXT);
+    emitU16(iterator);
+    const size_t exitJump = here();
+    emitS32(0);
 
-void Compiler::compileReturnStatement(ReturnStatement* stmt, Chunk& chunk) {
-    if (stmt->argument) {
-        compileExpression(stmt->argument.get(), chunk);
-    } else {
-        emitOpCode(OpCode::OP_UNDEFINED, chunk);
-    }
-    emitReturn(chunk);
-}
-
-void Compiler::compileVariableDefinition(VariableDefinition* stmt, Chunk& chunk) {
-    for (auto& decl : stmt->declarations) {
-        // Compile initializer
-        if (decl->init) {
-            compileExpression(decl->init.get(), chunk);
-        } else {
-            emitOpCode(OpCode::OP_UNDEFINED, chunk);
-        }
-
-        // Define variable
-        if (current->scopeDepth == 0) {
-            // Global variable
-            uint16_t global = identifierConstant(decl->id->name, chunk);
-            defineVariable(global, chunk);
-        } else {
-            // Local variable
-            current->addLocal(decl->id->name);
-            current->markInitialized();
-        }
-    }
-}
-
-void Compiler::compileFunctionDefinition(FunctionDefinition* stmt, Chunk& chunk) {
-    // Create new compiler context for function
-    CompilerContext functionContext(current);
-    auto func = std::make_shared<BytecodeFunction>(stmt->name->name, static_cast<int>(stmt->parameters.size()));
-    functionContext.function = func.get();
-
-    CompilerContext* previousCurrent = current;
-    current = &functionContext;
-
-    current->beginScope();
-
-    // Compile parameters
-    for (auto& param : stmt->parameters) {
-        current->addLocal(param->name->name);
-        current->markInitialized();
-    }
-
-    // Compile body
-    compileStatement(stmt->body.get(), func->chunk);
-
-    // Implicit return undefined
-    emitOpCode(OpCode::OP_UNDEFINED, func->chunk);
-    emitReturn(func->chunk);
-
-    current = previousCurrent;
-
-    // Store the compiled function as a constant
-    uint16_t constant = makeConstant(Value::makeFunction(func), chunk);
-    emitOpCode(OpCode::OP_CLOSURE, chunk);
-    chunk.writeU16(constant);
-
-    // Define function variable
-    if (current->scopeDepth == 0) {
-        uint16_t global = identifierConstant(stmt->name->name, chunk);
-        defineVariable(global, chunk);
-    } else {
-        current->addLocal(stmt->name->name);
-        current->markInitialized();
-    }
-}
-
-void Compiler::compileClassDefinition(ClassDefinition* stmt, Chunk& chunk) {
-    // Emit OP_CLASS to create the class
-    uint16_t nameConstant = identifierConstant(stmt->name->name, chunk);
-    emitOpCode(OpCode::OP_CLASS, chunk);
-    chunk.writeU16(nameConstant);
-
-    // Define the class variable immediately so methods can reference it
-    defineVariable(nameConstant, chunk);
-
-    // Handle inheritance
-    if (stmt->superClass) {
-        // Load the superclass onto the stack
-        namedVariable(stmt->superClass->name, false, chunk);
-
-        // Load the subclass back onto the stack
-        namedVariable(stmt->name->name, false, chunk);
-
-        // Emit OP_INHERIT
-        emitOpCode(OpCode::OP_INHERIT, chunk);
-    }
-
-    // Load class back onto stack for method definitions
-    namedVariable(stmt->name->name, false, chunk);
-
-    // Compile methods
-    for (auto& member : stmt->members) {
-        if (auto* funcDef = dynamic_cast<FunctionDefinition*>(member.get())) {
-            // Create new compiler context for method
-            CompilerContext methodContext(current);
-            std::string methodName = funcDef->name->name;
-            auto func = std::make_shared<BytecodeFunction>(methodName, static_cast<int>(funcDef->parameters.size()));
-            methodContext.function = func.get();
-
-            CompilerContext* previousCurrent = current;
-            current = &methodContext;
-            current->beginScope();
-
-            // Compile parameters
-            for (auto& param : funcDef->parameters) {
-                current->addLocal(param->name->name);
-                current->markInitialized();
+    // The key (or value) into the variable.
+    if (auto* variables = dynamic_cast<VariableDefinition*>(stmt->left.get())) {
+        const std::string& name = variables->declarations.front()->id->name;
+        emitStore(resolve(name), name, false);
+    } else if (auto* target = dynamic_cast<ExpressionStatement*>(stmt->left.get())) {
+        Expression* expr = target->expression.get();
+        if (expr->kind == Expression::ExpressionKind::Identifier) {
+            const std::string& name = static_cast<Identifier*>(expr)->name;
+            emitStore(resolve(name), name, false);
+        } else if (expr->kind == Expression::ExpressionKind::Member) {
+            auto* member = static_cast<MemberExpression*>(expr);
+            const uint16_t value = allocTemp();
+            emitOp(OpCode::OP_PUT_LOCAL);
+            emitU16(value);
+            compileExpression(member->object.get());
+            if (member->computed) {
+                compileExpression(member->computedProperty.get());
+                emitOp(OpCode::OP_GET_LOCAL);
+                emitU16(value);
+                emitOp(OpCode::OP_SET_INDEX);
+            } else {
+                emitOp(OpCode::OP_GET_LOCAL);
+                emitU16(value);
+                emitSetProp(member->property->name);
             }
-
-            // Compile method body
-            compileStatement(funcDef->body.get(), func->chunk);
-
-            // Implicit return undefined
-            emitOpCode(OpCode::OP_UNDEFINED, func->chunk);
-            emitReturn(func->chunk);
-
-            current = previousCurrent;
-
-            // Store the compiled method as a constant
-            uint16_t methodConstant = makeConstant(Value::makeFunction(func), chunk);
-            emitOpCode(OpCode::OP_CLOSURE, chunk);
-            chunk.writeU16(methodConstant);
-
-            // Emit OP_METHOD to add method to class
-            uint16_t methodNameConst = identifierConstant(methodName, chunk);
-            emitOpCode(OpCode::OP_METHOD, chunk);
-            chunk.writeU16(methodNameConst);
-        }
-        // Fields: each starts as its initializer's value, or as its type's
-        // default (0 for int and uint, NaN for Number, false for Boolean,
-        // null otherwise), kept on the class as a method is, so a new
-        // instance has it.
-        else if (auto* field = dynamic_cast<VariableDefinition*>(member.get())) {
-            for (auto& declaration : field->declarations) {
-                if (!declaration || !declaration->id) {
-                    continue;
-                }
-                if (declaration->init) {
-                    compileExpression(declaration->init.get(), chunk);
-                } else {
-                    const std::string type = declaration->type ? declaration->type->name : std::string();
-                    if (type == "int" || type == "uint") {
-                        emitOpCode(OpCode::OP_NUMBER_0, chunk);
-                    } else if (type == "Number") {
-                        emitConstant(Value::makeNumber(std::nan("")), chunk);
-                    } else if (type == "Boolean") {
-                        emitOpCode(OpCode::OP_FALSE, chunk);
-                    } else {
-                        emitOpCode(OpCode::OP_NULL, chunk);
-                    }
-                }
-                uint16_t fieldName = identifierConstant(declaration->id->name, chunk);
-                emitOpCode(OpCode::OP_METHOD, chunk);
-                chunk.writeU16(fieldName);
-            }
+            emitOp(OpCode::OP_POP);
+        } else {
+            error("Invalid target in for-in");
+            emitOp(OpCode::OP_POP);
         }
     }
 
-    // Pop the class from the stack
-    emitOpCode(OpCode::OP_POP, chunk);
+    compileLoopBody(stmt->body.get(), labels, true);
+    ControlEntry entry = std::move(fs->controls.back());
+    fs->controls.pop_back();
+    for (size_t jump : entry.continueJumps) patchJumpTo(jump, start);
+    emitJumpTo(OpCode::OP_JUMP, start);
+    patchJump(exitJump);
+    for (size_t jump : entry.breakJumps) patchJump(jump);
+    // Let go of the iterator.
+    emitOp(OpCode::OP_UNDEFINED);
+    emitOp(OpCode::OP_PUT_LOCAL);
+    emitU16(iterator);
 }
 
-// Expression compilation
+void Compiler::compileSwitchStatement(SwitchStatement* stmt, const std::vector<std::string>& labels) {
+    compileExpression(stmt->discriminant.get());
+    const uint16_t value = allocTemp();
+    emitOp(OpCode::OP_PUT_LOCAL);
+    emitU16(value);
 
-void Compiler::compileExpression(Expression* expr, Chunk& chunk) {
-    if (!expr) {
-        emitOpCode(OpCode::OP_UNDEFINED, chunk);
+    // The tests, in order, each jumping to its body; then default.
+    std::vector<size_t> caseJumps(stmt->cases.size(), 0);
+    for (size_t i = 0; i < stmt->cases.size(); ++i) {
+        CaseClause* clause = stmt->cases[i].get();
+        if (!clause->test) continue;
+        if (clause->line > 0) currentLine = clause->line;
+        emitOp(OpCode::OP_GET_LOCAL);
+        emitU16(value);
+        compileExpression(clause->test.get());
+        emitOp(OpCode::OP_STRICT_EQUAL);
+        caseJumps[i] = emitJump(OpCode::OP_JUMP_IF_TRUE);
+    }
+    const size_t defaultJump = emitJump(OpCode::OP_JUMP);
+    bool hasDefault = false;
+
+    ControlEntry entry;
+    entry.kind = ControlEntry::Kind::Switch;
+    entry.labels = labels;
+    fs->controls.push_back(std::move(entry));
+    for (size_t i = 0; i < stmt->cases.size(); ++i) {
+        CaseClause* clause = stmt->cases[i].get();
+        if (clause->test) {
+            patchJump(caseJumps[i]);
+        } else {
+            patchJump(defaultJump);
+            hasDefault = true;
+        }
+        for (auto& s : clause->consequent) {
+            compileStatement(s.get());
+        }
+    }
+    ControlEntry done = std::move(fs->controls.back());
+    fs->controls.pop_back();
+    if (!hasDefault) patchJump(defaultJump);
+    for (size_t jump : done.breakJumps) patchJump(jump);
+}
+
+void Compiler::compileLabeledStatement(LabeledStatement* stmt) {
+    std::vector<std::string> labels;
+    Statement* body = stmt;
+    while (auto* labeled = dynamic_cast<LabeledStatement*>(body)) {
+        labels.push_back(labeled->label->name);
+        body = labeled->body.get();
+    }
+    if (body && body->line > 0) currentLine = body->line;
+    if (auto* loop = dynamic_cast<WhileStatement*>(body)) {
+        compileWhileStatement(loop, labels);
+    } else if (auto* doLoop = dynamic_cast<DoWhileStatement*>(body)) {
+        compileDoWhileStatement(doLoop, labels);
+    } else if (auto* forLoop = dynamic_cast<ForStatement*>(body)) {
+        compileForStatement(forLoop, labels);
+    } else if (auto* forIn = dynamic_cast<ForInStatement*>(body)) {
+        compileForInStatement(forIn, labels);
+    } else if (auto* choice = dynamic_cast<SwitchStatement*>(body)) {
+        compileSwitchStatement(choice, labels);
+    } else {
+        ControlEntry entry;
+        entry.kind = ControlEntry::Kind::Label;
+        entry.labels = labels;
+        fs->controls.push_back(std::move(entry));
+        compileStatement(body);
+        ControlEntry done = std::move(fs->controls.back());
+        fs->controls.pop_back();
+        for (size_t jump : done.breakJumps) patchJump(jump);
+    }
+}
+
+void Compiler::pauseRegions(size_t from) {
+    for (size_t i = from; i < fs->controls.size(); ++i) {
+        ControlEntry& entry = fs->controls[i];
+        if (entry.kind == ControlEntry::Kind::Try && entry.regionOpen) {
+            if (here() > entry.regionStart) {
+                entry.ranges.emplace_back(entry.regionStart, static_cast<uint32_t>(here()));
+            }
+            entry.regionOpen = false;
+            entry.paused = true;
+        }
+    }
+}
+
+void Compiler::resumeRegions(size_t from) {
+    for (size_t i = from; i < fs->controls.size(); ++i) {
+        ControlEntry& entry = fs->controls[i];
+        if (entry.kind == ControlEntry::Kind::Try && entry.paused) {
+            entry.regionOpen = true;
+            entry.paused = false;
+            entry.regionStart = static_cast<uint32_t>(here());
+        }
+    }
+}
+
+// A try's finally block, run on the way out of it by a break, continue or
+// return: outside the handlers of the tries it leaves, and with the
+// statements it may break to being only those outside the try.
+void Compiler::emitFinallyFor(size_t entryIndex) {
+    Statement* body = fs->controls[entryIndex].finallyBody;
+    if (!body) {
         return;
     }
+    pauseRegions(entryIndex);
+    std::vector<ControlEntry> inner(std::make_move_iterator(fs->controls.begin() + static_cast<long>(entryIndex)),
+                                    std::make_move_iterator(fs->controls.end()));
+    fs->controls.erase(fs->controls.begin() + static_cast<long>(entryIndex), fs->controls.end());
+    const int savedLine = currentLine;
+    compileStatement(body);
+    currentLine = savedLine;
+    for (auto& entry : inner) {
+        fs->controls.push_back(std::move(entry));
+    }
+    resumeRegions(entryIndex);
+}
 
-    if (auto* id = dynamic_cast<Identifier*>(expr)) {
-        compileIdentifier(id, chunk);
-    } else if (auto* lit = dynamic_cast<Literal*>(expr)) {
-        compileLiteral(lit, chunk);
-    } else if (auto* bin = dynamic_cast<BinaryExpression*>(expr)) {
-        compileBinaryExpression(bin, chunk);
-    } else if (auto* un = dynamic_cast<UnaryExpression*>(expr)) {
-        compileUnaryExpression(un, chunk);
-    } else if (auto* cond = dynamic_cast<ConditionalExpression*>(expr)) {
-        compileConditionalExpression(cond, chunk);
-    } else if (auto* assign = dynamic_cast<AssignmentExpression*>(expr)) {
-        compileAssignmentExpression(assign, chunk);
-    } else if (auto* call = dynamic_cast<CallExpression*>(expr)) {
-        compileCallExpression(call, chunk);
-    } else if (auto* newExpr = dynamic_cast<NewExpression*>(expr)) {
-        compileNewExpression(newExpr, chunk);
-    } else if (auto* member = dynamic_cast<MemberExpression*>(expr)) {
-        compileMemberExpression(member, chunk);
-    } else if (auto* arr = dynamic_cast<ArrayExpression*>(expr)) {
-        compileArrayExpression(arr, chunk);
-    } else if (auto* obj = dynamic_cast<ObjectExpression*>(expr)) {
-        compileObjectExpression(obj, chunk);
-    } else if (auto* funcExpr = dynamic_cast<FunctionExpression*>(expr)) {
-        compileFunctionExpression(funcExpr, chunk);
-    } else if (auto* thisExpr = dynamic_cast<ThisExpression*>(expr)) {
-        emitOpCode(OpCode::OP_THIS, chunk);
+void Compiler::compileBreakContinue(const std::string& label, bool isContinue) {
+    int target = -1;
+    for (int i = static_cast<int>(fs->controls.size()) - 1; i >= 0; --i) {
+        const ControlEntry& entry = fs->controls[static_cast<size_t>(i)];
+        if (entry.kind == ControlEntry::Kind::Try) continue;
+        if (label.empty()) {
+            if (entry.kind == ControlEntry::Kind::Loop ||
+                (!isContinue && entry.kind == ControlEntry::Kind::Switch)) {
+                target = i;
+                break;
+            }
+        } else if (std::find(entry.labels.begin(), entry.labels.end(), label) != entry.labels.end()) {
+            if (isContinue && entry.kind != ControlEntry::Kind::Loop) {
+                error("continue " + label + ": the label is not a loop's");
+                return;
+            }
+            target = i;
+            break;
+        }
+    }
+    if (target < 0) {
+        error(std::string(isContinue ? "continue" : "break") +
+              (label.empty() ? " outside a loop" : " to an unknown label '" + label + "'"));
+        return;
+    }
+    for (int i = static_cast<int>(fs->controls.size()) - 1; i > target; --i) {
+        if (fs->controls[static_cast<size_t>(i)].kind == ControlEntry::Kind::Try) {
+            emitFinallyFor(static_cast<size_t>(i));
+        }
+    }
+    const size_t jump = emitJump(OpCode::OP_JUMP);
+    if (isContinue) {
+        fs->controls[static_cast<size_t>(target)].continueJumps.push_back(jump);
+    } else {
+        fs->controls[static_cast<size_t>(target)].breakJumps.push_back(jump);
     }
 }
 
-void Compiler::compileIdentifier(Identifier* expr, Chunk& chunk) {
-    namedVariable(expr->name, false, chunk);
+void Compiler::compileReturnStatement(ReturnStatement* stmt) {
+    if (fs->isScript && !fs->parent) {
+        // A return in a frame script ends it.
+    }
+    bool finallyPending = false;
+    for (const auto& entry : fs->controls) {
+        if (entry.kind == ControlEntry::Kind::Try && entry.finallyBody) finallyPending = true;
+    }
+    if (stmt->argument) {
+        compileExpression(stmt->argument.get());
+        emitCoerce(fs->proto->returnCoerce);
+    } else {
+        emitOp(OpCode::OP_UNDEFINED);
+    }
+    if (finallyPending) {
+        const uint16_t value = allocTemp();
+        emitOp(OpCode::OP_PUT_LOCAL);
+        emitU16(value);
+        for (int i = static_cast<int>(fs->controls.size()) - 1; i >= 0; --i) {
+            if (fs->controls[static_cast<size_t>(i)].kind == ControlEntry::Kind::Try) {
+                emitFinallyFor(static_cast<size_t>(i));
+            }
+        }
+        emitOp(OpCode::OP_GET_LOCAL);
+        emitU16(value);
+    }
+    emitOp(OpCode::OP_RETURN);
 }
 
-void Compiler::compileLiteral(Literal* expr, Chunk& chunk) {
-    switch (expr->valueType) {
-        case Literal::LiteralValueType::Bool:
-            emitOpCode(expr->boolValue ? OpCode::OP_TRUE : OpCode::OP_FALSE, chunk);
-            break;
-        case Literal::LiteralValueType::Number:
-            // Optimize common numbers
-            if (expr->numberValue == 0.0) {
-                emitOpCode(OpCode::OP_NUMBER_0, chunk);
-            } else if (expr->numberValue == 1.0) {
-                emitOpCode(OpCode::OP_NUMBER_1, chunk);
-            } else if (expr->numberValue == -1.0) {
-                emitOpCode(OpCode::OP_NUMBER_NEG1, chunk);
+void Compiler::compileTryStatement(TryStatement* stmt) {
+    const bool hasCatch = !stmt->catches.empty();
+    Statement* finallyBody = stmt->finallyBody.get();
+    const int line = currentLine;
+
+    const auto close = [this](ControlEntry& entry) {
+        if (entry.regionOpen && here() > entry.regionStart) {
+            entry.ranges.emplace_back(entry.regionStart, static_cast<uint32_t>(here()));
+        }
+        entry.regionOpen = false;
+    };
+
+    ControlEntry tryEntry;
+    tryEntry.kind = ControlEntry::Kind::Try;
+    tryEntry.finallyBody = finallyBody;
+    tryEntry.regionOpen = true;
+    tryEntry.regionStart = static_cast<uint32_t>(here());
+    fs->controls.push_back(std::move(tryEntry));
+    const size_t entryIndex = fs->controls.size() - 1;
+
+    compileStatement(stmt->block.get());
+    close(fs->controls[entryIndex]);
+    std::vector<std::pair<uint32_t, uint32_t>> tryRanges = std::move(fs->controls[entryIndex].ranges);
+    fs->controls[entryIndex].ranges.clear();
+
+    std::vector<size_t> endJumps;
+    // Done without an exception: the finally block, then on.
+    if (finallyBody) {
+        emitFinallyFor(entryIndex);
+    }
+    endJumps.push_back(emitJump(OpCode::OP_JUMP));
+
+    if (hasCatch) {
+        const size_t catchStart = here();
+        for (const auto& range : tryRanges) {
+            fs->proto->handlers.push_back(Handler{range.first, range.second, static_cast<uint32_t>(catchStart)});
+        }
+        tryRanges.clear();
+        // The catch blocks are covered by the finally handler.
+        ControlEntry& entry = fs->controls[entryIndex];
+        entry.regionOpen = finallyBody != nullptr;
+        entry.regionStart = static_cast<uint32_t>(here());
+        fs->depth = 0;
+        adjust(1);
+        const uint16_t exception = allocTemp();
+        emitOp(OpCode::OP_PUT_LOCAL);
+        emitU16(exception);
+        for (auto& clause : stmt->catches) {
+            currentLine = clause.body && clause.body->line > 0 ? clause.body->line : line;
+            size_t nextJump = 0;
+            const bool typed = !clause.type.empty() && clause.type != "*" && clause.type != "Object";
+            if (typed) {
+                emitOp(OpCode::OP_GET_LOCAL);
+                emitU16(exception);
+                compileTypeExpression(clause.type);
+                emitOp(OpCode::OP_IS);
+                nextJump = emitJump(OpCode::OP_JUMP_IF_FALSE);
+            }
+            emitOp(OpCode::OP_GET_LOCAL);
+            emitU16(exception);
+            const std::string& name = clause.variable->name;
+            if (fs->isScript && !fs->vars.count(name)) {
+                // In a script, the exception is kept in a local of its own.
+                VarInfo local;
+                local.index = allocTemp();
+                fs->vars[name] = local;
+            }
+            Resolved where = resolve(name);
+            where.coerce = Coerce::None;
+            emitStore(where, name, false);
+            compileStatement(clause.body.get());
+            if (finallyBody) {
+                emitFinallyFor(entryIndex);
+            }
+            endJumps.push_back(emitJump(OpCode::OP_JUMP));
+            if (typed) {
+                patchJump(nextJump);
+            }
+        }
+        // No clause took it: on to the next handler (through finally).
+        emitOp(OpCode::OP_GET_LOCAL);
+        emitU16(exception);
+        emitOp(OpCode::OP_THROW);
+        close(fs->controls[entryIndex]);
+        tryRanges = std::move(fs->controls[entryIndex].ranges);
+    }
+
+    fs->controls.pop_back();
+
+    if (finallyBody) {
+        const size_t finallyStart = here();
+        for (const auto& range : tryRanges) {
+            fs->proto->handlers.push_back(Handler{range.first, range.second, static_cast<uint32_t>(finallyStart)});
+        }
+        fs->depth = 0;
+        adjust(1);
+        const uint16_t exception = allocTemp();
+        emitOp(OpCode::OP_PUT_LOCAL);
+        emitU16(exception);
+        compileStatement(finallyBody);
+        emitOp(OpCode::OP_GET_LOCAL);
+        emitU16(exception);
+        emitOp(OpCode::OP_THROW);
+    }
+
+    for (size_t jump : endJumps) {
+        patchJump(jump);
+    }
+    fs->depth = 0;
+    currentLine = line;
+}
+
+void Compiler::compileVariableDefinition(VariableDefinition* stmt) {
+    for (auto& decl : stmt->declarations) {
+        const std::string& name = decl->id->name;
+        const Coerce coerce = coerceForType(decl->type ? decl->type->name : std::string());
+        if (fs->isScript && !fs->vars.count(name)) {
+            // A var at the top level of a script: the timeline's, or a
+            // global; one without a value is only made if not there.
+            fs->scriptVars[name] = coerce;
+            if (decl->init) {
+                compileExpression(decl->init.get());
+                emitCoerce(coerce);
+                emitOp(OpCode::OP_SET_NAME);
+                emitU16(nameIndex(name));
+                emitU16(newCache());
+                emitOp(OpCode::OP_POP);
             } else {
-                emitConstant(Value::makeNumber(expr->numberValue), chunk);
+                emitConstant(defaultForCoerce(coerce));
+                emitOp(OpCode::OP_DEFINE_VAR);
+                emitU16(nameIndex(name));
+            }
+            continue;
+        }
+        if (!decl->init) {
+            // It was given its type's starting value on entry.
+            continue;
+        }
+        Resolved where = resolve(name);
+        if (stmt->isConst) {
+            where.isConst = false;
+        }
+        compileExpression(decl->init.get());
+        emitStore(where, name, false);
+        if (stmt->isConst) {
+            auto found = fs->vars.find(name);
+            if (found != fs->vars.end()) found->second.isConst = true;
+        }
+    }
+}
+
+// Expressions
+
+void Compiler::compileDiscarded(Expression* expr) {
+    if (!expr) return;
+    if (expr->line > 0) currentLine = expr->line;
+    if (expr->kind == Expression::ExpressionKind::Assignment) {
+        compileAssignment(static_cast<AssignmentExpression*>(expr), true);
+        return;
+    }
+    if (expr->kind == Expression::ExpressionKind::Unary) {
+        auto* unary = static_cast<UnaryExpression*>(expr);
+        if (unary->op == OperatorType::PreIncrement || unary->op == OperatorType::PostIncrement ||
+            unary->op == OperatorType::PreDecrement || unary->op == OperatorType::PostDecrement) {
+            compileUnaryExpression(unary, true);
+            return;
+        }
+    }
+    if (expr->kind == Expression::ExpressionKind::Sequence) {
+        for (auto& part : static_cast<SequenceExpression*>(expr)->expressions) {
+            compileDiscarded(part.get());
+        }
+        return;
+    }
+    compileExpression(expr);
+    emitOp(OpCode::OP_POP);
+}
+
+void Compiler::compileExpression(Expression* expr) {
+    if (!expr) {
+        emitOp(OpCode::OP_UNDEFINED);
+        return;
+    }
+    if (expr->line > 0) currentLine = expr->line;
+
+    switch (expr->kind) {
+        case Expression::ExpressionKind::Identifier:
+            compileIdentifier(static_cast<Identifier*>(expr));
+            break;
+        case Expression::ExpressionKind::Literal:
+            compileLiteral(static_cast<Literal*>(expr));
+            break;
+        case Expression::ExpressionKind::Binary:
+            compileBinaryExpression(static_cast<BinaryExpression*>(expr));
+            break;
+        case Expression::ExpressionKind::Unary:
+            compileUnaryExpression(static_cast<UnaryExpression*>(expr), false);
+            break;
+        case Expression::ExpressionKind::Conditional: {
+            auto* conditional = static_cast<ConditionalExpression*>(expr);
+            compileExpression(conditional->test.get());
+            const size_t elseJump = emitJump(OpCode::OP_JUMP_IF_FALSE);
+            compileExpression(conditional->consequent.get());
+            const size_t endJump = emitJump(OpCode::OP_JUMP);
+            patchJump(elseJump);
+            adjust(-1);
+            compileExpression(conditional->alternate.get());
+            patchJump(endJump);
+            break;
+        }
+        case Expression::ExpressionKind::Assignment:
+            compileAssignment(static_cast<AssignmentExpression*>(expr), false);
+            break;
+        case Expression::ExpressionKind::Call:
+            compileCallExpression(static_cast<CallExpression*>(expr));
+            break;
+        case Expression::ExpressionKind::New:
+            compileNewExpression(static_cast<NewExpression*>(expr));
+            break;
+        case Expression::ExpressionKind::Member:
+            compileMemberExpression(static_cast<MemberExpression*>(expr));
+            break;
+        case Expression::ExpressionKind::Function:
+            compileFunctionExpression(static_cast<FunctionExpression*>(expr));
+            break;
+        case Expression::ExpressionKind::Array:
+            compileArrayExpression(static_cast<ArrayExpression*>(expr));
+            break;
+        case Expression::ExpressionKind::Object:
+            compileObjectExpression(static_cast<ObjectExpression*>(expr));
+            break;
+        case Expression::ExpressionKind::This:
+            emitOp(OpCode::OP_THIS);
+            break;
+        case Expression::ExpressionKind::Super:
+            // super alone: this, as its superclass sees it.
+            emitOp(OpCode::OP_THIS);
+            break;
+        case Expression::ExpressionKind::Sequence: {
+            auto& parts = static_cast<SequenceExpression*>(expr)->expressions;
+            for (size_t i = 0; i < parts.size(); ++i) {
+                if (i + 1 < parts.size()) {
+                    compileDiscarded(parts[i].get());
+                } else {
+                    compileExpression(parts[i].get());
+                }
             }
             break;
-        case Literal::LiteralValueType::String:
-            emitConstant(Value::makeString(expr->stringValue), chunk);
+        }
+        case Expression::ExpressionKind::TypeApplication: {
+            auto* applied = static_cast<TypeApplication*>(expr);
+            compileExpression(applied->base.get());
+            for (const auto& type : applied->typeArguments) {
+                compileTypeExpression(type);
+            }
+            emitOp(OpCode::OP_APPLY_TYPE);
+            emitU8(static_cast<uint8_t>(applied->typeArguments.size()));
+            adjust(-static_cast<int>(applied->typeArguments.size()));
             break;
+        }
+    }
+}
+
+void Compiler::compileTypeExpression(const std::string& typeName) {
+    if (typeName == "*" || typeName.empty()) {
+        emitOp(OpCode::OP_NULL);
+        return;
+    }
+    const size_t open = typeName.find(".<");
+    if (open != std::string::npos && typeName.back() == '>') {
+        compileTypeExpression(typeName.substr(0, open));
+        // The arguments, split where not nested.
+        const std::string inner = typeName.substr(open + 2, typeName.size() - open - 3);
+        std::vector<std::string> args;
+        int depth = 0;
+        std::string part;
+        for (char c : inner) {
+            if (c == '<') ++depth;
+            if (c == '>') --depth;
+            if (c == ',' && depth == 0) {
+                args.push_back(part);
+                part.clear();
+            } else {
+                part += c;
+            }
+        }
+        args.push_back(part);
+        for (const auto& arg : args) {
+            compileTypeExpression(arg);
+        }
+        emitOp(OpCode::OP_APPLY_TYPE);
+        emitU8(static_cast<uint8_t>(args.size()));
+        adjust(-static_cast<int>(args.size()));
+        return;
+    }
+    if (typeName.find('.') != std::string::npos) {
+        emitOp(OpCode::OP_GET_QNAME);
+        emitU16(nameIndex(typeName));
+        return;
+    }
+    emitLoad(resolve(typeName), typeName);
+}
+
+void Compiler::compileIdentifier(Identifier* expr) {
+    const std::string& name = expr->name;
+    const Resolved where = resolve(name);
+    if (where.kind == NameKind::Global) {
+        if (name == "undefined") {
+            emitOp(OpCode::OP_UNDEFINED);
+            return;
+        }
+        if (name == "NaN") {
+            emitConstant(Val::number(std::numeric_limits<double>::quiet_NaN()));
+            return;
+        }
+        if (name == "Infinity") {
+            emitConstant(Val::number(std::numeric_limits<double>::infinity()));
+            return;
+        }
+    }
+    emitLoad(where, name);
+}
+
+void Compiler::compileLiteral(Literal* expr) {
+    switch (expr->kind) {
+        case Literal::LiteralKind::Null:
+            emitOp(OpCode::OP_NULL);
+            break;
+        case Literal::LiteralKind::Undefined:
+            emitOp(OpCode::OP_UNDEFINED);
+            break;
+        case Literal::LiteralKind::Boolean:
+            emitOp(expr->boolValue ? OpCode::OP_TRUE : OpCode::OP_FALSE);
+            break;
+        case Literal::LiteralKind::Numeric:
+            emitNumber(expr->numberValue);
+            break;
+        case Literal::LiteralKind::String:
+            emitString(expr->stringValue);
+            break;
+        case Literal::LiteralKind::RegExp: {
+            const uint16_t pattern = fs->proto->chunk.addConstant(Val::string(expr->stringValue));
+            const uint16_t flags = fs->proto->chunk.addConstant(Val::string(expr->flags));
+            emitOp(OpCode::OP_NEW_REGEXP);
+            emitU16(pattern);
+            emitU16(flags);
+            break;
+        }
         default:
-            if (expr->kind == Literal::LiteralKind::Null) {
-                emitOpCode(OpCode::OP_NULL, chunk);
-            } else {
-                emitOpCode(OpCode::OP_UNDEFINED, chunk);
-            }
+            error("Unsupported literal");
+            emitOp(OpCode::OP_UNDEFINED);
             break;
     }
 }
 
-void Compiler::compileBinaryExpression(BinaryExpression* expr, Chunk& chunk) {
-    // Compile operands
-    compileExpression(expr->left.get(), chunk);
-    compileExpression(expr->right.get(), chunk);
+bool Compiler::emitBinaryOperator(OperatorType op) {
+    switch (op) {
+        case OperatorType::Add: emitOp(OpCode::OP_ADD); return true;
+        case OperatorType::Subtract: emitOp(OpCode::OP_SUBTRACT); return true;
+        case OperatorType::Multiply: emitOp(OpCode::OP_MULTIPLY); return true;
+        case OperatorType::Divide: emitOp(OpCode::OP_DIVIDE); return true;
+        case OperatorType::Remainder: emitOp(OpCode::OP_MODULO); return true;
+        case OperatorType::ShiftLeft: emitOp(OpCode::OP_LEFT_SHIFT); return true;
+        case OperatorType::ShiftRight: emitOp(OpCode::OP_RIGHT_SHIFT); return true;
+        case OperatorType::ShiftRightUnsigned: emitOp(OpCode::OP_UNSIGNED_RIGHT_SHIFT); return true;
+        case OperatorType::Lt: emitOp(OpCode::OP_LESS); return true;
+        case OperatorType::Gt: emitOp(OpCode::OP_GREATER); return true;
+        case OperatorType::Le: emitOp(OpCode::OP_LESS_EQUAL); return true;
+        case OperatorType::Ge: emitOp(OpCode::OP_GREATER_EQUAL); return true;
+        case OperatorType::Equals: emitOp(OpCode::OP_EQUAL); return true;
+        case OperatorType::NotEquals: emitOp(OpCode::OP_NOT_EQUAL); return true;
+        case OperatorType::StrictEquals: emitOp(OpCode::OP_STRICT_EQUAL); return true;
+        case OperatorType::StrictNotEquals: emitOp(OpCode::OP_STRICT_NOT_EQUAL); return true;
+        case OperatorType::BitwiseAnd: emitOp(OpCode::OP_BIT_AND); return true;
+        case OperatorType::BitwiseOr: emitOp(OpCode::OP_BIT_OR); return true;
+        case OperatorType::BitwiseXor: emitOp(OpCode::OP_BIT_XOR); return true;
+        case OperatorType::Instanceof: emitOp(OpCode::OP_INSTANCEOF); return true;
+        case OperatorType::In: emitOp(OpCode::OP_IN); return true;
+        case OperatorType::Is: emitOp(OpCode::OP_IS); return true;
+        case OperatorType::As: emitOp(OpCode::OP_AS); return true;
+        default:
+            return false;
+    }
+}
 
-    if (!emitBinaryOperator(expr->op, chunk)) {
+void Compiler::compileBinaryExpression(BinaryExpression* expr) {
+    switch (expr->op) {
+        case OperatorType::LogicalAnd: {
+            compileExpression(expr->left.get());
+            const size_t end = emitJump(OpCode::OP_JUMP_IF_FALSE_KEEP);
+            compileExpression(expr->right.get());
+            patchJump(end);
+            return;
+        }
+        case OperatorType::LogicalOr: {
+            compileExpression(expr->left.get());
+            const size_t end = emitJump(OpCode::OP_JUMP_IF_TRUE_KEEP);
+            compileExpression(expr->right.get());
+            patchJump(end);
+            return;
+        }
+        case OperatorType::NullCoalescing: {
+            compileExpression(expr->left.get());
+            const size_t end = emitJump(OpCode::OP_JUMP_IF_NOT_NULLISH_KEEP);
+            compileExpression(expr->right.get());
+            patchJump(end);
+            return;
+        }
+        case OperatorType::LogicalXor:
+            compileExpression(expr->left.get());
+            emitOp(OpCode::OP_NOT);
+            compileExpression(expr->right.get());
+            emitOp(OpCode::OP_NOT);
+            emitOp(OpCode::OP_NOT_EQUAL);
+            return;
+        case OperatorType::Is:
+        case OperatorType::As:
+        case OperatorType::Instanceof: {
+            compileExpression(expr->left.get());
+            // The type: a name, a.b.C or Vector.<T>, as a type.
+            std::string qualified;
+            std::vector<std::string> rest;
+            if (expr->right->kind == Expression::ExpressionKind::Member &&
+                qualifiedName(expr->right.get(), qualified, rest) && rest.empty()) {
+                emitOp(OpCode::OP_GET_QNAME);
+                emitU16(nameIndex(qualified));
+            } else {
+                compileExpression(expr->right.get());
+            }
+            emitBinaryOperator(expr->op);
+            return;
+        }
+        default:
+            break;
+    }
+    // Folded when both sides are numbers.
+    Val left;
+    Val right;
+    if (literalValue(expr->left.get(), left) && literalValue(expr->right.get(), right) && left.isNumber() &&
+        right.isNumber()) {
+        double value = 0;
+        bool folded = true;
+        switch (expr->op) {
+            case OperatorType::Add: value = left.num + right.num; break;
+            case OperatorType::Subtract: value = left.num - right.num; break;
+            case OperatorType::Multiply: value = left.num * right.num; break;
+            case OperatorType::Divide: value = left.num / right.num; break;
+            case OperatorType::ShiftLeft: value = toInt32(left.num) << (toUint32(right.num) & 31); break;
+            case OperatorType::BitwiseOr: value = toInt32(left.num) | toInt32(right.num); break;
+            case OperatorType::BitwiseAnd: value = toInt32(left.num) & toInt32(right.num); break;
+            default: folded = false; break;
+        }
+        if (folded) {
+            emitNumber(value);
+            return;
+        }
+    }
+    compileExpression(expr->left.get());
+    compileExpression(expr->right.get());
+    if (!emitBinaryOperator(expr->op)) {
         error("Unsupported binary operator");
     }
 }
 
-bool Compiler::emitBinaryOperator(OperatorType op, Chunk& chunk) {
-    switch (op) {
-        case OperatorType::Add: emitOpCode(OpCode::OP_ADD, chunk); break;
-        case OperatorType::Subtract: emitOpCode(OpCode::OP_SUBTRACT, chunk); break;
-        case OperatorType::Multiply: emitOpCode(OpCode::OP_MULTIPLY, chunk); break;
-        case OperatorType::Divide: emitOpCode(OpCode::OP_DIVIDE, chunk); break;
-        case OperatorType::Remainder: emitOpCode(OpCode::OP_MODULO, chunk); break;
-        case OperatorType::Power: emitOpCode(OpCode::OP_POWER, chunk); break;
-
-        case OperatorType::Equals: emitOpCode(OpCode::OP_EQUAL, chunk); break;
-        case OperatorType::NotEquals: emitOpCode(OpCode::OP_NOT_EQUAL, chunk); break;
-        case OperatorType::StrictEquals: emitOpCode(OpCode::OP_STRICT_EQUAL, chunk); break;
-        case OperatorType::StrictNotEquals: emitOpCode(OpCode::OP_STRICT_NOT_EQUAL, chunk); break;
-        case OperatorType::Lt: emitOpCode(OpCode::OP_LESS, chunk); break;
-        case OperatorType::Le: emitOpCode(OpCode::OP_LESS_EQUAL, chunk); break;
-        case OperatorType::Gt: emitOpCode(OpCode::OP_GREATER, chunk); break;
-        case OperatorType::Ge: emitOpCode(OpCode::OP_GREATER_EQUAL, chunk); break;
-
-        case OperatorType::BitwiseAnd: emitOpCode(OpCode::OP_BIT_AND, chunk); break;
-        case OperatorType::BitwiseOr: emitOpCode(OpCode::OP_BIT_OR, chunk); break;
-        case OperatorType::BitwiseXor: emitOpCode(OpCode::OP_BIT_XOR, chunk); break;
-        case OperatorType::ShiftLeft: emitOpCode(OpCode::OP_LEFT_SHIFT, chunk); break;
-        case OperatorType::ShiftRight: emitOpCode(OpCode::OP_RIGHT_SHIFT, chunk); break;
-        case OperatorType::ShiftRightUnsigned: emitOpCode(OpCode::OP_UNSIGNED_RIGHT_SHIFT, chunk); break;
-
-        case OperatorType::LogicalAnd: emitOpCode(OpCode::OP_AND, chunk); break;
-        case OperatorType::LogicalOr: emitOpCode(OpCode::OP_OR, chunk); break;
-
-        case OperatorType::Instanceof: emitOpCode(OpCode::OP_INSTANCEOF, chunk); break;
-        case OperatorType::In: emitOpCode(OpCode::OP_IN, chunk); break;
-
+void Compiler::compileUnaryExpression(UnaryExpression* expr, bool discard) {
+    switch (expr->op) {
+        case OperatorType::PreIncrement:
+            compileIncrement(expr->operand.get(), true, false, discard);
+            return;
+        case OperatorType::PreDecrement:
+            compileIncrement(expr->operand.get(), false, false, discard);
+            return;
+        case OperatorType::PostIncrement:
+            compileIncrement(expr->operand.get(), true, true, discard);
+            return;
+        case OperatorType::PostDecrement:
+            compileIncrement(expr->operand.get(), false, true, discard);
+            return;
+        case OperatorType::Typeof:
+            if (expr->operand->kind == Expression::ExpressionKind::Identifier) {
+                const std::string& name = static_cast<Identifier*>(expr->operand.get())->name;
+                if (resolve(name).kind == NameKind::Global) {
+                    emitOp(OpCode::OP_TYPEOF_NAME);
+                    emitU16(nameIndex(name));
+                    return;
+                }
+            }
+            compileExpression(expr->operand.get());
+            emitOp(OpCode::OP_TYPEOF);
+            return;
+        case OperatorType::Delete: {
+            Expression* target = expr->operand.get();
+            if (target->kind == Expression::ExpressionKind::Member) {
+                auto* member = static_cast<MemberExpression*>(target);
+                compileExpression(member->object.get());
+                if (member->computed) {
+                    compileExpression(member->computedProperty.get());
+                    emitOp(OpCode::OP_DELETE_INDEX);
+                } else {
+                    emitOp(OpCode::OP_DELETE_PROP);
+                    emitU16(nameIndex(member->property->name));
+                }
+                return;
+            }
+            compileDiscarded(target);
+            emitOp(OpCode::OP_FALSE);
+            return;
+        }
+        case OperatorType::Void:
+            compileDiscarded(expr->operand.get());
+            emitOp(OpCode::OP_UNDEFINED);
+            return;
         default:
-            return false;
+            break;
     }
-    return true;
+    compileExpression(expr->operand.get());
+    switch (expr->op) {
+        case OperatorType::Negative: emitOp(OpCode::OP_NEGATE); break;
+        case OperatorType::Positive: emitOp(OpCode::OP_TO_NUMBER); break;
+        case OperatorType::LogicalNot: emitOp(OpCode::OP_NOT); break;
+        case OperatorType::BitwiseNot: emitOp(OpCode::OP_BIT_NOT); break;
+        default:
+            error("Unsupported unary operator");
+            break;
+    }
 }
 
-void Compiler::compileIncrement(Expression* target, bool increment, bool postfix, Chunk& chunk) {
-    // x - (-1) rather than x + 1, so a string holding a number steps as a
-    // number rather than having "1" added on.
-    const auto step = [&]() {
-        emitOpCode(increment ? OpCode::OP_NUMBER_NEG1 : OpCode::OP_NUMBER_1, chunk);
-        emitOpCode(OpCode::OP_SUBTRACT, chunk);
-    };
-    if (auto* id = dynamic_cast<Identifier*>(target)) {
-        namedVariable(id->name, false, chunk);
-        step();
-        namedVariable(id->name, true, chunk);
-    } else if (auto* member = dynamic_cast<MemberExpression*>(target)) {
-        if (member->computed && member->computedProperty) {
-            // [obj, index, obj[index] stepped] for OP_SET_INDEX.
-            compileExpression(member->object.get(), chunk);
-            compileExpression(member->computedProperty.get(), chunk);
-            compileExpression(member->object.get(), chunk);
-            compileExpression(member->computedProperty.get(), chunk);
-            emitOpCode(OpCode::OP_GET_INDEX, chunk);
-            step();
-            emitOpCode(OpCode::OP_SET_INDEX, chunk);
-        } else if (member->property) {
-            uint16_t name = identifierConstant(member->property->name, chunk);
-            compileExpression(member->object.get(), chunk);
-            emitOpCode(OpCode::OP_DUP, chunk);
-            emitOpCode(OpCode::OP_GET_PROPERTY, chunk);
-            chunk.writeU16(name);
-            step();
-            emitOpCode(OpCode::OP_SET_PROPERTY, chunk);
-            chunk.writeU16(name);
+void Compiler::compileIncrement(Expression* target, bool increment, bool postfix, bool discard) {
+    const OpCode step = increment ? OpCode::OP_INCREMENT : OpCode::OP_DECREMENT;
+    const bool keepOld = postfix && !discard;
+    if (target->kind == Expression::ExpressionKind::Identifier) {
+        const std::string& name = static_cast<Identifier*>(target)->name;
+        const Resolved where = resolve(name);
+        if (where.kind == NameKind::Local && discard) {
+            emitOp(OpCode::OP_INC_LOCAL);
+            emitU16(where.index);
+            emitU8(static_cast<uint8_t>(increment ? 129 : 127));
+            emitU8(static_cast<uint8_t>(where.coerce));
+            return;
         }
-    } else {
-        error("Invalid target for ++ or --");
+        if (where.kind == NameKind::Member || where.kind == NameKind::Static) {
+            emitOp(where.kind == NameKind::Member ? OpCode::OP_SCOPE_THIS : OpCode::OP_OWNER_CLASS);
+            emitOp(OpCode::OP_DUP);
+            emitGetProp(name);
+            if (keepOld) {
+                emitOp(OpCode::OP_TO_NUMBER);
+                emitOp(OpCode::OP_DUP_X1);
+            }
+            emitOp(step);
+            emitSetProp(name);
+            if (keepOld || discard) emitOp(OpCode::OP_POP);
+            return;
+        }
+        emitLoad(where, name);
+        if (keepOld) {
+            emitOp(OpCode::OP_TO_NUMBER);
+            emitOp(OpCode::OP_DUP);
+            emitOp(step);
+            emitStore(where, name, false);
+        } else {
+            emitOp(step);
+            emitStore(where, name, !discard);
+        }
         return;
     }
-    // The new value is left; after, the value before is wanted.
-    if (postfix) {
-        emitOpCode(increment ? OpCode::OP_NUMBER_1 : OpCode::OP_NUMBER_NEG1, chunk);
-        emitOpCode(OpCode::OP_SUBTRACT, chunk);
-    }
-}
-
-void Compiler::compileUnaryExpression(UnaryExpression* expr, Chunk& chunk) {
-    switch (expr->op) {
-        case OperatorType::PreIncrement: compileIncrement(expr->operand.get(), true, false, chunk); return;
-        case OperatorType::PreDecrement: compileIncrement(expr->operand.get(), false, false, chunk); return;
-        case OperatorType::PostIncrement: compileIncrement(expr->operand.get(), true, true, chunk); return;
-        case OperatorType::PostDecrement: compileIncrement(expr->operand.get(), false, true, chunk); return;
-        default: break;
-    }
-    compileExpression(expr->operand.get(), chunk);
-
-    switch (expr->op) {
-        case OperatorType::Negative: emitOpCode(OpCode::OP_NEGATE, chunk); break;
-        case OperatorType::LogicalNot: emitOpCode(OpCode::OP_NOT, chunk); break;
-        case OperatorType::BitwiseNot: emitOpCode(OpCode::OP_BIT_NOT, chunk); break;
-        case OperatorType::PreIncrement: emitOpCode(OpCode::OP_INCREMENT, chunk); break;
-        case OperatorType::PreDecrement: emitOpCode(OpCode::OP_DECREMENT, chunk); break;
-        case OperatorType::PostIncrement: emitOpCode(OpCode::OP_POST_INCREMENT, chunk); break;
-        case OperatorType::PostDecrement: emitOpCode(OpCode::OP_POST_DECREMENT, chunk); break;
-        case OperatorType::Typeof: emitOpCode(OpCode::OP_TYPEOF, chunk); break;
-        case OperatorType::Delete: emitOpCode(OpCode::OP_DELETE, chunk); break;
-        default: break;
-    }
-}
-
-void Compiler::compileConditionalExpression(ConditionalExpression* expr, Chunk& chunk) {
-    // Compile test
-    compileExpression(expr->test.get(), chunk);
-
-    // Jump if false
-    size_t thenJump = emitJump(OpCode::OP_JUMP_IF_FALSE, chunk);
-    emitOpCode(OpCode::OP_POP, chunk);
-
-    // Compile consequent
-    compileExpression(expr->consequent.get(), chunk);
-
-    size_t elseJump = emitJump(OpCode::OP_JUMP, chunk);
-    patchJump(thenJump, chunk);
-    emitOpCode(OpCode::OP_POP, chunk);
-
-    // Compile alternate
-    compileExpression(expr->alternate.get(), chunk);
-    patchJump(elseJump, chunk);
-}
-
-void Compiler::compileAssignmentExpression(AssignmentExpression* expr, Chunk& chunk) {
-    // x += y and the like: x = x + y.
-    const bool compound = expr->op != OperatorType::Assign;
-    const auto value = [&](const std::function<void()>& current) {
-        if (compound) {
-            current();
+    if (target->kind == Expression::ExpressionKind::Member) {
+        auto* member = static_cast<MemberExpression*>(target);
+        if (member->object && member->object->kind == Expression::ExpressionKind::Super && !member->computed) {
+            emitOp(OpCode::OP_GET_SUPER);
+            emitU16(nameIndex(member->property->name));
+            if (keepOld) {
+                emitOp(OpCode::OP_TO_NUMBER);
+                emitOp(OpCode::OP_DUP);
+            }
+            emitOp(step);
+            emitOp(OpCode::OP_SET_SUPER);
+            emitU16(nameIndex(member->property->name));
+            if (keepOld || discard) emitOp(OpCode::OP_POP);
+            return;
         }
-        compileExpression(expr->right.get(), chunk);
-        if (compound && !emitBinaryOperator(expr->op, chunk)) {
+        compileExpression(member->object.get());
+        if (member->computed) {
+            compileExpression(member->computedProperty.get());
+            emitOp(OpCode::OP_DUP2);
+            emitOp(OpCode::OP_GET_INDEX);
+            if (keepOld) {
+                emitOp(OpCode::OP_TO_NUMBER);
+                emitOp(OpCode::OP_DUP_X2);
+            }
+            emitOp(step);
+            emitOp(OpCode::OP_SET_INDEX);
+        } else {
+            emitOp(OpCode::OP_DUP);
+            emitGetProp(member->property->name);
+            if (keepOld) {
+                emitOp(OpCode::OP_TO_NUMBER);
+                emitOp(OpCode::OP_DUP_X1);
+            }
+            emitOp(step);
+            emitSetProp(member->property->name);
+        }
+        if (keepOld || discard) emitOp(OpCode::OP_POP);
+        return;
+    }
+    error("Invalid target for ++ or --");
+    if (!discard) emitOp(OpCode::OP_UNDEFINED);
+}
+
+void Compiler::compileAssignment(AssignmentExpression* expr, bool discard) {
+    const bool compound = expr->op != OperatorType::Assign;
+    Expression* target = expr->left.get();
+    const auto applyOperator = [&]() {
+        if (expr->op == OperatorType::LogicalAnd || expr->op == OperatorType::LogicalOr ||
+            expr->op == OperatorType::NullCoalescing) {
+            error("Unsupported compound assignment");
+        }
+        if (!emitBinaryOperator(expr->op)) {
             error("Unsupported compound assignment");
         }
     };
-    if (auto* member = dynamic_cast<MemberExpression*>(expr->left.get())) {
-        // Property assignment: obj.prop = value or obj[index] = value
 
-        // Compile the object, and the index for obj[index]: OP_SET_INDEX
-        // takes [obj, index, value]
-        compileExpression(member->object.get(), chunk);
-        const bool computed = member->computed && member->computedProperty;
-        if (computed) {
-            compileExpression(member->computedProperty.get(), chunk);
-        }
-
-        // Compile the value (right side), from the property's own for a
-        // compound assignment
-        value([&]() {
-            compileExpression(member->object.get(), chunk);
-            if (member->computed && member->computedProperty) {
-                compileExpression(member->computedProperty.get(), chunk);
-                emitOpCode(OpCode::OP_GET_INDEX, chunk);
-            } else if (member->property) {
-                emitOpCode(OpCode::OP_GET_PROPERTY, chunk);
-                chunk.writeU16(identifierConstant(member->property->name, chunk));
-            }
-        });
-
-        // Emit assignment opcode
-        if (computed) {
-            // Computed access: obj[index] = value
-            emitOpCode(OpCode::OP_SET_INDEX, chunk);
-        } else if (member->property) {
-            // Dot access: obj.prop = value
-            uint16_t name = identifierConstant(member->property->name, chunk);
-            emitOpCode(OpCode::OP_SET_PROPERTY, chunk);
-            chunk.writeU16(name);
-        }
-    } else if (auto* id = dynamic_cast<Identifier*>(expr->left.get())) {
-        // Variable assignment
-        value([&]() { namedVariable(id->name, false, chunk); });
-        namedVariable(id->name, true, chunk);
-    }
-}
-
-void Compiler::compileCallExpression(CallExpression* expr, Chunk& chunk) {
-    // Check if this is a method call (callee is MemberExpression)
-    if (auto* memberExpr = dynamic_cast<MemberExpression*>(expr->callee.get())) {
-        // Method call: obj.method(args)
-        // Compile object (receiver)
-        compileExpression(memberExpr->object.get(), chunk);
-
-        // Duplicate receiver for 'this' binding
-        emitOpCode(OpCode::OP_DUP, chunk);
-
-        // Get the method
-        if (memberExpr->computed && memberExpr->computedProperty) {
-            // Computed access: obj[prop]
-            compileExpression(memberExpr->computedProperty.get(), chunk);
-            emitOpCode(OpCode::OP_GET_INDEX, chunk);
-        } else if (memberExpr->property) {
-            // Dot access: obj.prop
-            uint16_t name = identifierConstant(memberExpr->property->name, chunk);
-            emitOpCode(OpCode::OP_GET_PROPERTY, chunk);
-            chunk.writeU16(name);
-        }
-
-        // Compile arguments
-        for (auto& arg : expr->arguments) {
-            compileExpression(arg.get(), chunk);
-        }
-
-        // Emit method call (receiver is already on stack)
-        emitOpCode(OpCode::OP_CALL_METHOD, chunk);
-        emitByte(static_cast<uint8_t>(expr->arguments.size()), chunk);
-    } else {
-        // Regular function call
-        // Compile callee
-        compileExpression(expr->callee.get(), chunk);
-
-        // ActionScript 1's getProperty(target, _x) and setProperty(target,
-        // _x, value) name the property, as _x, _visible and the like: the
-        // name is given as a string, not looked up as a variable (inside a
-        // clip, a bare _x is the clip's own).
-        const auto* function = dynamic_cast<Identifier*>(expr->callee.get());
-        const bool namesProperty = function && (function->name == "getProperty" || function->name == "setProperty");
-
-        // Compile arguments
-        for (size_t i = 0; i < expr->arguments.size(); ++i) {
-            auto* property = namesProperty && i == 1 ? dynamic_cast<Identifier*>(expr->arguments[i].get()) : nullptr;
-            if (property && !property->name.empty() && property->name[0] == '_') {
-                emitConstant(Value::makeString(property->name), chunk);
+    if (target->kind == Expression::ExpressionKind::Identifier) {
+        const std::string& name = static_cast<Identifier*>(target)->name;
+        const Resolved where = resolve(name);
+        if (where.kind == NameKind::Member || where.kind == NameKind::Static) {
+            emitOp(where.kind == NameKind::Member ? OpCode::OP_SCOPE_THIS : OpCode::OP_OWNER_CLASS);
+            if (compound) {
+                emitOp(OpCode::OP_DUP);
+                emitGetProp(name);
+                compileExpression(expr->right.get());
+                applyOperator();
             } else {
-                compileExpression(expr->arguments[i].get(), chunk);
+                compileExpression(expr->right.get());
             }
-        }
-
-        // Emit call
-        emitOpCode(OpCode::OP_CALL, chunk);
-        emitByte(static_cast<uint8_t>(expr->arguments.size()), chunk);
-    }
-}
-
-void Compiler::compileNewExpression(NewExpression* expr, Chunk& chunk) {
-    // For 'new ClassName(arg1, arg2)', emit:
-    // 1. Push class onto stack
-    // 2. Push constructor arguments
-    // 3. Call OP_INSTANTIATE which will:
-    //    - Create new instance
-    //    - Copy methods from class to instance
-    //    - Call constructor with 'this' bound to instance
-    //    - Return instance
-
-    // new Object() and new Array(...) are literals.
-    if (auto* id = dynamic_cast<Identifier*>(expr->callee.get())) {
-        if (id->name == "Object" && expr->arguments.empty()) {
-            emitOpCode(OpCode::OP_NEW_OBJECT, chunk);
-            chunk.writeU16(0);
+            emitSetProp(name);
+            if (discard) emitOp(OpCode::OP_POP);
             return;
         }
-        if (id->name == "Array") {
-            // new Array(3) is three empty places; new Array(a, b) holds a and b.
-            const bool sized = expr->arguments.size() == 1;
-            if (!sized) {
-                for (auto& arg : expr->arguments) {
-                    compileExpression(arg.get(), chunk);
+        if (compound) {
+            emitLoad(where, name);
+            compileExpression(expr->right.get());
+            applyOperator();
+        } else {
+            compileExpression(expr->right.get());
+        }
+        emitStore(where, name, !discard);
+        return;
+    }
+    if (target->kind == Expression::ExpressionKind::Member) {
+        auto* member = static_cast<MemberExpression*>(target);
+        if (member->object && member->object->kind == Expression::ExpressionKind::Super && !member->computed) {
+            if (compound) {
+                emitOp(OpCode::OP_GET_SUPER);
+                emitU16(nameIndex(member->property->name));
+                compileExpression(expr->right.get());
+                applyOperator();
+            } else {
+                compileExpression(expr->right.get());
+            }
+            emitOp(OpCode::OP_SET_SUPER);
+            emitU16(nameIndex(member->property->name));
+            if (discard) emitOp(OpCode::OP_POP);
+            return;
+        }
+        std::string qualified;
+        std::vector<std::string> rest;
+        if (!member->computed && qualifiedName(member, qualified, rest) && !rest.empty()) {
+            // com.x.Y.field = value
+            emitOp(OpCode::OP_GET_QNAME);
+            emitU16(nameIndex(qualified));
+            for (size_t i = 0; i + 1 < rest.size(); ++i) {
+                emitGetProp(rest[i]);
+            }
+        } else {
+            compileExpression(member->object.get());
+        }
+        if (member->computed) {
+            compileExpression(member->computedProperty.get());
+            if (compound) {
+                emitOp(OpCode::OP_DUP2);
+                emitOp(OpCode::OP_GET_INDEX);
+                compileExpression(expr->right.get());
+                applyOperator();
+            } else {
+                compileExpression(expr->right.get());
+            }
+            emitOp(OpCode::OP_SET_INDEX);
+        } else {
+            const std::string& name = member->property->name;
+            if (compound) {
+                emitOp(OpCode::OP_DUP);
+                emitGetProp(name);
+                compileExpression(expr->right.get());
+                applyOperator();
+            } else {
+                compileExpression(expr->right.get());
+            }
+            emitSetProp(name);
+        }
+        if (discard) emitOp(OpCode::OP_POP);
+        return;
+    }
+    error("Invalid assignment target");
+    compileExpression(expr->right.get());
+    if (discard) emitOp(OpCode::OP_POP);
+}
+
+int Compiler::compileArguments(const ExpressionList& args) {
+    for (auto& arg : args) {
+        compileExpression(arg.get());
+    }
+    if (args.size() > 255) {
+        error("Too many arguments");
+    }
+    return static_cast<int>(args.size());
+}
+
+void Compiler::compileCallExpression(CallExpression* expr) {
+    Expression* callee = expr->callee.get();
+    if (callee->kind == Expression::ExpressionKind::Super) {
+        const int argc = compileArguments(expr->arguments);
+        emitOp(OpCode::OP_SUPER_CTOR);
+        emitU8(static_cast<uint8_t>(argc));
+        adjust(1 - argc);
+        return;
+    }
+    if (callee->kind == Expression::ExpressionKind::Member) {
+        auto* member = static_cast<MemberExpression*>(callee);
+        if (member->object && member->object->kind == Expression::ExpressionKind::Super && !member->computed) {
+            const int argc = compileArguments(expr->arguments);
+            emitOp(OpCode::OP_CALL_SUPER);
+            emitU16(nameIndex(member->property->name));
+            emitU8(static_cast<uint8_t>(argc));
+            adjust(1 - argc);
+            return;
+        }
+        std::string qualified;
+        std::vector<std::string> rest;
+        if (!member->computed && qualifiedName(member, qualified, rest)) {
+            emitOp(OpCode::OP_GET_QNAME);
+            emitU16(nameIndex(qualified));
+            if (rest.empty()) {
+                const int argc = compileArguments(expr->arguments);
+                emitOp(OpCode::OP_CALL);
+                emitU8(static_cast<uint8_t>(argc));
+                adjust(-argc);
+                return;
+            }
+            for (size_t i = 0; i + 1 < rest.size(); ++i) {
+                emitGetProp(rest[i]);
+            }
+            const int argc = compileArguments(expr->arguments);
+            emitCallProp(rest.back(), argc);
+            return;
+        }
+        compileExpression(member->object.get());
+        if (member->computed) {
+            compileExpression(member->computedProperty.get());
+            const int argc = compileArguments(expr->arguments);
+            emitOp(OpCode::OP_CALL_INDEX);
+            emitU8(static_cast<uint8_t>(argc));
+            adjust(-argc - 1);
+            return;
+        }
+        const int argc = compileArguments(expr->arguments);
+        emitCallProp(member->property->name, argc);
+        return;
+    }
+    if (callee->kind == Expression::ExpressionKind::Identifier) {
+        const std::string& name = static_cast<Identifier*>(callee)->name;
+        const Resolved where = resolve(name);
+        switch (where.kind) {
+            case NameKind::Member:
+            case NameKind::Static: {
+                emitOp(where.kind == NameKind::Member ? OpCode::OP_SCOPE_THIS : OpCode::OP_OWNER_CLASS);
+                const int argc = compileArguments(expr->arguments);
+                emitCallProp(name, argc);
+                return;
+            }
+            case NameKind::Global: {
+                // int(x), uint(x) and Number(x) as the conversions they are.
+                if (expr->arguments.size() == 1 && (name == "int" || name == "uint" || name == "Number")) {
+                    compileExpression(expr->arguments[0].get());
+                    emitCoerce(name == "int" ? Coerce::Int : name == "uint" ? Coerce::Uint : Coerce::Number);
+                    return;
                 }
+                if (expr->arguments.size() == 1 && name == "Boolean") {
+                    compileExpression(expr->arguments[0].get());
+                    emitOp(OpCode::OP_NOT);
+                    emitOp(OpCode::OP_NOT);
+                    return;
+                }
+                // ActionScript 1's getProperty(target, _x) and
+                // setProperty(target, _x, value) name the property: a bare
+                // name there is its name.
+                const bool namesProperty = name == "getProperty" || name == "setProperty";
+                int argc = 0;
+                for (size_t i = 0; i < expr->arguments.size(); ++i) {
+                    Expression* arg = expr->arguments[i].get();
+                    if (namesProperty && i == 1 && arg->kind == Expression::ExpressionKind::Identifier) {
+                        emitString(static_cast<Identifier*>(arg)->name);
+                    } else {
+                        compileExpression(arg);
+                    }
+                    ++argc;
+                }
+                emitOp(OpCode::OP_CALL_NAME);
+                emitU16(nameIndex(name));
+                emitU8(static_cast<uint8_t>(argc));
+                emitU16(newCache());
+                adjust(1 - argc);
+                return;
             }
-            emitOpCode(OpCode::OP_NEW_ARRAY, chunk);
-            chunk.writeU16(static_cast<uint16_t>(sized ? 0 : expr->arguments.size()));
-            return;
+            default:
+                break;
         }
-    }
-
-    // Get the class
-    compileExpression(expr->callee.get(), chunk);
-
-    // Compile constructor arguments
-    for (auto& arg : expr->arguments) {
-        compileExpression(arg.get(), chunk);
-    }
-
-    // Emit OP_INSTANTIATE with argument count
-    // Stack before: [class arg1 arg2 ...]
-    // Stack after: [instance]
-    emitOpCode(OpCode::OP_INSTANTIATE, chunk);
-    emitByte(static_cast<uint8_t>(expr->arguments.size()), chunk);
-}
-
-void Compiler::compileMemberExpression(MemberExpression* expr, Chunk& chunk) {
-    // Compile object
-    compileExpression(expr->object.get(), chunk);
-
-    if (expr->computed && expr->computedProperty) {
-        // Computed access: obj[prop]
-        compileExpression(expr->computedProperty.get(), chunk);
-        emitOpCode(OpCode::OP_GET_INDEX, chunk);
-    } else if (expr->property) {
-        // Dot access: obj.prop
-        uint16_t name = identifierConstant(expr->property->name, chunk);
-        emitOpCode(OpCode::OP_GET_PROPERTY, chunk);
-        chunk.writeU16(name);
-    }
-}
-
-void Compiler::compileArrayExpression(ArrayExpression* expr, Chunk& chunk) {
-    // Compile all elements
-    for (auto& elem : expr->elements) {
-        compileExpression(elem.get(), chunk);
-    }
-
-    // Create array
-    emitOpCode(OpCode::OP_NEW_ARRAY, chunk);
-    chunk.writeU16(static_cast<uint16_t>(expr->elements.size()));
-}
-
-void Compiler::compileObjectExpression(ObjectExpression* expr, Chunk& chunk) {
-    // Compile all properties (key-value pairs)
-    for (auto& prop : expr->properties) {
-        // Key
-        if (auto* id = dynamic_cast<Identifier*>(prop.first.get())) {
-            emitConstant(Value::makeString(id->name), chunk);
-        } else {
-            compileExpression(prop.first.get(), chunk);
-        }
-        // Value
-        compileExpression(prop.second.get(), chunk);
-    }
-
-    // Create object
-    emitOpCode(OpCode::OP_NEW_OBJECT, chunk);
-    chunk.writeU16(static_cast<uint16_t>(expr->properties.size()));
-}
-
-void Compiler::compileFunctionExpression(FunctionExpression* expr, Chunk& chunk) {
-    // Create new compiler context for function
-    CompilerContext functionContext(current);
-
-    // Function expressions can be anonymous or named
-    std::string funcName = expr->name ? expr->name->name : "<anonymous>";
-    auto func = std::make_shared<BytecodeFunction>(funcName, static_cast<int>(expr->parameters.size()));
-    functionContext.function = func.get();
-
-    CompilerContext* previousCurrent = current;
-    current = &functionContext;
-
-    current->beginScope();
-
-    // Compile parameters
-    for (auto& param : expr->parameters) {
-        current->addLocal(param->name->name);
-        current->markInitialized();
-    }
-
-    // Compile body
-    compileStatement(expr->body.get(), func->chunk);
-
-    // Implicit return undefined
-    emitOpCode(OpCode::OP_UNDEFINED, func->chunk);
-    emitReturn(func->chunk);
-
-    current = previousCurrent;
-
-    // Store the compiled function as a constant and push onto stack
-    uint16_t constant = makeConstant(Value::makeFunction(func), chunk);
-    emitOpCode(OpCode::OP_CLOSURE, chunk);
-    chunk.writeU16(constant);
-
-    // Function is now on the stack (not defined as a variable)
-}
-
-// Helper methods
-
-uint16_t Compiler::makeConstant(ValuePtr value, Chunk& chunk) {
-    return chunk.addConstant(value);
-}
-
-uint16_t Compiler::identifierConstant(const std::string& name, Chunk& chunk) {
-    return makeConstant(Value::makeString(name), chunk);
-}
-
-void Compiler::emitByte(uint8_t byte, Chunk& chunk) {
-    chunk.writeByte(byte, currentLine);
-}
-
-void Compiler::emitBytes(uint8_t byte1, uint8_t byte2, Chunk& chunk) {
-    emitByte(byte1, chunk);
-    emitByte(byte2, chunk);
-}
-
-void Compiler::emitOpCode(OpCode op, Chunk& chunk) {
-    chunk.writeOpCode(op, currentLine);
-}
-
-void Compiler::emitConstant(ValuePtr value, Chunk& chunk) {
-    uint16_t constant = makeConstant(value, chunk);
-    emitOpCode(OpCode::OP_CONSTANT, chunk);
-    chunk.writeU16(constant);
-}
-
-void Compiler::emitReturn(Chunk& chunk) {
-    emitOpCode(OpCode::OP_RETURN, chunk);
-}
-
-size_t Compiler::emitJump(OpCode jumpOp, Chunk& chunk) {
-    emitOpCode(jumpOp, chunk);
-    chunk.writeU16(0xFFFF);  // Placeholder
-    return chunk.getCurrentOffset() - 2;
-}
-
-void Compiler::patchJump(size_t offset, Chunk& chunk) {
-    size_t jump = chunk.getCurrentOffset() - offset - 2;
-    if (jump > INT16_MAX) {
-        error("Too much code to jump over");
-    }
-    chunk.patchJump(offset, static_cast<int16_t>(jump));
-}
-
-void Compiler::emitLoop(size_t loopStart, Chunk& chunk) {
-    emitOpCode(OpCode::OP_LOOP, chunk);
-    size_t offset = chunk.getCurrentOffset() - loopStart + 2;
-    if (offset > UINT16_MAX) {
-        error("Loop body too large");
-    }
-    chunk.writeU16(static_cast<uint16_t>(offset));
-}
-
-void Compiler::namedVariable(const std::string& name, bool isAssignment, Chunk& chunk) {
-    // Try to resolve as local
-    int local = current->resolveLocal(name);
-    if (local != -1) {
-        if (isAssignment) {
-            emitOpCode(OpCode::OP_SET_LOCAL, chunk);
-            emitByte(static_cast<uint8_t>(local), chunk);
-        } else {
-            emitOpCode(OpCode::OP_GET_LOCAL, chunk);
-            emitByte(static_cast<uint8_t>(local), chunk);
-        }
+        emitLoad(where, name);
+        const int argc = compileArguments(expr->arguments);
+        emitOp(OpCode::OP_CALL);
+        emitU8(static_cast<uint8_t>(argc));
+        adjust(-argc);
         return;
     }
+    compileExpression(callee);
+    const int argc = compileArguments(expr->arguments);
+    emitOp(OpCode::OP_CALL);
+    emitU8(static_cast<uint8_t>(argc));
+    adjust(-argc);
+}
 
-    // Try to resolve as upvalue
-    int upvalue = current->resolveUpvalue(name);
-    if (upvalue != -1) {
-        if (isAssignment) {
-            emitOpCode(OpCode::OP_SET_UPVALUE, chunk);
-            emitByte(static_cast<uint8_t>(upvalue), chunk);
-        } else {
-            emitOpCode(OpCode::OP_GET_UPVALUE, chunk);
-            emitByte(static_cast<uint8_t>(upvalue), chunk);
+void Compiler::compileNewExpression(NewExpression* expr) {
+    std::string qualified;
+    std::vector<std::string> rest;
+    Expression* callee = expr->callee.get();
+    if (callee->kind == Expression::ExpressionKind::Member && qualifiedName(callee, qualified, rest)) {
+        emitOp(OpCode::OP_GET_QNAME);
+        emitU16(nameIndex(qualified));
+        for (const auto& part : rest) {
+            emitGetProp(part);
         }
-        return;
-    }
-
-    // Treat as global
-    uint16_t global = identifierConstant(name, chunk);
-    if (isAssignment) {
-        emitOpCode(OpCode::OP_SET_GLOBAL, chunk);
-        chunk.writeU16(global);
     } else {
-        emitOpCode(OpCode::OP_GET_GLOBAL, chunk);
-        chunk.writeU16(global);
+        compileExpression(callee);
     }
+    const int argc = compileArguments(expr->arguments);
+    emitOp(OpCode::OP_NEW);
+    emitU8(static_cast<uint8_t>(argc));
+    adjust(-argc);
 }
 
-void Compiler::defineVariable(uint16_t global, Chunk& chunk) {
-    if (current->scopeDepth > 0) {
-        // Local - already on stack
-        current->markInitialized();
+void Compiler::compileMemberExpression(MemberExpression* expr) {
+    if (expr->object && expr->object->kind == Expression::ExpressionKind::Super && !expr->computed) {
+        emitOp(OpCode::OP_GET_SUPER);
+        emitU16(nameIndex(expr->property->name));
         return;
     }
-
-    // Global
-    emitOpCode(OpCode::OP_DEFINE_GLOBAL, chunk);
-    chunk.writeU16(global);
+    std::string qualified;
+    std::vector<std::string> rest;
+    if (!expr->computed && qualifiedName(expr, qualified, rest)) {
+        emitOp(OpCode::OP_GET_QNAME);
+        emitU16(nameIndex(qualified));
+        for (const auto& part : rest) {
+            emitGetProp(part);
+        }
+        return;
+    }
+    compileExpression(expr->object.get());
+    if (expr->computed) {
+        compileExpression(expr->computedProperty.get());
+        emitOp(OpCode::OP_GET_INDEX);
+    } else {
+        emitGetProp(expr->property->name);
+    }
 }
 
-void Compiler::error(const std::string& message) {
-    hadError = true;
-    errorMessage = message;
-    std::cerr << "Compilation error: " << message << std::endl;
+void Compiler::compileArrayExpression(ArrayExpression* expr) {
+    if (!expr->vectorType.empty()) {
+        compileTypeExpression(expr->vectorType);
+    }
+    for (auto& element : expr->elements) {
+        if (element) {
+            compileExpression(element.get());
+        } else {
+            emitOp(OpCode::OP_UNDEFINED);
+        }
+    }
+    const int count = static_cast<int>(expr->elements.size());
+    if (count > 65535) {
+        error("Too many elements in an array literal");
+    }
+    if (!expr->vectorType.empty()) {
+        emitOp(OpCode::OP_NEW_VECTOR);
+        emitU16(static_cast<uint16_t>(count));
+        adjust(-count);
+    } else {
+        emitOp(OpCode::OP_NEW_ARRAY);
+        emitU16(static_cast<uint16_t>(count));
+        adjust(1 - count);
+    }
+}
+
+void Compiler::compileObjectExpression(ObjectExpression* expr) {
+    for (auto& property : expr->properties) {
+        Expression* key = property.first.get();
+        if (key->kind == Expression::ExpressionKind::Identifier) {
+            emitString(static_cast<Identifier*>(key)->name);
+        } else {
+            Val literal;
+            if (literalValue(key, literal)) {
+                emitString(literal.toString());
+            } else {
+                compileExpression(key);
+            }
+        }
+        compileExpression(property.second.get());
+    }
+    const int pairs = static_cast<int>(expr->properties.size());
+    emitOp(OpCode::OP_NEW_OBJECT);
+    emitU16(static_cast<uint16_t>(pairs));
+    adjust(1 - 2 * pairs);
+}
+
+void Compiler::compileFunctionExpression(FunctionExpression* expr) {
+    const std::string name = expr->name ? expr->name->name : std::string();
+    auto code = compileFunction(name, expr->parameters, expr->returnType.get(), expr->body.get(), nullptr, false,
+                                false, false, expr->line, nullptr, name);
+    emitClosure(code);
 }
 
 } // namespace as3
