@@ -518,6 +518,9 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
                 auto found = at->prototype.find(name);
                 if (found != at->prototype.end()) return found->second;
             }
+            if (name == "constructor") {
+                return classValue(cls);
+            }
             return Val();
         }
     }
@@ -566,6 +569,9 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
     for (const ClassInfo* at = cls; at; at = at->base.get()) {
         auto found = at->prototype.find(name);
         if (found != at->prototype.end()) return found->second;
+    }
+    if (name == "constructor") {
+        return classValue(cls);
     }
     return Val();
 }

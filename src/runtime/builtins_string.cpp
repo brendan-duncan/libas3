@@ -402,15 +402,44 @@ std::u16string replacementFor(VM& vm, const Val& replacement, const Match& match
     return expandReplacement(toUtf16(vm.toString(replacement)), match, subject);
 }
 
+// Upper and lower case for the alphabets most text uses: Latin (with
+// Latin-1 and Latin Extended-A), Greek and Cyrillic.
+char16_t upperOf(char16_t c) {
+    if (c >= 'a' && c <= 'z') return static_cast<char16_t>(c - 32);
+    if (c < 0xB5) return c;
+    if (c == 0xB5) return 0x39C;
+    if (c >= 0xE0 && c <= 0xFE && c != 0xF7) return static_cast<char16_t>(c - 32);
+    if (c == 0xFF) return 0x178;
+    if (c >= 0x100 && c <= 0x137 && (c & 1)) return static_cast<char16_t>(c - 1);
+    if (c >= 0x139 && c <= 0x148 && !(c & 1)) return static_cast<char16_t>(c - 1);
+    if (c >= 0x14A && c <= 0x177 && (c & 1)) return static_cast<char16_t>(c - 1);
+    if (c >= 0x179 && c <= 0x17E && !(c & 1)) return static_cast<char16_t>(c - 1);
+    if (c == 0x3C2) return 0x3A3;
+    if (c >= 0x3B1 && c <= 0x3C9) return static_cast<char16_t>(c - 32);
+    if (c >= 0x430 && c <= 0x44F) return static_cast<char16_t>(c - 32);
+    if (c >= 0x450 && c <= 0x45F) return static_cast<char16_t>(c - 80);
+    return c;
+}
+
+char16_t lowerOf(char16_t c) {
+    if (c >= 'A' && c <= 'Z') return static_cast<char16_t>(c + 32);
+    if (c < 0xC0) return c;
+    if (c <= 0xDE && c != 0xD7) return static_cast<char16_t>(c + 32);
+    if (c == 0x178) return 0xFF;
+    if (c >= 0x100 && c <= 0x137 && !(c & 1)) return static_cast<char16_t>(c + 1);
+    if (c >= 0x139 && c <= 0x148 && (c & 1)) return static_cast<char16_t>(c + 1);
+    if (c >= 0x14A && c <= 0x177 && !(c & 1)) return static_cast<char16_t>(c + 1);
+    if (c >= 0x179 && c <= 0x17E && (c & 1)) return static_cast<char16_t>(c + 1);
+    if (c >= 0x391 && c <= 0x3A9 && c != 0x3A2) return static_cast<char16_t>(c + 32);
+    if (c >= 0x410 && c <= 0x42F) return static_cast<char16_t>(c + 32);
+    if (c >= 0x400 && c <= 0x40F) return static_cast<char16_t>(c + 80);
+    return c;
+}
+
 std::u16string caseMapped(const std::u16string& text, bool upper) {
     std::u16string out = text;
     for (char16_t& c : out) {
-        if (c < 0x80) {
-            c = static_cast<char16_t>(upper ? std::toupper(c) : std::tolower(c));
-        } else if (c < 0xD800 || c >= 0xE000) {
-            c = static_cast<char16_t>(upper ? std::towupper(static_cast<wint_t>(c))
-                                            : std::towlower(static_cast<wint_t>(c)));
-        }
+        c = upper ? upperOf(c) : lowerOf(c);
     }
     return out;
 }
