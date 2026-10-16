@@ -277,6 +277,11 @@ public:
     void setClock(std::function<double()> clock) { this->clock = std::move(clock); }
     double now();
 
+    // How much of the C++ stack scripts calling natives calling scripts
+    // may use (from where the host called in) before that is a stack
+    // overflow error: 512 KB unless set.
+    void setNativeStackLimit(size_t bytes) { nativeStackLimit = bytes; }
+
     // Every object the VM made, emptied: breaks the cycles reference
     // counting cannot. The VM's destructor does it.
     void releaseObjects();
@@ -312,8 +317,12 @@ private:
     Val errorValue;
     std::string errorStack;
     std::vector<std::string> warnings;
-    // A native's nested run: how deep (C++ stack), to stop runaway ones.
+    // A native's nested run: how deep, and how much of the C++ stack the
+    // runs use, to stop runaway ones.
     int nativeDepth = 0;
+    const char* stackEntry = nullptr;
+    size_t nativeStackLimit = 512 * 1024;
+    bool overflowing = false;
     std::vector<std::weak_ptr<Value>> made;
     size_t madeCheck = 1024;
     std::vector<TimerEntry> timers;
@@ -396,6 +405,12 @@ private:
     void defineVar(CallFrame& frame, const std::string& name, const Val& value, bool onlyIfMissing);
 
     [[noreturn]] void nullError(const Val& object, const std::string& name);
+    [[noreturn]] void undefinedNameError(const std::string& name);
+    [[noreturn]] void notAFunctionError(const std::string& name);
+    Val makeRegExpValue(const Val& pattern, const Val& flags);
+    void enterNative(const char* marker);
+    // Frames and stack values above a call taken off.
+    void unwindTo(size_t depth, Val* result);
     void reportError(const ScriptException& exception);
     int currentLine();
 };

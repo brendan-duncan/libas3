@@ -56,6 +56,7 @@ add_executable(as3_tests
     test/bunnypaint_tests.cpp
     test/native_class_tests.cpp
     test/library_tests.cpp
+    test/error_tests.cpp
 )
 
 target_include_directories(as3_tests PRIVATE

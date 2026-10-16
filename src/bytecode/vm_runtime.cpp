@@ -1093,13 +1093,12 @@ Val VM::lookupQualified(const std::string& qualifiedName, bool askResolver) {
         return Val();
     }
     loading.insert(name);
-    try {
-        loadSource(*source);
-    } catch (...) {
-        loading.erase(name);
-        throw;
-    }
-    loading.erase(name);
+    struct Loading {
+        std::set<std::string>& names;
+        const std::string& name;
+        ~Loading() { names.erase(name); }
+    } guard{loading, name};
+    loadSource(*source);
     auto found = definitions.find(name);
     if (found != definitions.end()) {
         return found->second;

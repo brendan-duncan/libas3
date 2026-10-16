@@ -15,7 +15,7 @@ namespace {
 
 constexpr size_t kStackSize = 1 << 17;
 constexpr size_t kMaxFrames = 4000;
-constexpr int kMaxNativeDepth = 180;
+constexpr int kMaxNativeDepth = 2000;
 
 enum FrameMode : uint8_t {
     kModeNormal = 0,
@@ -225,14 +225,35 @@ ValuePtr VM::call(ValuePtr function, const std::vector<ValuePtr>& args, ValuePtr
     return Value::makeUndefined();
 }
 
+void VM::enterNative(const char* marker) {
+    // The C++ stack a nested run uses: measured from where the host first
+    // called in, and stopped short of the thread's end.
+    if (nativeDepth == 0) {
+        stackEntry = marker;
+    } else if (!overflowing &&
+               ((stackEntry && static_cast<size_t>(stackEntry > marker ? stackEntry - marker : marker - stackEntry) >
+                                   nativeStackLimit) ||
+                nativeDepth >= kMaxNativeDepth)) {
+        // Making the error takes a little more: allowed, once.
+        overflowing = true;
+        ScriptException exception;
+        try {
+            exception.value = makeError("Error", "Error #1023: Stack overflow occurred.", 1023);
+        } catch (...) {
+            exception.value = Val::string("Error #1023: Stack overflow occurred.");
+        }
+        overflowing = false;
+        throw exception;
+    }
+    ++nativeDepth;
+}
+
 Val VM::runCall(const Val& function, const Val& thisValue, Args args, const Val& scope) {
     if (sp + args.size() + 2 >= stackEnd) {
-        throwError("Error", "Stack overflow occurred.", 1023);
+        throwError("Error", "Error #1023: Stack overflow occurred.", 1023);
     }
-    if (++nativeDepth > kMaxNativeDepth) {
-        --nativeDepth;
-        throwError("Error", "Stack overflow occurred.", 1023);
-    }
+    char marker = 0;
+    enterNative(&marker);
     struct Depth {
         int& depth;
         ~Depth() { --depth; }
@@ -244,32 +265,45 @@ Val VM::runCall(const Val& function, const Val& thisValue, Args args, const Val&
         *sp++ = arg;
     }
     const size_t depthBefore = frames.size();
-    try {
-        if (invoke(function, thisValue, argStart, static_cast<uint32_t>(args.size()), result)) {
-            if (!scope.isUndefined()) {
-                frames.back().scope = scope;
-                if (frames.back().scopeThis.isNullish()) {
-                    frames.back().scopeThis = scope;
-                }
+    // On an exception, what this call put on the stacks is taken off
+    // (by a guard, not a catch and rethrow: MSVC runs a catch on top of
+    // the frames it catches from, so rethrowing from many nested calls
+    // would use the stack up).
+    struct Unwind {
+        VM& vm;
+        size_t depth;
+        Val* result;
+        bool done = false;
+        ~Unwind() {
+            if (!done) vm.unwindTo(depth, result);
+        }
+    } unwind{*this, depthBefore, result};
+    if (invoke(function, thisValue, argStart, static_cast<uint32_t>(args.size()), result)) {
+        if (!scope.isUndefined()) {
+            frames.back().scope = scope;
+            if (frames.back().scopeThis.isNullish()) {
+                frames.back().scopeThis = scope;
             }
-            run(depthBefore);
         }
-    } catch (...) {
-        while (frames.size() > depthBefore) {
-            frames.pop_back();
-        }
-        for (Val* p = result; p < sp; ++p) {
-            *p = Val();
-        }
-        sp = result;
-        throw;
+        run(depthBefore);
     }
+    unwind.done = true;
     Val value = std::move(*result);
     for (Val* p = result; p < sp; ++p) {
         *p = Val();
     }
     sp = result;
     return value;
+}
+
+void VM::unwindTo(size_t depth, Val* result) {
+    while (frames.size() > depth) {
+        frames.pop_back();
+    }
+    for (Val* p = result; p < sp; ++p) {
+        *p = Val();
+    }
+    sp = result;
 }
 
 Val VM::callFunction(const Val& function, const Val& thisValue, Args args) {
@@ -429,6 +463,8 @@ bool VM::handleException(ScriptException& exception, size_t stopDepth) {
 }
 
 void VM::run(size_t stopDepth) {
+    std::optional<ScriptException> pending;
+    std::optional<std::string> hostFailure;
     for (;;) {
         try {
             CallFrame* frame = &frames.back();
@@ -577,8 +613,7 @@ void VM::run(size_t stopDepth) {
                         }
                         Val value;
                         if (!lookupName(*frame, NAME(name), value, nullptr, &cache)) {
-                            throwError("ReferenceError", "Error #1065: Variable " + NAME(name) + " is not defined.",
-                                       1065);
+                            undefinedNameError(NAME(name));
                         }
                         *sp++ = std::move(value);
                         break;
@@ -615,8 +650,7 @@ void VM::run(size_t stopDepth) {
                         const uint16_t name = READ_U16();
                         Val value = lookupQualified(NAME(name), true);
                         if (value.isUndefined()) {
-                            throwError("ReferenceError", "Error #1065: Variable " + NAME(name) + " is not defined.",
-                                       1065);
+                            undefinedNameError(NAME(name));
                         }
                         *sp++ = std::move(value);
                         break;
@@ -1097,11 +1131,10 @@ void VM::run(size_t stopDepth) {
                             }
                         }
                         if (!cached && !lookupName(*frame, NAME(name), function, &receiver, &cache)) {
-                            throwError("ReferenceError", "Error #1065: Variable " + NAME(name) + " is not defined.",
-                                       1065);
+                            undefinedNameError(NAME(name));
                         }
                         if (!function.isFunction() && !function.isClass()) {
-                            throwError("TypeError", "Error #1006: " + NAME(name) + " is not a function.", 1006);
+                            notAFunctionError(NAME(name));
                         }
                         // The arguments move up one, for the result's place.
                         Val* args = sp - argc;
@@ -1122,8 +1155,7 @@ void VM::run(size_t stopDepth) {
                         frame->ip = ip;
                         Val function = getIndexOf(object[0], object[1]);
                         if (!function.isFunction() && !function.isClass()) {
-                            throwError("TypeError", "Error #1006: " + object[1].toString() + " is not a function.",
-                                       1006);
+                            notAFunctionError(object[1].toString());
                         }
                         Val self = object[0];
                         // object key args -> the key's place is dropped.
@@ -1150,7 +1182,7 @@ void VM::run(size_t stopDepth) {
                             function = getProp(self, NAME(name), nullptr);
                         }
                         if (!function.isFunction()) {
-                            throwError("TypeError", "Error #1006: " + NAME(name) + " is not a function.", 1006);
+                            notAFunctionError(NAME(name));
                         }
                         Val* args = sp - argc;
                         for (Val* p = sp; p > args; --p) {
@@ -1315,8 +1347,7 @@ void VM::run(size_t stopDepth) {
                         const uint16_t pattern = READ_U16();
                         const uint16_t flags = READ_U16();
                         frame->ip = ip;
-                        Val regexp = construct(Val(core.regexp->classObject.lock()),
-                                               std::vector<Val>{constants[pattern], constants[flags]});
+                        Val regexp = makeRegExpValue(constants[pattern], constants[flags]);
                         *sp++ = std::move(regexp);
                         break;
                     }
@@ -1383,26 +1414,41 @@ void VM::run(size_t stopDepth) {
 #undef RELOAD
 #undef NAME
         } catch (ScriptException& exception) {
-            if (exception.line < 0) {
-                exception.line = currentLine();
-            }
-            if (!handleException(exception, stopDepth)) {
-                throw;
-            }
+            pending = std::move(exception);
         } catch (const std::bad_alloc&) {
-            ScriptException exception{makeError("Error", "Error #1000: The system is out of memory.", 1000)};
-            exception.line = currentLine();
-            if (!handleException(exception, stopDepth)) {
-                throw exception;
-            }
+            hostFailure = "Error #1000: The system is out of memory.";
         } catch (const std::exception& failed) {
-            ScriptException exception{makeError("Error", failed.what())};
-            exception.line = currentLine();
-            if (!handleException(exception, stopDepth)) {
-                throw exception;
-            }
+            hostFailure = failed.what();
         }
+        // Out of the catch (see runCall): handled here, or on to the
+        // caller.
+        if (!pending) {
+            pending = ScriptException{makeError("Error", *hostFailure, hostFailure->compare(0, 11, "Error #1000") == 0 ? 1000 : 0)};
+            hostFailure.reset();
+        }
+        if (pending->line < 0) {
+            pending->line = currentLine();
+        }
+        if (!handleException(*pending, stopDepth)) {
+            ScriptException exception = std::move(*pending);
+            throw exception;
+        }
+        pending.reset();
     }
+}
+
+// Errors the loop raises, kept out of it.
+
+void VM::undefinedNameError(const std::string& name) {
+    throwError("ReferenceError", "Error #1065: Variable " + name + " is not defined.", 1065);
+}
+
+void VM::notAFunctionError(const std::string& name) {
+    throwError("TypeError", "Error #1006: " + name + " is not a function.", 1006);
+}
+
+Val VM::makeRegExpValue(const Val& pattern, const Val& flags) {
+    return construct(Val(core.regexp->classObject.lock()), std::vector<Val>{pattern, flags});
 }
 
 // Construction
@@ -1483,6 +1529,12 @@ Val VM::construct(const Val& cls, Args args) {
     if (sp + args.size() + 2 >= stackEnd) {
         throwError("Error", "Error #1023: Stack overflow occurred.", 1023);
     }
+    char marker = 0;
+    enterNative(&marker);
+    struct Depth {
+        int& depth;
+        ~Depth() { --depth; }
+    } depth{nativeDepth};
     Val* result = sp++;
     *result = Val();
     Val* argStart = sp;
@@ -1490,17 +1542,20 @@ Val VM::construct(const Val& cls, Args args) {
         *sp++ = arg;
     }
     const size_t depthBefore = frames.size();
-    try {
-        constructInto(cls, argStart, static_cast<uint32_t>(args.size()), result);
-        if (frames.size() > depthBefore) {
-            run(depthBefore);
+    struct Unwind {
+        VM& vm;
+        size_t depth;
+        Val* result;
+        bool done = false;
+        ~Unwind() {
+            if (!done) vm.unwindTo(depth, result);
         }
-    } catch (...) {
-        while (frames.size() > depthBefore) frames.pop_back();
-        for (Val* p = result; p < sp; ++p) *p = Val();
-        sp = result;
-        throw;
+    } unwind{*this, depthBefore, result};
+    constructInto(cls, argStart, static_cast<uint32_t>(args.size()), result);
+    if (frames.size() > depthBefore) {
+        run(depthBefore);
     }
+    unwind.done = true;
     Val value = std::move(*result);
     for (Val* p = result; p < sp; ++p) *p = Val();
     sp = result;

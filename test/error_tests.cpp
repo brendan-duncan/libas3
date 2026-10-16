@@ -1,0 +1,139 @@
+#include "test_runner.h"
+#include "../src/parser/parser.h"
+#include "../src/bytecode/compiler.h"
+#include "../src/bytecode/vm.h"
+#include <stdexcept>
+
+using namespace as3;
+using namespace as3test;
+
+// Errors: compile errors reported with their file and line, runtime errors
+// as ActionScript's, stack traces, and nothing that takes the host down.
+TEST_SUITE(Errors)
+
+namespace {
+
+void expectContains(const std::string& text, const std::string& part) {
+    if (text.find(part) == std::string::npos) {
+        throw std::runtime_error("\"" + text + "\" does not have \"" + part + "\"");
+    }
+}
+
+std::string compileError(const std::string& code, const std::string& file) {
+    Parser parser(code, file);
+    auto program = parser.parse();
+    if (parser.hasErrors()) {
+        return parser.getErrors();
+    }
+    try {
+        Compiler compiler;
+        compiler.compile(program.get());
+    } catch (const CompileError& failed) {
+        return std::string(failed.what());
+    }
+    return std::string();
+}
+
+} // namespace
+
+static void init_error_tests() {
+    auto& suite = suite_Errors;
+
+    suite.addTest("Compile errors name the file and line", []() {
+        expectContains(compileError("var a = 1;\nbreak;\n", "Frame.as"), "Frame.as:2: break outside a loop");
+        expectContains(compileError("for (;;) {\n  continue nowhere;\n}\n", "Loop.as"), "Loop.as:2: continue to an unknown label");
+        expectContains(compileError("function f() {\n  const K = 1;\n  K = 2;\n}\n", "Const.as"), "Const.as:3: Cannot assign to the constant 'K'");
+        expectContains(compileError("var x = ;\n", "Bad.as"), "Parse error in Bad.as at line 1");
+        expectContains(compileError("class A {\n  function f() {\n    x = = 2;\n  }\n}\n", "A.as"), "at line 3");
+    });
+
+    suite.addTest("Broken input never crashes", []() {
+        const char* inputs[] = {
+            "class", "class {", "package a.b {", "function (", "var x:Vector.<", "x = [1, 2", "{{{{", ")))",
+            "if (x) else", "switch (x) { case }", "try {}", "new", "a.b.c.", "/unterminated", "'unterminated",
+            "for each (x in) {}", "class A extends { }", "interface I { function f() }", "[Embed(", "@#$%^",
+            "super.", "x ? y", "function f(...) {}", "var v = new <int>;", "a >>>= >>",
+        };
+        for (const char* input : inputs) {
+            VM vm;
+            vm.load(input, "broken.as");
+        }
+    });
+
+    suite.addTest("Runtime errors have ActionScript's messages", []() {
+        VM vm;
+        vm.load("var o = null;\no.x = 1;\n", "Null.as");
+        expectContains(vm.getError(), "TypeError: Error #1009: Cannot access a property or method of a null object reference.");
+        if (vm.getErrorLine() != 2) throw std::runtime_error("line " + std::to_string(vm.getErrorLine()));
+        vm.load("var u;\nu.x;\n", "Undefined.as");
+        expectContains(vm.getError(), "TypeError: Error #1010");
+        vm.load("missing();\n", "Missing.as");
+        expectContains(vm.getError(), "ReferenceError: Error #1065: Variable missing is not defined.");
+        vm.load("var n = 5;\nn();\n", "Call.as");
+        expectContains(vm.getError(), "TypeError: Error #1006");
+        vm.load("class C { public function C() { this.go(); } }\nnew C();\n", "Method.as");
+        expectContains(vm.getError(), "TypeError: Error #1006: go is not a function.");
+    });
+
+    suite.addTest("Stack traces give the functions and lines", []() {
+        VM vm;
+        vm.load("package app {\n"
+                "  public class Deep {\n"
+                "    public function outer():void {\n"
+                "      inner();\n"
+                "    }\n"
+                "    private function inner():void {\n"
+                "      var o = null;\n"
+                "      o.go();\n"
+                "    }\n"
+                "  }\n"
+                "}\n"
+                "new app.Deep().outer();\n",
+                "Deep.as");
+        const std::string stack = vm.getErrorStack();
+        expectContains(stack, "at app.Deep/inner()[Deep.as:8]");
+        expectContains(stack, "at app.Deep/outer()[Deep.as:4]");
+        if (vm.getErrorLine() != 8) throw std::runtime_error("line " + std::to_string(vm.getErrorLine()));
+    });
+
+    suite.addTest("Runaway recursion is an error, and the VM goes on", []() {
+        VM vm;
+        vm.load("function down(n) { return down(n + 1) + 1; }\ndown(0);\n", "Recurse.as");
+        expectContains(vm.getError(), "Error #1023");
+        // Through native calls too: toString calling itself.
+        vm.load("class Loop { public function toString():String { return 'x' + this; } }\nvar s = '' + new Loop();\n", "Loop.as");
+        expectContains(vm.getError(), "Error #1023");
+        // And through getters.
+        vm.load("class G { public function get v():int { return v + 1; } }\nnew G().v;\n", "Getter.as");
+        expectContains(vm.getError(), "Error #1023");
+        vm.load("var ok = 1 + 1;\n", "After.as");
+        if (vm.hasError() || Val(vm.getGlobal("ok")).toNumber() != 2) {
+            throw std::runtime_error("VM not usable after: " + vm.getError());
+        }
+    });
+
+    suite.addTest("C++ exceptions from natives become errors", []() {
+        VM vm;
+        vm.defineFunction("hostFails", [](VM&, const Val&, Args) -> Val { throw std::runtime_error("host trouble"); });
+        vm.load("var got = '';\ntry { hostFails(); } catch (e:Error) { got = e.message; }\nhostFails();\n", "Host.as");
+        expectContains(vm.getError(), "host trouble");
+        if (Val(vm.getGlobal("got")).toString() != "host trouble") {
+            throw std::runtime_error("not caught as an Error");
+        }
+    });
+
+    suite.addTest("Errors in the class resolver's classes are reported", []() {
+        VM vm;
+        vm.setClassResolver([](const std::string& name) -> std::optional<ClassSource> {
+            if (name == "bad.Broken") return ClassSource{"package bad { public class Broken { function f( { } }", "Broken.as"};
+            return std::nullopt;
+        });
+        vm.load("import bad.Broken;\nvar b = new Broken();\n", "Use.as");
+        expectContains(vm.getError(), "SyntaxError");
+        expectContains(vm.getError(), "Broken.as");
+    });
+}
+
+static struct ErrorTestInit {
+    ErrorTestInit() { init_error_tests(); }
+} error_test_init;
