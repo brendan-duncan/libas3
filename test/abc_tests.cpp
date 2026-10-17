@@ -95,6 +95,24 @@ static void init_abc_tests() {
         if (!problems.empty()) throw std::runtime_error(joined(problems));
     });
 
+    suite.addTest("Flags kept as read, with nothing after them", []() {
+        // HAS_PARAM_NAMES on a method without parameters, HAS_OPTIONAL with
+        // no defaults, a trait's metadata flag with no tags: as compilers
+        // write them sometimes.
+        abc::AbcFile file = scriptOf({abc::OP_returnvoid}, 0);
+        file.methods[0].flags = abc::METHOD_HasParamNames | abc::METHOD_HasOptional | abc::METHOD_NeedRest;
+        abc::Trait trait;
+        trait.name = 1;
+        trait.attributes = abc::ATTR_Metadata;
+        file.scripts[0].traits.push_back(trait);
+        const std::vector<uint8_t> bytes = abc::write(file);
+        abc::AbcFile again;
+        std::string error;
+        if (!abc::read(bytes, again, error)) throw std::runtime_error(error);
+        if (again.methods[0].flags != file.methods[0].flags) throw std::runtime_error("flags changed");
+        if (abc::write(again) != bytes) throw std::runtime_error("written again, it differs");
+    });
+
     suite.addTest("A truncated file is an error", []() {
         abc::AbcFile file = scriptOf({abc::OP_returnvoid}, 0);
         std::vector<uint8_t> bytes = abc::write(file);
@@ -135,6 +153,42 @@ static void init_abc_tests() {
         expectProblem(file, "bad multiname 9");
         file.bodies.clear();
         expectProblem(file, "no body");
+    });
+
+    suite.addTest("Metadata of a Flex library: its keys, then its values", []() {
+        const char* swc = "D:/Backup/hulabunny/as3corelib-.93/lib/as3corelib.swc";
+        if (!std::filesystem::exists(swc)) {
+            std::cout << "    (library not found; skipped)" << std::endl;
+            return;
+        }
+        const std::vector<uint8_t> library = zipEntry(readBytes(swc), "library.swf");
+        size_t blocks = 0, items = 0;
+        for (const SwfTag& tag : swfTags(library)) {
+            if (tag.code != 82) continue;
+            abc::AbcFile file;
+            std::string error;
+            const std::vector<uint8_t> bytes = doAbcBytes(tag);
+            if (!abc::read(bytes, file, error)) throw std::runtime_error(error);
+            if (abc::write(file) != bytes) throw std::runtime_error("written again, it differs");
+            const auto problems = abc::verify(file);
+            if (!problems.empty()) throw std::runtime_error(joined(problems));
+            ++blocks;
+            for (const abc::MetadataInfo& tagInfo : file.metadata) {
+                if (file.pool.strings[tagInfo.name] != "__go_to_definition_help") continue;
+                // [__go_to_definition_help(file="...", pos="123")]
+                for (const auto& item : tagInfo.items) {
+                    const std::string& key = file.pool.strings[item.first];
+                    const std::string& value = file.pool.strings[item.second];
+                    if (key == "pos" && value.find_first_not_of("0123456789") != std::string::npos) {
+                        throw std::runtime_error("pos is \"" + value + "\"");
+                    }
+                    if (key != "file" && key != "pos") throw std::runtime_error("a key \"" + key + "\"");
+                    ++items;
+                }
+            }
+        }
+        if (blocks < 50 || items == 0) throw std::runtime_error(std::to_string(blocks) + " blocks, " + std::to_string(items) + " items");
+        std::cout << "    " << blocks << " ABC blocks" << std::endl;
     });
 
     suite.addTest("Read, verify and write again Flash CS5's ABC", []() {

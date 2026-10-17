@@ -92,9 +92,10 @@ void writeTraits(std::vector<uint8_t>& out, const std::vector<Trait>& traits) {
     writeU30(out, static_cast<uint32_t>(traits.size()));
     for (const Trait& trait : traits) {
         writeU30(out, trait.name);
+        // Flags as given (a file read may have one with nothing after it),
+        // and set for what there is.
         uint8_t attributes = trait.attributes;
         if (!trait.metadata.empty()) attributes |= ATTR_Metadata;
-        else attributes &= ~ATTR_Metadata;
         writeU8(out, static_cast<uint8_t>((attributes << 4) | (trait.kind & 0x0F)));
         switch (trait.kind) {
             case TRAIT_Slot:
@@ -110,7 +111,7 @@ void writeTraits(std::vector<uint8_t>& out, const std::vector<Trait>& traits) {
                 writeU30(out, trait.index);
                 break;
         }
-        if (!trait.metadata.empty()) {
+        if (attributes & ATTR_Metadata) {
             writeU30(out, static_cast<uint32_t>(trait.metadata.size()));
             for (uint32_t index : trait.metadata) writeU30(out, index);
         }
@@ -185,18 +186,21 @@ std::vector<uint8_t> write(const AbcFile& file) {
         writeU30(out, method.name);
         uint8_t flags = method.flags;
         if (!method.options.empty()) flags |= METHOD_HasOptional;
-        else flags &= ~METHOD_HasOptional;
         if (!method.paramNames.empty()) flags |= METHOD_HasParamNames;
-        else flags &= ~METHOD_HasParamNames;
         writeU8(out, flags);
-        if (!method.options.empty()) {
+        if (flags & METHOD_HasOptional) {
             writeU30(out, static_cast<uint32_t>(method.options.size()));
             for (const OptionDetail& option : method.options) {
                 writeU30(out, option.value);
                 writeU8(out, option.kind);
             }
         }
-        for (uint32_t name : method.paramNames) writeU30(out, name);
+        if (flags & METHOD_HasParamNames) {
+            // One for each parameter, as they are read.
+            for (size_t i = 0; i < method.paramTypes.size(); ++i) {
+                writeU30(out, i < method.paramNames.size() ? method.paramNames[i] : 0);
+            }
+        }
     }
 
     // Each tag's keys, then its values (as players read them; the

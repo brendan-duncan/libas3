@@ -1285,11 +1285,10 @@ uint32_t AbcCompiler::methodInfo(const std::vector<std::unique_ptr<Parameter>>& 
             error("parameter " + param->name->name + " needs a default, as those before it have");
         }
     }
-    if (isSetter) {
-        info.returnType = publicName("void");
-    } else {
-        info.returnType = returnType ? resolveType(returnType->name, unit).mn : 0;
-    }
+    // As declared, as compilers have it: a setter or constructor without
+    // a type returns *.
+    (void)isSetter;
+    info.returnType = returnType ? resolveType(returnType->name, unit).mn : 0;
     file.methods.push_back(info);
     return static_cast<uint32_t>(file.methods.size() - 1);
 }
@@ -1617,7 +1616,7 @@ void AbcCompiler::compileClass(ClassModel& cls, Function& script) {
     } else {
         static const std::vector<std::unique_ptr<Parameter>> noParams;
         const auto& params = constructor ? constructor->parameters : noParams;
-        instance.iinit = methodInfo(params, nullptr, where, cls.unit, false);
+        instance.iinit = methodInfo(params, constructor ? constructor->returnType.get() : nullptr, where, cls.unit, false);
         Function f(file);
         f.unit = cls.unit;
         f.cls = &cls;

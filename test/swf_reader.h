@@ -15,7 +15,11 @@ class Inflater {
 public:
     static std::vector<uint8_t> inflateZlib(const uint8_t* data, size_t size) {
         if (size < 2) throw std::runtime_error("zlib: too short");
-        Inflater in(data + 2, size - 2);
+        return inflateRaw(data + 2, size - 2);
+    }
+    // Deflate data without zlib's header, as a zip entry has it.
+    static std::vector<uint8_t> inflateRaw(const uint8_t* data, size_t size) {
+        Inflater in(data, size);
         in.run();
         return std::move(in.out);
     }
@@ -196,6 +200,35 @@ inline std::vector<SwfTag> swfTags(const std::vector<uint8_t>& file) {
         tags.push_back(std::move(tag));
     }
     return tags;
+}
+
+// A zip's entry (a SWC's library.swf), stored or deflated; empty when it
+// has none of that name.
+inline std::vector<uint8_t> zipEntry(const std::vector<uint8_t>& zip, const std::string& name) {
+    const auto u16 = [&zip](size_t at) { return static_cast<size_t>(zip[at] | (zip[at + 1] << 8)); };
+    const auto u32 = [&u16](size_t at) { return u16(at) | (u16(at + 2) << 16); };
+    // The central directory, from its end record, has each entry's sizes.
+    size_t end = zip.size() >= 22 ? zip.size() - 22 : 0;
+    while (end > 0 && u32(end) != 0x06054b50) --end;
+    if (zip.size() < 22 || u32(end) != 0x06054b50) throw std::runtime_error("not a zip");
+    size_t at = u32(end + 16);
+    for (size_t count = u16(end + 10); count-- > 0 && at + 46 <= zip.size() && u32(at) == 0x02014b50;) {
+        const size_t method = u16(at + 10);
+        const size_t compressed = u32(at + 20);
+        const size_t nameLength = u16(at + 28);
+        const std::string entry(zip.begin() + static_cast<std::ptrdiff_t>(at + 46),
+                                zip.begin() + static_cast<std::ptrdiff_t>(at + 46 + nameLength));
+        const size_t local = u32(at + 42);
+        at += 46 + nameLength + u16(at + 30) + u16(at + 32);
+        if (entry != name) continue;
+        const size_t data = local + 30 + u16(local + 26) + u16(local + 28);
+        if (data + compressed > zip.size()) throw std::runtime_error("zip: an entry runs past the end");
+        if (method == 0) return std::vector<uint8_t>(zip.begin() + static_cast<std::ptrdiff_t>(data),
+                                                     zip.begin() + static_cast<std::ptrdiff_t>(data + compressed));
+        if (method == 8) return Inflater::inflateRaw(zip.data() + data, compressed);
+        throw std::runtime_error("zip: method " + std::to_string(method));
+    }
+    return std::vector<uint8_t>();
 }
 
 // A DoABC tag's ABC: after its flags and its name.
