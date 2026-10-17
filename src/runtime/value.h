@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <memory>
 #include <map>
@@ -618,18 +619,37 @@ struct FunctionInfo {
 std::string numberToString(double value);
 // The text as a number, as Number("...") reads it: NaN when it is not one.
 double stringToNumber(const std::string& text);
-int32_t toInt32(double value);
-uint32_t toUint32(double value);
+// ToInt32 and ToUint32 of a number out of their range (NaN and the
+// infinities give 0, the rest wrap).
+int32_t wrapInt32(double value);
+uint32_t wrapUint32(double value);
+inline int32_t toInt32(double value) {
+    if (value >= -2147483648.0 && value <= 2147483647.0) {
+        return static_cast<int32_t>(value);
+    }
+    return wrapInt32(value);
+}
+inline uint32_t toUint32(double value) {
+    if (value >= 0 && value <= 4294967295.0) {
+        // Through int64_t: converting to it is one instruction, to uint32_t not.
+        return static_cast<uint32_t>(static_cast<int64_t>(value));
+    }
+    return wrapUint32(value);
+}
+inline bool isNegativeZero(double value) {
+    uint64_t bits;
+    std::memcpy(&bits, &value, sizeof bits);
+    return bits == 0x8000000000000000ull;
+}
 // Whether a number is already what the int (or uint) coercion makes of
 // it, and can be kept as it is: -0 is not (it becomes 0).
 inline bool isInt32(double value) {
     return value >= -2147483648.0 && value <= 2147483647.0 &&
-           value == static_cast<double>(static_cast<int32_t>(value)) && (value != 0 || !std::signbit(value));
+           value == static_cast<double>(static_cast<int32_t>(value)) && !isNegativeZero(value);
 }
 inline bool isUint32(double value) {
-    // Through int64_t: converting to it is one instruction, to uint32_t not.
     return value >= 0 && value <= 4294967295.0 && value == static_cast<double>(static_cast<int64_t>(value)) &&
-           (value != 0 || !std::signbit(value));
+           !isNegativeZero(value);
 }
 // The coercion applied to a value.
 Val coerceValue(const Val& value, Coerce coerce);

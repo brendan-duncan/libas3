@@ -1,5 +1,6 @@
 #include "chunk.h"
 #include <cmath>
+#include <stdexcept>
 #include <iostream>
 #include <iomanip>
 
@@ -105,6 +106,11 @@ size_t Chunk::instructionLength(size_t offset) const {
 
 void Chunk::fuse() {
     for (size_t at = 0; at < code.size();) {
+        // The VM dispatches on the opcode without a range check: every
+        // one is checked here, once.
+        if (code[at] >= static_cast<uint8_t>(OpCode::OP_COUNT)) {
+            throw std::logic_error("libas3: unknown opcode in " + name);
+        }
         const size_t next = at + instructionLength(at);
         if (next >= code.size()) {
             break;

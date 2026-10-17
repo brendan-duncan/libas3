@@ -162,6 +162,38 @@ static void init_error_tests() {
         expectContains(vm.getError(), "SyntaxError");
         expectContains(vm.getError(), "Broken.as");
     });
+
+    // A frame's line is right while a call it did not write is in it:
+    // the valueOf an addition runs, the toString a coercion runs.
+    suite.addTest("Stack traces through implicit calls give the caller's line", []() {
+        VM vm;
+        vm.load("class Bad {\n"
+                "  public function valueOf():Number { throw new Error('no value'); }\n"
+                "  public function toString():String { throw new Error('no text'); }\n"
+                "}\n"
+                "function sum():Number {\n"
+                "  var b:Bad = new Bad();\n"
+                "  var n:Number = 1;\n"
+                "  n = b * 2;\n"
+                "  return n;\n"
+                "}\n"
+                "function text():String {\n"
+                "  var b:Bad = new Bad();\n"
+                "  var s:String = b;\n"
+                "  return s;\n"
+                "}\n"
+                "var where:String = '';\n"
+                "try { sum(); } catch (e:Error) { where += e.getStackTrace(); }\n"
+                "try { text(); } catch (e:Error) { where += e.getStackTrace(); }\n"
+                "var result:String = where;\n",
+                "Implicit.as");
+        if (vm.hasError()) throw std::runtime_error(vm.getError());
+        const std::string where = Val(vm.getGlobal("result")).toString();
+        expectContains(where, "at Bad/valueOf()[Implicit.as:2]");
+        expectContains(where, "at sum()[Implicit.as:8]");
+        expectContains(where, "at Bad/toString()[Implicit.as:3]");
+        expectContains(where, "at text()[Implicit.as:13]");
+    });
 }
 
 static struct ErrorTestInit {

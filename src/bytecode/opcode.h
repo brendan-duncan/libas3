@@ -164,6 +164,9 @@ enum class OpCode : uint8_t {
     OP_NOT_EQUAL_JUMP,
     OP_STRICT_EQUAL_JUMP,
     OP_STRICT_NOT_EQUAL_JUMP,
+
+    // Not an instruction: how many there are.
+    OP_COUNT,
 };
 
 // Get human-readable name for opcode

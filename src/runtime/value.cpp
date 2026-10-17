@@ -251,10 +251,7 @@ bool Args::boolean(size_t i, bool otherwise) const {
 
 // Numbers
 
-int32_t toInt32(double value) {
-    if (value >= -2147483648.0 && value <= 2147483647.0) {
-        return static_cast<int32_t>(value);
-    }
+int32_t wrapInt32(double value) {
     if (std::isnan(value) || std::isinf(value)) {
         return 0;
     }
@@ -265,10 +262,7 @@ int32_t toInt32(double value) {
     return static_cast<int32_t>(static_cast<uint32_t>(wrapped));
 }
 
-uint32_t toUint32(double value) {
-    if (value >= 0 && value <= 4294967295.0) {
-        return static_cast<uint32_t>(static_cast<int64_t>(value));
-    }
+uint32_t wrapUint32(double value) {
     if (std::isnan(value) || std::isinf(value)) {
         return 0;
     }

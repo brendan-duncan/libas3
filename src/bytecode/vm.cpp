@@ -14,6 +14,12 @@ namespace as3 {
 
 std::atomic<uint64_t> VM::namesVersion{1};
 
+#if defined(_MSC_VER)
+#define AS3_UNREACHABLE() __assume(0)
+#else
+#define AS3_UNREACHABLE() __builtin_unreachable()
+#endif
+
 namespace {
 
 constexpr size_t kStackSize = 1 << 17;
@@ -540,9 +546,13 @@ void VM::run(size_t stopDepth) {
     std::optional<ScriptException> pending;
     std::optional<std::string> hostFailure;
     for (;;) {
+        // The frame and its ip are kept here, not written to the frame at
+        // each instruction: an instruction that may call out or throw
+        // saves ip first (so that a frame's line is right while a call is
+        // in it), and the handler below saves it for whatever threw.
+        CallFrame* frame = &frames.back();
+        const uint8_t* ip = frame->ip;
         try {
-            CallFrame* frame = &frames.back();
-            const uint8_t* ip = frame->ip;
             Val* base = frame->base;
             BytecodeFunction* code = frame->code;
             const Val* constants = code->chunk.constants.data();
@@ -563,7 +573,6 @@ void VM::run(size_t stopDepth) {
 #define NAME(i) (code->chunk.names[i])
 
             for (;;) {
-                frame->ip = ip + 1;
                 const OpCode op = static_cast<OpCode>(*ip++);
                 switch (op) {
                     case OpCode::OP_CONSTANT: {
@@ -681,13 +690,17 @@ void VM::run(size_t stopDepth) {
                         Val& local = base[READ_U16()];
                         const double delta = static_cast<double>(READ_U8()) - 128.0;
                         const Coerce coerce = static_cast<Coerce>(READ_U8());
-                        const double value = (local.tag == Val::Tag::Number ? local.num : toNumber(local)) + delta;
                         if (local.tag == Val::Tag::Number && coerce <= Coerce::Number) {
                             // A number stays one: no reference to let go of.
+                            const double value = local.num + delta;
                             local.num = coerce == Coerce::Int    ? static_cast<double>(toInt32(value))
                                         : coerce == Coerce::Uint ? static_cast<double>(toUint32(value))
                                                                  : value;
-                        } else if (coerce == Coerce::Int) {
+                            break;
+                        }
+                        frame->ip = ip;
+                        const double value = (local.tag == Val::Tag::Number ? local.num : toNumber(local)) + delta;
+                        if (coerce == Coerce::Int) {
                             local = Val::number(toInt32(value));
                         } else if (coerce == Coerce::Uint) {
                             local = Val::number(toUint32(value));
@@ -714,6 +727,7 @@ void VM::run(size_t stopDepth) {
                                 break;
                             }
                         }
+                        frame->ip = ip;
                         Val value;
                         if (!lookupName(*frame, NAME(name), value, nullptr, &cache)) {
                             undefinedNameError(NAME(name));
@@ -724,11 +738,13 @@ void VM::run(size_t stopDepth) {
                     case OpCode::OP_SET_NAME: {
                         const uint16_t name = READ_U16();
                         READ_U16();
+                        frame->ip = ip;
                         assignName(*frame, NAME(name), sp[-1]);
                         break;
                     }
                     case OpCode::OP_TYPEOF_NAME: {
                         const uint16_t name = READ_U16();
+                        frame->ip = ip;
                         Val value;
                         if (lookupName(*frame, NAME(name), value, nullptr)) {
                             *sp++ = Val::string(typeOf(value));
@@ -739,18 +755,21 @@ void VM::run(size_t stopDepth) {
                     }
                     case OpCode::OP_DEFINE_VAR: {
                         const uint16_t name = READ_U16();
+                        frame->ip = ip;
                         defineVar(*frame, NAME(name), sp[-1], true);
                         *--sp = Val();
                         break;
                     }
                     case OpCode::OP_DEFINE_FUNCTION: {
                         const uint16_t name = READ_U16();
+                        frame->ip = ip;
                         defineVar(*frame, NAME(name), sp[-1], false);
                         *--sp = Val();
                         break;
                     }
                     case OpCode::OP_GET_QNAME: {
                         const uint16_t name = READ_U16();
+                        frame->ip = ip;
                         Val value = lookupQualified(NAME(name), true);
                         if (value.isUndefined()) {
                             undefinedNameError(NAME(name));
@@ -827,6 +846,7 @@ void VM::run(size_t stopDepth) {
                     }
                     case OpCode::OP_DELETE_PROP: {
                         const uint16_t name = READ_U16();
+                        frame->ip = ip;
                         const bool done = deleteProp(sp[-1], NAME(name));
                         sp[-1] = Val::boolean(done);
                         break;
@@ -879,6 +899,7 @@ void VM::run(size_t stopDepth) {
                         break;
                     }
                     case OpCode::OP_DELETE_INDEX: {
+                        frame->ip = ip;
                         const bool done = deleteIndex(sp[-2], sp[-1]);
                         *--sp = Val();
                         sp[-1] = Val::boolean(done);
@@ -886,6 +907,7 @@ void VM::run(size_t stopDepth) {
                     }
                     case OpCode::OP_GET_SUPER: {
                         const uint16_t name = READ_U16();
+                        frame->ip = ip;
                         ClassInfo* base_ = frame->owner ? frame->owner->base.get() : nullptr;
                         const Trait* trait = base_ ? base_->findTrait(NAME(name)) : nullptr;
                         const Val self = frame->scopeSelf().isUndefined() ? frame->thisVal : frame->scopeSelf();
@@ -898,6 +920,7 @@ void VM::run(size_t stopDepth) {
                     }
                     case OpCode::OP_SET_SUPER: {
                         const uint16_t name = READ_U16();
+                        frame->ip = ip;
                         ClassInfo* base_ = frame->owner ? frame->owner->base.get() : nullptr;
                         const Trait* trait = base_ ? base_->findTrait(NAME(name)) : nullptr;
                         const Val self = frame->scopeSelf().isUndefined() ? frame->thisVal : frame->scopeSelf();
@@ -1004,6 +1027,7 @@ void VM::run(size_t stopDepth) {
                             --sp;
                             break;
                         }
+                        frame->ip = ip;
                         a = add(a, b);
                         *--sp = Val();
                         break;
@@ -1019,6 +1043,7 @@ void VM::run(size_t stopDepth) {
             --sp;                                                                 \
             break;                                                                \
         }                                                                         \
+        frame->ip = ip;                                                           \
         const double x = a.tag == Val::Tag::Number ? a.num : toNumber(a);         \
         const double y = b.tag == Val::Tag::Number ? b.num : toNumber(b);         \
         a = Val::number(OPERATION);                                               \
@@ -1047,29 +1072,27 @@ void VM::run(size_t stopDepth) {
                     case OpCode::OP_UNSIGNED_RIGHT_SHIFT:
                         NUMERIC_OP(static_cast<double>(toUint32(x) >> (toUint32(y) & 31)))
 #undef NUMERIC_OP
-                    case OpCode::OP_NEGATE: {
-                        Val& a = sp[-1];
-                        a = Val::number(-(a.tag == Val::Tag::Number ? a.num : toNumber(a)));
-                        break;
-                    }
-                    case OpCode::OP_TO_NUMBER: {
-                        Val& a = sp[-1];
-                        if (a.tag != Val::Tag::Number) a = Val::number(toNumber(a));
-                        break;
-                    }
-                    case OpCode::OP_INCREMENT: {
-                        Val& a = sp[-1];
-                        a = Val::number((a.tag == Val::Tag::Number ? a.num : toNumber(a)) + 1);
-                        break;
-                    }
-                    case OpCode::OP_DECREMENT: {
-                        Val& a = sp[-1];
-                        a = Val::number((a.tag == Val::Tag::Number ? a.num : toNumber(a)) - 1);
-                        break;
-                    }
+                    case OpCode::OP_NEGATE:
+                    case OpCode::OP_TO_NUMBER:
+                    case OpCode::OP_INCREMENT:
+                    case OpCode::OP_DECREMENT:
                     case OpCode::OP_BIT_NOT: {
                         Val& a = sp[-1];
-                        a = Val::number(static_cast<double>(~a.toInt32()));
+                        double x;
+                        if (a.tag == Val::Tag::Number) {
+                            x = a.num;
+                        } else {
+                            frame->ip = ip;
+                            x = toNumber(a);
+                            a = Val::number(x);
+                        }
+                        switch (op) {
+                            case OpCode::OP_NEGATE: a.num = -x; break;
+                            case OpCode::OP_INCREMENT: a.num = x + 1; break;
+                            case OpCode::OP_DECREMENT: a.num = x - 1; break;
+                            case OpCode::OP_BIT_NOT: a.num = static_cast<double>(~toInt32(x)); break;
+                            default: break;
+                        }
                         break;
                     }
                     case OpCode::OP_NOT: {
@@ -1086,6 +1109,7 @@ void VM::run(size_t stopDepth) {
                         if (a.tag == Val::Tag::Number && b.tag == Val::Tag::Number) {
                             equal = a.num == b.num;
                         } else {
+                            frame->ip = ip;
                             equal = equalsLoosely(a, b);
                         }
                         a = Val::boolean(op == OpCode::OP_EQUAL ? equal : !equal);
@@ -1119,6 +1143,7 @@ void VM::run(size_t stopDepth) {
                             --sp;
                             break;
                         } else {
+                            frame->ip = ip;
                             bool undefinedResult = false;
                             switch (op) {
                                 case OpCode::OP_LESS:
@@ -1169,6 +1194,7 @@ void VM::run(size_t stopDepth) {
                     case OpCode::OP_IN: {
                         Val& key = sp[-2];
                         const Val& object = sp[-1];
+                        frame->ip = ip;
                         if (object.isNullish()) {
                             nullError(object, key.toString());
                         }
@@ -1178,12 +1204,14 @@ void VM::run(size_t stopDepth) {
                     }
                     case OpCode::OP_IS: {
                         Val& a = sp[-2];
+                        frame->ip = ip;
                         a = Val::boolean(isType(a, sp[-1]));
                         *--sp = Val();
                         break;
                     }
                     case OpCode::OP_AS: {
                         Val& a = sp[-2];
+                        frame->ip = ip;
                         if (!isType(a, sp[-1])) a = Val::null();
                         *--sp = Val();
                         break;
@@ -1199,9 +1227,11 @@ void VM::run(size_t stopDepth) {
                         } else if (coerce == Coerce::Uint && a.tag == Val::Tag::Number) {
                             if (!isUint32(a.num)) a.num = toUint32(a.num);
                         } else if (coerce == Coerce::String && a.isObject()) {
+                            frame->ip = ip;
                             a = Val::string(toString(a));
                         } else if ((coerce == Coerce::Number || coerce == Coerce::Int || coerce == Coerce::Uint) &&
                                    a.isObject()) {
+                            frame->ip = ip;
                             a = coerceValue(Val::number(toNumber(a)), coerce);
                         } else {
                             a = coerceValue(a, coerce);
@@ -1562,6 +1592,7 @@ void VM::run(size_t stopDepth) {
                     }
                     case OpCode::OP_ITER_INIT: {
                         const bool each = READ_U8() != 0;
+                        frame->ip = ip;
                         sp[-1] = makeIterator(sp[-1], each);
                         break;
                     }
@@ -1628,6 +1659,7 @@ void VM::run(size_t stopDepth) {
             const double y = b.num;                                                   \
             result = NUMBERS;                                                         \
         } else {                                                                      \
+            frame->ip = ip;                                                           \
             result = compareForJump(op, a, b);                                        \
             a = Val();                                                                \
             b = Val();                                                                \
@@ -1655,7 +1687,13 @@ void VM::run(size_t stopDepth) {
                         COMPARE_JUMP(x != y)
 #undef COMPARE_JUMP
                     default:
+#ifdef NDEBUG
+                        // Every opcode was checked when the code was made
+                        // (Chunk::fuse): no range check here.
+                        AS3_UNREACHABLE();
+#else
                         throwError("Error", "Unknown opcode", 0);
+#endif
                 }
             }
 #undef READ_U8
@@ -1671,7 +1709,12 @@ void VM::run(size_t stopDepth) {
             hostFailure = failed.what();
         }
         // Out of the catch (see runCall): handled here, or on to the
-        // caller.
+        // caller. Where the frame that was running had got to (unless the
+        // instruction had pushed a frame before failing, which has its own
+        // ip).
+        if (frame == &frames.back()) {
+            frame->ip = ip;
+        }
         if (!pending) {
             pending = ScriptException{makeError("Error", *hostFailure, hostFailure->compare(0, 11, "Error #1000") == 0 ? 1000 : 0)};
             hostFailure.reset();
