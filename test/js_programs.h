@@ -531,6 +531,7 @@ var s:String = "tab\there \"quoted\" 'single' back\\slash A\x42 line\nnext";
 trace(s, s.length);
 var t:String = 'it\'s'; trace(t, t.length, "a" + 'b' + "c");
 var re:RegExp = /a\/b/; trace(re.test("a/b"), re.source);
+var slashes:String = "a\\b\\c"; trace(slashes, slashes.replace(/\\/g, "/"), /\\/.source, /[\/]/.test("/"));
 var x:RegExp = /a b c/x; trace(x.test("abc"));
 trace("é".length, "€".length, "日本".length);
 )as3"},

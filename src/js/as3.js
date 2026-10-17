@@ -191,6 +191,16 @@ function outside(name) {
     return undefined;
 }
 
+// What a name not defined stands for: anything done with it throws, as in
+// a player, but only when it is done (a class may import what is not
+// there and not use it).
+function undefinedName(name) {
+    const fail = () => {
+        throw new as3.ReferenceError("Error #1065: Variable " + splitName(name)[1] + " is not defined.", 1065);
+    };
+    return new Proxy(function () {}, { get: fail, set: fail, has: fail, apply: fail, construct: fail });
+}
+
 // The definition of a qualified name, defined now if it is not yet.
 as3.use = function (name) {
     const entry = lookup(definitions, name);
@@ -199,7 +209,7 @@ as3.use = function (name) {
     if (value !== undefined) return value;
     const found = outside(String(name).replace("::", "."));
     if (found !== undefined) return found;
-    throw new as3.ReferenceError("Error #1065: Variable " + splitName(name)[1] + " is not defined.", 1065);
+    return undefinedName(name);
 };
 
 // A file's definitions outside its packages: only the file sees them.

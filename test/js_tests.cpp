@@ -90,7 +90,7 @@ const prelude = fs.readFileSync(process.argv[4], "utf8");
 let all = "";
 for (let i = 0; i < cases.length; i++) {
     let out = "";
-    const context = vm.createContext({ setTimeout, clearTimeout, performance });
+    const context = vm.createContext({ setTimeout, clearTimeout, performance, TextEncoder });
     context.print = (text) => { out += text + "\n"; };
     try {
         vm.runInContext(runtime, context, { filename: "as3.js" });
@@ -361,6 +361,36 @@ struct Bitmap : HostObject {
 struct Bytes : HostObject {
     std::vector<uint8_t> bytes;
     size_t position = 0;
+    bool little = false;
+    void put(uint8_t b) {
+        if (position >= bytes.size()) bytes.resize(position + 1);
+        bytes[position++] = b;
+    }
+    uint8_t take() { return position < bytes.size() ? bytes[position++] : 0; }
+    void putInt(uint32_t v) {
+        for (int i = 0; i < 4; ++i) put(static_cast<uint8_t>(little ? v >> (8 * i) : v >> (24 - 8 * i)));
+    }
+    uint32_t takeInt() {
+        uint32_t v = 0;
+        for (int i = 0; i < 4; ++i) {
+            const uint32_t b = take();
+            v |= little ? b << (8 * i) : b << (24 - 8 * i);
+        }
+        return v;
+    }
+    bool getIndex(const Val& key, Val& out) override {
+        if (!key.isNumber()) return false;
+        const size_t i = static_cast<size_t>(key.num);
+        out = i < bytes.size() ? Val::number(bytes[i]) : Val();
+        return true;
+    }
+    bool setIndex(const Val& key, const Val& value) override {
+        if (!key.isNumber()) return false;
+        const size_t i = static_cast<size_t>(key.num);
+        if (i >= bytes.size()) bytes.resize(i + 1);
+        bytes[i] = static_cast<uint8_t>(value.toInt32());
+        return true;
+    }
 };
 
 void defineImageClasses(VM& vm) {
@@ -408,6 +438,46 @@ void defineImageClasses(VM& vm) {
             Bytes* bytes = self.host<Bytes>();
             return Val::number(bytes->position < bytes->bytes.size() ? bytes->bytes[bytes->position++] : 0);
         })
+        .method("readByte", [](VM&, const Val& self, Args) {
+            return Val::number(static_cast<int8_t>(self.host<Bytes>()->take()));
+        })
+        .method("writeInt", [](VM&, const Val& self, Args args) {
+            self.host<Bytes>()->putInt(args[0].toUint32());
+            return Val();
+        })
+        .method("writeUnsignedInt", [](VM&, const Val& self, Args args) {
+            self.host<Bytes>()->putInt(args[0].toUint32());
+            return Val();
+        })
+        .method("readInt", [](VM&, const Val& self, Args) {
+            return Val::number(static_cast<int32_t>(self.host<Bytes>()->takeInt()));
+        })
+        .method("readUnsignedInt", [](VM&, const Val& self, Args) {
+            return Val::number(self.host<Bytes>()->takeInt());
+        })
+        .method("writeBytes", [](VM&, const Val& self, Args args) {
+            Bytes* from = args[0].isObject() ? args[0].host<Bytes>() : nullptr;
+            if (!from) return Val();
+            const size_t offset = static_cast<size_t>(args.integer(1, 0));
+            size_t length = static_cast<size_t>(args.integer(2, 0));
+            if (length == 0 || offset + length > from->bytes.size()) length = from->bytes.size() > offset ? from->bytes.size() - offset : 0;
+            const std::vector<uint8_t> copy(from->bytes.begin() + static_cast<long>(offset), from->bytes.begin() + static_cast<long>(offset + length));
+            for (uint8_t b : copy) self.host<Bytes>()->put(b);
+            return Val();
+        })
+        .method("writeUTFBytes", [](VM& vm, const Val& self, Args args) {
+            for (unsigned char c : vm.toString(args[0])) self.host<Bytes>()->put(c);
+            return Val();
+        })
+        .getter("bytesAvailable", [](VM&, const Val& self, Args) {
+            Bytes* bytes = self.host<Bytes>();
+            return Val::number(bytes->position < bytes->bytes.size() ? static_cast<double>(bytes->bytes.size() - bytes->position) : 0);
+        })
+        .property("endian", [](VM&, const Val& self, Args) { return Val::string(self.host<Bytes>()->little ? "littleEndian" : "bigEndian"); },
+                  [](VM& vm, const Val& self, Args args) {
+                      self.host<Bytes>()->little = vm.toString(args[0]) == "littleEndian";
+                      return Val();
+                  })
         .getter("length", [](VM&, const Val& self, Args) { return Val::number(static_cast<double>(self.host<Bytes>()->bytes.size())); })
         .property("position", [](VM&, const Val& self, Args) { return Val::number(static_cast<double>(self.host<Bytes>()->position)); },
                   [](VM&, const Val& self, Args args) {
@@ -438,10 +508,56 @@ const char* kImageClasses = R"js(
         }
     }
     class ByteArray {
-        constructor(...args) { if (new.target === ByteArray) this.$construct(...args); }
-        $construct() { this.bytes = []; this.position = 0; }
-        writeByte(value) { this.bytes[this.position++] = value & 0xFF; }
-        readUnsignedByte() { return this.position < this.bytes.length ? this.bytes[this.position++] : 0; }
+        constructor(...args) {
+            if (new.target === ByteArray) this.$construct(...args);
+            // b[i], as a ByteArray has it.
+            return new Proxy(this, {
+                get(target, key, receiver) {
+                    if (typeof key === "string" && /^[0-9]+$/.test(key)) return target.bytes[Number(key)];
+                    const value = Reflect.get(target, key, receiver);
+                    return typeof value === "function" ? value.bind(target) : value;
+                },
+                set(target, key, value) {
+                    if (typeof key === "string" && /^[0-9]+$/.test(key)) {
+                        const i = Number(key);
+                        while (target.bytes.length < i) target.bytes.push(0);
+                        target.bytes[i] = value & 0xFF;
+                    } else {
+                        target[key] = value;
+                    }
+                    return true;
+                },
+            });
+        }
+        $construct() { this.bytes = []; this.position = 0; this.endian = "bigEndian"; }
+        put(b) {
+            while (this.bytes.length < this.position) this.bytes.push(0);
+            this.bytes[this.position++] = b & 0xFF;
+        }
+        take() { return this.position < this.bytes.length ? this.bytes[this.position++] : 0; }
+        writeByte(value) { this.put(value); }
+        readUnsignedByte() { return this.take(); }
+        readByte() { return (this.take() << 24) >> 24; }
+        writeInt(v) {
+            for (let i = 0; i < 4; i++) this.put(this.endian === "littleEndian" ? v >>> (8 * i) : v >>> (24 - 8 * i));
+        }
+        writeUnsignedInt(v) { this.writeInt(v); }
+        readUnsignedInt() {
+            let v = 0;
+            for (let i = 0; i < 4; i++) {
+                const b = this.take();
+                v |= this.endian === "littleEndian" ? b << (8 * i) : b << (24 - 8 * i);
+            }
+            return v >>> 0;
+        }
+        readInt() { return this.readUnsignedInt() | 0; }
+        writeUTFBytes(text) { for (const b of new TextEncoder().encode(String(text))) this.put(b); }
+        writeBytes(from, offset = 0, length = 0) {
+            const bytes = from.bytes;
+            if (length === 0 || offset + length > bytes.length) length = Math.max(0, bytes.length - offset);
+            for (const b of bytes.slice(offset, offset + length)) this.put(b);
+        }
+        get bytesAvailable() { return Math.max(0, this.bytes.length - this.position); }
         get length() { return this.bytes.length; }
     }
     as3.register("flash.display.BitmapData", BitmapData);
@@ -788,6 +904,80 @@ static void init_js_paint_tests() {
         const std::vector<std::string> got = runInNode({out.bundle}, kImageClasses);
         expect(got[0] == wanted, "VM:\n" + wanted + "JavaScript:\n" + got[0]);
         std::cout << "    " << wanted.substr(0, wanted.find('\n')) << std::endl;
+    });
+
+    suite.addTest("as3corelib translates, and its utilities run as in the VM", []() {
+        const fs::path root = fs::path(kPaint) / "as3corelib-.93/src";
+        if (!fs::exists(root / "com/adobe/crypto/MD5.as")) {
+            std::cout << "    (sources not found; skipped)" << std::endl;
+            return;
+        }
+        // Every source but AIR's.
+        std::vector<js::Source> sources;
+        for (const auto& entry : fs::recursive_directory_iterator(root)) {
+            if (!entry.is_regular_file() || entry.path().extension() != ".as") continue;
+            if (entry.path().string().find("air") != std::string::npos) continue;
+            sources.push_back({readText(entry.path()), entry.path().filename().string()});
+        }
+        std::sort(sources.begin(), sources.end(), [](const js::Source& a, const js::Source& b) { return a.fileName < b.fileName; });
+        const js::Output all = js::translate(sources);
+        if (const char* dump = std::getenv("AS3_JS_DUMP")) {
+            for (const auto& file : all.files) writeText(fs::path(dump) / "corelib" / file.first, file.second);
+        }
+        std::string problems;
+        for (const auto& diagnostic : all.diagnostics) {
+            if (diagnostic.isError) problems += diagnostic.text() + "\n";
+        }
+        expect(all.ok && problems.empty(), "\n" + problems);
+        std::cout << "    " << sources.size() << " files, " << all.classes.size() << " classes" << std::endl;
+        if (!nodeThere()) return;
+
+        const std::string program =
+            "import com.adobe.crypto.MD5;\n"
+            "import com.adobe.crypto.SHA1;\n"
+            "import com.adobe.crypto.SHA224;\n"
+            "import com.adobe.crypto.SHA256;\n"
+            "import com.adobe.serialization.json.JSON;\n"
+            "import com.adobe.utils.StringUtil;\n"
+            "import com.adobe.utils.ArrayUtil;\n"
+            "import com.adobe.utils.IntUtil;\n"
+            "import com.adobe.utils.NumberFormatter;\n"
+            "import com.adobe.net.URI;\n"
+            "trace(MD5.hash('abc'), MD5.hash(''), MD5.hash('The quick brown fox jumps over the lazy dog'));\n"
+            "trace(SHA1.hash('abc'), SHA224.hash('abc'), SHA256.hash('abc'));\n"
+            "trace(SHA256.hash('a longer message, past one block of sixty-four bytes, to hash'), SHA1.hash('\\u00e9t\\u00e9'));\n"
+            "trace(JSON.encode({a: [1, 2.5, 'x\"y'], b: true, c: null}), JSON.decode('{\"n\": [1, {\"m\": \"t\\\\u0041\"}]}').n[1].m);\n"
+            "trace(JSON.decode('[1, -2.5e3, true, false, null, \"s\"]'), JSON.encode('tab\\tquote\"'));\n"
+            "trace(StringUtil.trim('  x  '), StringUtil.replace('aXbXc', 'X', '-'), StringUtil.beginsWith('hello', 'he'), StringUtil.endsWith('hello', 'lo'), StringUtil.remove('banana', 'an'));\n"
+            "trace(IntUtil.toHex(255, true), IntUtil.toHex(255), IntUtil.rol(1, 3), IntUtil.ror(8, 3));\n"
+            "trace(ArrayUtil.arrayContainsValue([1, 2, 3], 2), ArrayUtil.arraysAreEqual([1, 2], [1, 2]), ArrayUtil.copyArray([1, [2]]).length);\n"
+            "trace(NumberFormatter.addLeadingZero(5), NumberFormatter.addLeadingZero(12));\n";
+        VM vm;
+        defineImageClasses(vm);
+        std::string wanted;
+        vm.defineFunction("trace", [&wanted](VM& vm, const Val&, Args args) {
+            for (size_t i = 0; i < args.size(); ++i) wanted += (i ? " " : "") + vm.toString(args[i]);
+            wanted += "\n";
+            return Val();
+        });
+        vm.defineNativeClass("flash.utils.Endian").constant("BIG_ENDIAN", Val::string("bigEndian"))
+            .constant("LITTLE_ENDIAN", Val::string("littleEndian")).define();
+        vm.setClassResolver([root](const std::string& name) -> std::optional<ClassSource> {
+            std::string path = name;
+            std::replace(path.begin(), path.end(), '.', '/');
+            const fs::path file = root / (path + ".as");
+            if (!fs::exists(file)) return std::nullopt;
+            return ClassSource{readText(file), file.filename().string()};
+        });
+        if (!vm.load(program, "corelib.as")) wanted += "Error: " + vm.getError() + "\n";
+        std::vector<js::Source> withProgram = sources;
+        withProgram.push_back({program, "corelib.as"});
+        const js::Output out = js::translate(withProgram);
+        expect(out.ok, out.errorText());
+        const std::vector<std::string> got = runInNode(
+            {out.bundle}, std::string(kImageClasses) + "as3.register(\"flash.utils.Endian\", { BIG_ENDIAN: \"bigEndian\", LITTLE_ENDIAN: \"littleEndian\" });\n");
+        expect(got[0] == wanted && wanted.find("Error") == std::string::npos, "VM:\n" + wanted + "JavaScript:\n" + got[0]);
+        if (std::getenv("AS3_JS_DUMP")) std::cout << wanted;
     });
 
     suite.addTest("bunnyPaint translates", []() {
