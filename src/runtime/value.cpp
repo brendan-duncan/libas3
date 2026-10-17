@@ -47,6 +47,11 @@ const ValuePtr& sharedBoolean(bool flag) {
 
 } // namespace
 
+void releaseValue(Value* value) noexcept {
+    // Moved out first: letting go of it may destroy the Value.
+    ValuePtr last = std::move(value->heldByVals);
+}
+
 // Val
 
 Val::Val(const ValuePtr& value) : tag(Tag::Undefined), num(0) {

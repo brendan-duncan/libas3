@@ -48,6 +48,54 @@ enum class Coerce : uint8_t { None, Int, Uint, Number, String, Boolean, Nullable
 // The coercion for a type as written ("int", "uint", "Number", "*"...).
 Coerce coerceForType(const std::string& typeName);
 
+// A string's or an object's Value as a Val holds it. Vals count their
+// holds on the Value itself, without atomics; while any Val holds it, the
+// Value keeps a ValuePtr to itself, so that ValuePtr and weak_ptr see it
+// held as before and it lives as long as either holds it. Reads as a
+// ValuePtr (get, ->, use_count, and converting to one).
+class ValueRef {
+public:
+    ValueRef() noexcept = default;
+    ValueRef(std::nullptr_t) noexcept {}
+    ValueRef(const ValueRef& other) noexcept;
+    ValueRef(ValueRef&& other) noexcept : _value(other._value) { other._value = nullptr; }
+    ValueRef(const ValuePtr& value) noexcept;
+    ValueRef(ValuePtr&& value) noexcept;
+    ~ValueRef();
+
+    ValueRef& operator=(const ValueRef& other) noexcept;
+    ValueRef& operator=(ValueRef&& other) noexcept;
+    ValueRef& operator=(const ValuePtr& value) noexcept { return *this = ValueRef(value); }
+    ValueRef& operator=(ValuePtr&& value) noexcept { return *this = ValueRef(std::move(value)); }
+    ValueRef& operator=(std::nullptr_t) noexcept {
+        reset();
+        return *this;
+    }
+
+    Value* get() const noexcept { return _value; }
+    Value* operator->() const noexcept { return _value; }
+    Value& operator*() const noexcept { return *_value; }
+    explicit operator bool() const noexcept { return _value != nullptr; }
+    void reset() noexcept;
+    // Every hold on it: Vals' and ValuePtrs'.
+    long use_count() const noexcept;
+    // The Value as a ValuePtr (an empty one when there is none).
+    operator const ValuePtr&() const noexcept;
+    operator std::weak_ptr<Value>() const noexcept { return static_cast<const ValuePtr&>(*this); }
+
+    friend bool operator==(const ValueRef& a, const ValueRef& b) noexcept { return a._value == b._value; }
+    friend bool operator!=(const ValueRef& a, const ValueRef& b) noexcept { return a._value != b._value; }
+    friend bool operator==(const ValueRef& a, std::nullptr_t) noexcept { return !a._value; }
+    friend bool operator!=(const ValueRef& a, std::nullptr_t) noexcept { return a._value != nullptr; }
+    friend bool operator==(const ValueRef& a, const ValuePtr& b) noexcept { return a._value == b.get(); }
+    friend bool operator!=(const ValueRef& a, const ValuePtr& b) noexcept { return a._value != b.get(); }
+    friend bool operator==(const ValuePtr& a, const ValueRef& b) noexcept { return a.get() == b._value; }
+    friend bool operator!=(const ValuePtr& a, const ValueRef& b) noexcept { return a.get() != b._value; }
+
+private:
+    Value* _value = nullptr;
+};
+
 // A value as the VM keeps it: a number or boolean in place, a string or an
 // object by reference. Cheap to copy; the host converts to and from
 // ValuePtr implicitly.
@@ -61,7 +109,7 @@ public:
         bool flag;
     };
     // A string's or an object's Value.
-    ValuePtr ref;
+    ValueRef ref;
 
     Val() noexcept : tag(Tag::Undefined), num(0) {}
     Val(const Val& other) = default;
@@ -244,6 +292,10 @@ public:
     // twice gives the same function (as removeEventListener needs).
     std::unique_ptr<std::unordered_map<const void*, ValuePtr>> boundMethods;
 
+    // The Vals holding it, and while there are any, itself (see ValueRef).
+    uint32_t valCount = 0;
+    ValuePtr heldByVals;
+
     Value()
         : type(ValueType::Undefined)
         , boolValue(false)
@@ -290,6 +342,62 @@ public:
     // Utility
     std::string typeName() const;
 };
+
+// The last Val let go of the Value: its own hold goes (and with it the
+// Value, when nothing else holds it).
+void releaseValue(Value* value) noexcept;
+
+inline ValueRef::ValueRef(const ValueRef& other) noexcept : _value(other._value) {
+    if (_value) ++_value->valCount;
+}
+
+inline ValueRef::ValueRef(const ValuePtr& value) noexcept : _value(value.get()) {
+    if (_value && _value->valCount++ == 0) _value->heldByVals = value;
+}
+
+inline ValueRef::ValueRef(ValuePtr&& value) noexcept : _value(value.get()) {
+    if (_value && _value->valCount++ == 0) _value->heldByVals = std::move(value);
+}
+
+inline ValueRef::~ValueRef() {
+    if (_value && --_value->valCount == 0) releaseValue(_value);
+}
+
+inline ValueRef& ValueRef::operator=(const ValueRef& other) noexcept {
+    // The new hold first: other may be held only by what this lets go.
+    if (other._value) ++other._value->valCount;
+    Value* old = _value;
+    _value = other._value;
+    if (old && --old->valCount == 0) releaseValue(old);
+    return *this;
+}
+
+inline ValueRef& ValueRef::operator=(ValueRef&& other) noexcept {
+    if (this != &other) {
+        Value* old = _value;
+        _value = other._value;
+        other._value = nullptr;
+        if (old && --old->valCount == 0) releaseValue(old);
+    }
+    return *this;
+}
+
+inline void ValueRef::reset() noexcept {
+    if (_value) {
+        Value* old = _value;
+        _value = nullptr;
+        if (--old->valCount == 0) releaseValue(old);
+    }
+}
+
+inline long ValueRef::use_count() const noexcept {
+    return _value ? _value->heldByVals.use_count() - 1 + static_cast<long>(_value->valCount) : 0;
+}
+
+inline ValueRef::operator const ValuePtr&() const noexcept {
+    static const ValuePtr none;
+    return _value ? _value->heldByVals : none;
+}
 
 // An object whose properties the host program works out itself, such as a
 // movie clip's _x or its gotoAndStop method. What the host does not answer
