@@ -813,6 +813,8 @@ as3.trace(found["let x = 1;"], found["return x + 1;"], found["class A {"], found
             for (auto& program : testPrograms(file)) programs.push_back(program);
         }
         for (auto& program : testPrograms("vm_tests.cpp", "executeAndVerify")) programs.push_back(program);
+        programs.emplace_back("examples/classes_demo.as",
+                              readText(fs::path(__FILE__).parent_path().parent_path() / "examples/classes_demo.as"));
         size_t untranslated = 0;
         for (const auto& program : programs) {
             wanted.push_back(runInVm(program.second));
