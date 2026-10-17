@@ -2153,7 +2153,7 @@ E Translator::identifier(Identifier* id) {
         if (ref.kind == Ref::Unknown) return make(dotted(withs.front(), name), P_Primary, ref.type);
         return make(withRead(name, text, withs), P_Cond, Ty());
     }
-    return make(text, ref.kind == Ref::Member || ref.kind == Ref::Static ? P_Primary : P_Primary, ref.type);
+    return make(text, P_Primary, ref.type);
 }
 
 E Translator::literal(Literal* lit) {
