@@ -341,6 +341,36 @@ std::vector<Metadata> Parser::takeMetadata() {
     return taken;
 }
 
+bool Parser::atConfigCondition() const {
+    if (!check(TokenType::Identifier) || peek(1).type != TokenType::DoubleColon || !isPropertyNameToken(peek(2))) {
+        return false;
+    }
+    const Token& next = peek(3);
+    if (next.type == TokenType::LBrace) {
+        return true;
+    }
+    if (next.type != TokenType::Keyword) {
+        return false;
+    }
+    switch (next.keyword) {
+        case KeywordType::Function: case KeywordType::Var: case KeywordType::Const: case KeywordType::Public:
+        case KeywordType::Private: case KeywordType::Protected: case KeywordType::Internal:
+        case KeywordType::Static: case KeywordType::Override: case KeywordType::Final: case KeywordType::Class:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool Parser::readConfigCondition() {
+    const std::string name = tokenWord(currentToken()) + "::" + tokenWord(peek(2));
+    advance();
+    advance();
+    advance();
+    auto found = _constants.find(name);
+    return found != _constants.end() && found->second == "true";
+}
+
 std::unique_ptr<Program> Parser::parse() {
     auto program = std::make_unique<Program>();
     program->fileName = _fileName;
@@ -454,6 +484,15 @@ std::unique_ptr<AstNode> Parser::parseTopLevel() {
         return parsePackage();
     }
 
+    if (atConfigCondition()) {
+        const bool kept = readConfigCondition();
+        auto node = parseTopLevel();
+        if (!kept) {
+            return std::make_unique<EmptyStatement>();
+        }
+        return node;
+    }
+
     if (looksLikeMetadata()) {
         parseMetadata();
         return parseTopLevel();
@@ -547,6 +586,14 @@ std::unique_ptr<Statement> Parser::parseStatement() {
 }
 
 std::unique_ptr<Statement> Parser::parseStatementBody() {
+    if (atConfigCondition()) {
+        const bool kept = readConfigCondition();
+        auto statement = parseStatement();
+        if (!kept) {
+            return std::make_unique<EmptyStatement>();
+        }
+        return statement;
+    }
     if (check(TokenType::LBrace)) {
         return parseBlockStatement();
     }
@@ -1179,6 +1226,17 @@ std::unique_ptr<Statement> Parser::parseClassDeclaration(std::vector<AttributePt
             parseUseOrInclude();
             continue;
         }
+        // CONFIG::debug before a member: kept or left out.
+        bool keepMember = true;
+        if (atConfigCondition()) {
+            keepMember = readConfigCondition();
+            if (check(TokenType::LBrace)) {
+                auto block = parseBlockStatement();
+                if (keepMember && block) members.push_back(std::move(block));
+                continue;
+            }
+        }
+        const size_t membersBefore = members.size();
         auto attrs = parseAttributes();
 
         if (check(KeywordType::Function)) {
@@ -1206,6 +1264,9 @@ std::unique_ptr<Statement> Parser::parseClassDeclaration(std::vector<AttributePt
         } else {
             addError("Expected function, variable, or property after attributes");
             synchronize();
+        }
+        if (!keepMember && members.size() > membersBefore) {
+            members.resize(membersBefore);
         }
         if (_position == before) {
             advance();
@@ -1686,9 +1747,33 @@ std::unique_ptr<Expression> Parser::parsePrimaryExpression() {
     const int line = static_cast<int>(currentToken().start.line);
     if (isNameToken(currentToken())) {
         auto id = parseIdentifier();
-        // ns::name and CONFIG::debug: the name.
+        // ns::name: the name; CONFIG::debug, a constant: its value.
         if (check(TokenType::DoubleColon) && isPropertyNameToken(peek(1))) {
             advance();
+            auto constant = _constants.find(id->name + "::" + tokenWord(currentToken()));
+            if (constant != _constants.end() || id->name == "CONFIG") {
+                advance();
+                const std::string value = constant == _constants.end() ? "false" : constant->second;
+                if (value == "true" || value == "false") {
+                    auto literal = std::make_unique<Literal>(Literal::LiteralKind::Boolean);
+                    literal->valueType = Literal::LiteralValueType::Bool;
+                    literal->boolValue = value == "true";
+                    literal->line = line;
+                    return literal;
+                }
+                if (!value.empty() && (value[0] == '"' || value[0] == '\'')) {
+                    auto literal = std::make_unique<Literal>(Literal::LiteralKind::String);
+                    literal->valueType = Literal::LiteralValueType::String;
+                    literal->stringValue = value.substr(1, value.size() >= 2 ? value.size() - 2 : 0);
+                    literal->line = line;
+                    return literal;
+                }
+                auto literal = std::make_unique<Literal>(Literal::LiteralKind::Numeric);
+                literal->valueType = Literal::LiteralValueType::Number;
+                literal->numberValue = std::strtod(value.c_str(), nullptr);
+                literal->line = line;
+                return literal;
+            }
             auto qualified = std::make_unique<Identifier>(tokenWord(currentToken()));
             qualified->namespacePrefix = id->name;
             qualified->line = line;

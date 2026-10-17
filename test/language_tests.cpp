@@ -306,6 +306,59 @@ static void init_language_tests() {
                "3 2,7 1,2 2 0\n");
     });
 
+    suite.addTest("Metadata is kept for the host", []() {
+        VM vm;
+        run(vm, "package art {\n"
+                "  [Event(name=\"change\", type=\"flash.events.Event\")]\n"
+                "  public class Assets {\n"
+                "    [Embed(source=\"brush.png\", mimeType=\"image/png\")] public static var Brush:Class;\n"
+                "    [Bindable] public var size:int;\n"
+                "  }\n"
+                "}\n");
+        auto cls = vm.findClass("art.Assets");
+        if (!cls || !cls->metadata || cls->metadata->at(0).name != "Event" ||
+            cls->metadata->at(0).arguments.at(1).second != "flash.events.Event") {
+            throw std::runtime_error("class metadata missing");
+        }
+        const Trait* brush = cls->findStatic("Brush");
+        if (!brush || !brush->metadata || brush->metadata->at(0).name != "Embed" ||
+            brush->metadata->at(0).arguments.at(0).first != "source" ||
+            brush->metadata->at(0).arguments.at(0).second != "brush.png") {
+            throw std::runtime_error("member metadata missing");
+        }
+        const Trait* size = cls->findTrait("size");
+        if (!size || !size->metadata || size->metadata->at(0).name != "Bindable") {
+            throw std::runtime_error("field metadata missing");
+        }
+    });
+
+    suite.addTest("Conditional compilation constants", []() {
+        Parser parser("CONFIG::debug { trace('debug'); }\n"
+                      "CONFIG::release { trace('release'); }\n"
+                      "class C {\n"
+                      "  CONFIG::debug public function f():String { return 'debug f'; }\n"
+                      "  CONFIG::release public function f():String { return 'release f'; }\n"
+                      "}\n"
+                      "trace(new C().f(), CONFIG::debug, CONFIG::level + 1, CONFIG::name, CONFIG::unknown);\n");
+        parser.defineConstant("CONFIG::debug", "true");
+        parser.defineConstant("CONFIG::release", "false");
+        parser.defineConstant("CONFIG::level", "2");
+        parser.defineConstant("CONFIG::name", "\"phoenix\"");
+        auto program = parser.parse();
+        if (parser.hasErrors()) throw std::runtime_error(parser.getErrors());
+        VM vm;
+        std::string out;
+        vm.defineFunction("trace", [&out](VM& vm, const Val&, Args args) {
+            for (size_t i = 0; i < args.size(); ++i) out += (i ? " " : "") + vm.toString(args[i]);
+            out += "\n";
+            return Val();
+        });
+        Compiler compiler;
+        vm.execute(compiler.compile(program.get()));
+        if (vm.hasError()) throw std::runtime_error(vm.getError());
+        expect(out, "debug\ndebug f true 3 phoenix false\n");
+    });
+
     suite.addTest("Const locals and labeled blocks", []() {
         expect(run("function f():int { const K:int = 4; return K * 2; } trace(f());"), "8\n");
     });

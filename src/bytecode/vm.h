@@ -397,8 +397,10 @@ public:
     Val applyType(const Val& base, const std::vector<Val>& types);
     std::shared_ptr<ClassInfo> vectorClass(const Val& elementType);
     Val makeIterator(const Val& object, bool each);
-    bool findOnObject(const Val& object, const std::string& name, Val& value);
-    bool setOnObject(const Val& object, const std::string& name, const Val& value);
+    // A name on an object: its class's members, then (unless only those)
+    // its host's and dynamic properties.
+    bool findOnObject(const Val& object, const std::string& name, Val& value, bool traitsOnly = false);
+    bool setOnObject(const Val& object, const std::string& name, const Val& value, bool traitsOnly = false);
     Val classValue(const ClassInfo* cls);
     // A package by name (a, a.b) when definitions are under it, else
     // undefined.

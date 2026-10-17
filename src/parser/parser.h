@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <map>
 #include "../lexer/lexer.h"
 #include "../lexer/token.h"
 #include "../ast/ast_nodes.h"
@@ -31,6 +32,14 @@ public:
     const std::string& getWarnings() const { return _warnings; }
     void setStrict(bool strict) { _strict = strict; }
 
+    // A conditional compilation constant, as CONFIG::debug: its value as
+    // written ("true", "false", a number or a quoted string). A block or
+    // definition after one is kept when it is true and left out when it is
+    // false; one not defined is false. In an expression it is its value.
+    void defineConstant(const std::string& qualifiedName, const std::string& value) {
+        _constants[qualifiedName] = value;
+    }
+
 private:
     Lexer _lexer;
     std::vector<Token> _tokens;
@@ -44,6 +53,10 @@ private:
     bool _noIn = false;
     // Metadata read before a definition, for it.
     std::vector<Metadata> _pendingMetadata;
+    std::map<std::string, std::string> _constants;
+    // ns::name before a block or a definition: whether that is kept.
+    bool atConfigCondition() const;
+    bool readConfigCondition();
 
     const Token& currentToken() const;
     const Token& peek(int offset = 0) const;

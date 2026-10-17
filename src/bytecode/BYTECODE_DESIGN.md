@@ -2,9 +2,7 @@
 
 ## Overview
 
-This is a **stack-based virtual machine** for executing ActionScript-like bytecode. The design prioritizes simplicity, debuggability, and performance.
-
-## Architecture
+A **stack-based virtual machine** for ActionScript 3. The parser makes an AST; the compiler turns each function into bytecode (and each class into a template); the VM runs it.
 
 ```
 ┌────────────┐     ┌──────────────┐     ┌────────────┐
@@ -13,219 +11,107 @@ This is a **stack-based virtual machine** for executing ActionScript-like byteco
 └────────────┘     └──────────────┘     └────────────┘
 ```
 
-### Components
+## Values
 
-1. **OpCodes** (`opcode.h/cpp`)
-   - 90+ instruction opcodes
-   - Stack-based operations
-   - Optimized for common patterns
+`Val` (runtime/value.h) is what the stack, locals, fields and arrays hold: a tag, a number or boolean in place, and a `std::shared_ptr<Value>` for a string or an object. Copying a number touches no reference count.
 
-2. **Chunk** (`chunk.h/cpp`)
-   - Bytecode container
-   - Constant pool
-   - Debug information (line numbers)
-   - Disassembler
+`Value` is the heap object: a string's text, an object's dynamic properties (`PropertyMap`, made on first use), an array's elements, an instance's fields (`slots`), a function's `FunctionInfo`, a class's `ClassInfo`, and the host's `HostObject`. Older host code uses `ValuePtr` (`std::shared_ptr<Value>`); `Val` converts to and from it.
 
-3. **Compiler** (`compiler.h/cpp`)
-   - AST → Bytecode translation
-   - Local variable resolution
-   - Upvalue (closure) handling
-   - Jump patching for control flow
+## Classes
 
-4. **VM** (`vm.h/cpp`)
-   - Instruction dispatch loop
-   - Value stack
-   - Call frames
-   - Global variables
-   - Native function callbacks
-   - Class and OOP support
-   - Native interop (registerBuiltin, defineExternClass, registerObject)
+A `ClassInfo` has the class's qualified name, its superclass and interfaces, and its members as `Trait`s:
+- instance traits, flattened (a subclass starts with a copy of its superclass's and overrides by name): a field's slot, a method's function, an accessor's getter and setter;
+- static traits, the class's own, with their slots on the class;
+- prototype methods, found after an object's dynamic properties.
+
+A script class is compiled to a `ClassTemplate` (members, a constructor function that runs the field initializers and then the body, a static initializer); `OP_DEFINE_CLASS` makes the `ClassInfo` when it runs, resolving the superclass by name then (asking the class resolver if needed). Native classes are made by `NativeClassBuilder` into the same `ClassInfo`, so the two mix freely.
+
+## Functions and calls
+
+Each function is a `BytecodeFunction`: its code, constants and names, its locals (parameters first) and captured variables, its exception handlers and its inline caches.
+
+A call pushes a `CallFrame`: where its locals start on the stack (the arguments become the first locals in place), where the result goes, `this`, the instance its names find (for a method, `this`; for a function made in a method, that method's instance), the timeline scope (frame scripts), and the class it belongs to (for `super` and statics). Frames are made once and used again.
+
+Variables are function-scoped. A local that a closure uses is a `Cell`, shared by the function and its closures (so every closure made in a loop sees the one variable, as in ActionScript); the compiler works out which from the names the nested functions use.
+
+A name that is not a local, a captured variable or a member of the class being compiled is looked up when it runs (`OP_GET_NAME`): on the instance (inherited and native members), the class's statics and its superclasses', the timeline, the imports, the package, the globals, then the wildcard imports and the class resolver. What is found among the globals is cached at the instruction.
+
+## Inline caches
+
+`OP_GET_PROP`, `OP_SET_PROP`, `OP_CALL_PROP` and their fused forms (`OP_GET_THIS_PROP`, `OP_GET_LOCAL_PROP`, `OP_SET_THIS_PROP`, `OP_SET_LOCAL_PROP`, `OP_CALL_THIS_PROP`, `OP_CALL_LOCAL_PROP`) keep the class last seen and its trait. When the object is of that class again, a field is read or written by its slot, a getter, setter or method runs at once (a script one in a frame of the same loop, a native one directly), with no lookup by name. The fused forms read the object from a local or the instance without putting it on the stack.
+
+## Exceptions
+
+`throw` and runtime errors raise a C++ `ScriptException` holding the value. The loop catches it and looks for a handler in the frames, innermost first: each function's handlers are ranges of its code with where to go. `finally` blocks are compiled into each way out of the `try` (falling out, `break`, `continue`, `return`), outside its handler's range, and into a handler that runs them and throws again. A native function calling a script (sort's compare function, a listener) runs a nested loop; an exception not handled there goes on through the native to the outer loop.
 
 ## Instruction Set
 
-### Stack Operations
+Operands follow the opcode: u8, u16 (indices) and s32 (jumps, relative to the end of the instruction).
+
 ```
-OP_POP          - Pop top value
-OP_DUP          - Duplicate top value
-OP_SWAP         - Swap top two values
+Constants      CONSTANT, UNDEFINED, NULL, TRUE, FALSE, ZERO, ONE
+Stack          POP, DUP, DUP2, SWAP, DUP_X1, DUP_X2
+Locals         GET_LOCAL, SET_LOCAL, PUT_LOCAL, INC_LOCAL
+Captured       GET_CELL, SET_CELL, PUT_CELL, GET_UPVALUE, SET_UPVALUE, PUT_UPVALUE
+Names          GET_NAME, SET_NAME, TYPEOF_NAME, DEFINE_VAR, DEFINE_FUNCTION, GET_QNAME
+Properties     GET_PROP, SET_PROP, DELETE_PROP, GET_INDEX, SET_INDEX, DELETE_INDEX,
+               GET_SUPER, SET_SUPER, GET_THIS_PROP, SET_THIS_PROP, GET_LOCAL_PROP, SET_LOCAL_PROP
+Arithmetic     ADD, SUBTRACT, MULTIPLY, DIVIDE, MODULO, NEGATE, TO_NUMBER, INCREMENT, DECREMENT
+Comparison     EQUAL, NOT_EQUAL, STRICT_EQUAL, STRICT_NOT_EQUAL, LESS, LESS_EQUAL, GREATER, GREATER_EQUAL
+Logic, bits    NOT, BIT_AND, BIT_OR, BIT_XOR, BIT_NOT, LEFT_SHIFT, RIGHT_SHIFT, UNSIGNED_RIGHT_SHIFT
+Types          TYPEOF, INSTANCEOF, IN, IS, AS, COERCE (to int, uint, Number, String, Boolean, or null)
+Jumps          JUMP, JUMP_IF_FALSE, JUMP_IF_TRUE, and the _KEEP forms for && || ??
+Calls          CALL, CALL_PROP, CALL_NAME, CALL_INDEX, CALL_SUPER, CALL_THIS_PROP, CALL_LOCAL_PROP,
+               SUPER_CTOR, NEW, RETURN, RETURN_UNDEFINED, DEFAULT_ARG
+Context        THIS, SCOPE_THIS, OWNER_CLASS, CLOSURE
+Making         NEW_ARRAY, NEW_OBJECT, NEW_VECTOR, NEW_REGEXP, APPLY_TYPE, DEFINE_CLASS
+Other          THROW, ITER_INIT, ITER_NEXT, NOP
 ```
 
-### Constants
-```
-OP_CONSTANT     - Push constant [u16 index]
-OP_TRUE         - Push true
-OP_FALSE        - Push false
-OP_NULL         - Push null
-OP_UNDEFINED    - Push undefined
-OP_NUMBER_0/1   - Push 0 or 1 (optimized)
-```
+`int` and `uint` are not types of values: numbers are doubles, and `COERCE` (or `INC_LOCAL`'s coercion, or a field's trait) wraps what is stored where a type is declared.
 
-### Variables
-```
-OP_GET_GLOBAL   - Get global var [u16 name]
-OP_SET_GLOBAL   - Set global var [u16 name]
-OP_GET_LOCAL    - Get local var [u8 slot]
-OP_SET_LOCAL    - Set local var [u8 slot]
-OP_GET_UPVALUE  - Get closure var [u8 index]
-OP_SET_UPVALUE  - Set closure var [u8 index]
-```
+### Example
 
-### Arithmetic
-```
-OP_ADD, OP_SUBTRACT, OP_MULTIPLY, OP_DIVIDE, OP_MODULO
-OP_POWER, OP_NEGATE
-```
-
-### Comparison
-```
-OP_EQUAL, OP_NOT_EQUAL            (== !=)
-OP_STRICT_EQUAL, OP_STRICT_NOT_EQUAL  (=== !==)
-OP_LESS, OP_LESS_EQUAL, OP_GREATER, OP_GREATER_EQUAL
-```
-
-### Control Flow
-```
-OP_JUMP          - Unconditional [s16 offset]
-OP_JUMP_IF_FALSE - Jump if falsy [s16 offset]
-OP_JUMP_IF_TRUE  - Jump if truthy [s16 offset]
-OP_LOOP          - Jump backward [u16 offset]
-```
-
-### Functions
-```
-OP_CALL          - Call function [u8 arg_count]
-OP_CLOSURE       - Create closure [u16 func_index]
-OP_RETURN        - Return from function
-```
-
-### Objects & Arrays
-```
-OP_NEW_ARRAY     - Create array [u16 count]
-OP_NEW_OBJECT    - Create object [u16 count]
-OP_GET_PROPERTY  - Get property [u16 name]
-OP_SET_PROPERTY  - Set property [u16 name]
-OP_GET_INDEX     - Array/object access
-OP_SET_INDEX     - Array/object assignment
-```
-
-## Example Compilation
-
-### Source Code
 ```actionscript
-function add(a, b) {
-    return a + b;
+class Particle {
+    public var x:Number = 0;
+    public function step(dx:Number):Number { x += dx; return x; }
 }
-var result = add(5, 3);
-trace(result);
+function loop():void {
+    var p:Particle = new Particle();
+    for (var i:int = 0; i < 1000; i++) p.step(0.25);
+}
 ```
 
-### Bytecode
+`step` and `loop` compile to:
+
 ```
-== <script> ==
-0000    1 OP_CLOSURE       0 'add'
-0003    | OP_DEFINE_GLOBAL 0 'add'
-0006    2 OP_GET_GLOBAL    0 'add'
-0009    | OP_NUMBER_0
-0010    | OP_NUMBER        5.0
-0019    | OP_NUMBER        3.0
-0028    | OP_CALL          2
-0030    | OP_DEFINE_GLOBAL 1 'result'
-0033    3 OP_GET_GLOBAL    2 'trace'
-0036    | OP_GET_GLOBAL    1 'result'
-0039    | OP_CALL          1
-0041    | OP_POP
-0042    | OP_UNDEFINED
-0043    | OP_RETURN
-
-== add ==
-0000    2 OP_GET_LOCAL     0
-0002    | OP_GET_LOCAL     1
-0004    | OP_ADD
-0005    | OP_RETURN
+== step ==
+0000    1 GET_THIS_PROP             'x'
+0005    | GET_LOCAL                 0
+0008    | ADD
+0009    | SET_THIS_PROP             'x'
+0014    | POP
+0015    | GET_THIS_PROP             'x'
+0020    | COERCE                    3
+0022    | RETURN
+== loop ==
+0000    1 GET_NAME                  'Particle'
+0005    | NEW                       0
+0007    | COERCE                    6
+0009    | PUT_LOCAL                 0
+0012    | ZERO
+0013    | COERCE                    1
+0015    | PUT_LOCAL                 1
+0018    | JUMP                      -> 39
+0023    | UNDEFINED
+0024    | CONSTANT                  0 '0.25'
+0027    | CALL_LOCAL_PROP           local 0 'step'
+0035    | POP
+0034    | INC_LOCAL                 1
+0039    | GET_LOCAL                 1
+0042    | CONSTANT                  1 '1000'
+0045    | LESS
+0046    | JUMP_IF_TRUE              -> 23
+0051    | RETURN_UNDEFINED
 ```
-
-### Optimizations Implemented
-
-1. **Instruction Compaction**
-   - Common constants: OP_NUMBER_0, OP_NUMBER_1, OP_TRUE, OP_FALSE
-   - 1-byte opcodes for frequent operations
-
-2. **Local Variable Optimization**
-   - Stack slots for locals (no hash lookup)
-   - 1-byte addressing (up to 256 locals)
-
-3. **Constant Pool**
-   - Deduplication of constants
-   - Efficient string/number storage
-
-4. **Jump Patching**
-   - Pre-computed jump offsets
-   - No runtime label resolution
-
-### Future Optimizations (Not Implemented)
-
-1. **Method Caching**
-   - OP_INVOKE for direct method calls
-   - Inline caching for property access
-
-2. **Type Specialization**
-   - Separate int/float operations
-   - Specialized array operations
-
-3. **JIT Compilation**
-   - Hot loop detection
-   - Native code generation
-
-4. **Garbage Collection**
-   - Currently uses shared_ptr (reference counting)
-   - Could use mark-sweep or generational GC
-
-## Usage
-
-### Basic Compilation & Execution
-```cpp
-// Compile
-as3::Compiler compiler;
-auto bytecode = compiler.compile(program);
-
-// Disassemble (debug)
-bytecode->chunk.disassemble("main");
-
-// Execute
-as3::VM vm;
-vm.execute(bytecode);
-```
-
-### Custom Built-in Functions
-```cpp
-as3::VM vm;
-vm.registerBuiltin("double", [](const std::vector<as3::ValuePtr>& args) {
-    return as3::Value::makeNumber(args[0]->toNumber() * 2);
-});
-// Now usable in AS3: double(21) returns 42
-```
-
-### Extern Classes
-```cpp
-vm.defineExternClass("Math", {
-    {"abs", [](const std::vector<as3::ValuePtr>& args) {
-        return as3::Value::makeNumber(std::abs(args[0]->toNumber()));
-    }}
-});
-// Now usable in AS3: new Math().abs(-5)
-```
-
-### Pre-registered Objects
-```cpp
-vm.defineExternClass("Shape", {...});
-vm.registerObject("hair01", "Shape");
-// Now usable in AS3: hair01.getType()
-```
-
-## Next Steps
-
-- [ ] Improved garbage collection
-- [ ] Inline caching
-- [ ] Method dispatch optimization
-- [ ] Computed goto for dispatch
-- [ ] JIT compilation

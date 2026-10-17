@@ -435,9 +435,12 @@ void VM::writeTrait(const Val& object, const Trait& trait, const Val& value, con
 
 // Properties
 
-bool VM::findOnObject(const Val& object, const std::string& name, Val& value) {
+bool VM::findOnObject(const Val& object, const std::string& name, Val& value, bool traitsOnly) {
     Value* self = object.ref.get();
     if (self->type == ValueType::Class) {
+        if (traitsOnly) {
+            return false;
+        }
         if (self->cls) {
             if (const Trait* trait = self->cls->findStatic(name)) {
                 value = readTrait(object, *trait, true);
@@ -457,6 +460,9 @@ bool VM::findOnObject(const Val& object, const std::string& name, Val& value) {
             return true;
         }
     }
+    if (traitsOnly) {
+        return false;
+    }
     if (self->host) {
         if (ValuePtr found = self->host->get(name)) {
             value = Val(found);
@@ -470,9 +476,12 @@ bool VM::findOnObject(const Val& object, const std::string& name, Val& value) {
     return false;
 }
 
-bool VM::setOnObject(const Val& object, const std::string& name, const Val& value) {
+bool VM::setOnObject(const Val& object, const std::string& name, const Val& value, bool traitsOnly) {
     Value* self = object.ref.get();
     if (self->type == ValueType::Class) {
+        if (traitsOnly) {
+            return false;
+        }
         if (self->cls) {
             if (const Trait* trait = self->cls->findStatic(name)) {
                 writeTrait(object, *trait, value, name, true);
@@ -491,6 +500,9 @@ bool VM::setOnObject(const Val& object, const std::string& name, const Val& valu
             writeTrait(object, *trait, value, name, false);
             return true;
         }
+    }
+    if (traitsOnly) {
+        return false;
     }
     if (self->host && self->host->set(name, value)) {
         return true;
@@ -891,7 +903,9 @@ Val* VM::globalSlot(const std::string& name) {
 
 bool VM::lookupName(CallFrame& frame, const std::string& name, Val& value, Val* receiver, PropertyCache* cache) {
     const Val& self = frame.scopeSelf();
-    if (self.isObject() && findOnObject(self, name, value)) {
+    // The instance's members (its class's, native ones too), then the
+    // class's statics.
+    if (self.isObject() && findOnObject(self, name, value, true)) {
         if (receiver) *receiver = self;
         return true;
     }
@@ -903,8 +917,25 @@ bool VM::lookupName(CallFrame& frame, const std::string& name, Val& value, Val* 
             return true;
         }
     }
-    if (frame.scope.isObject() && frame.scope.ref != self.ref && findOnObject(frame.scope, name, value)) {
-        if (receiver) *receiver = frame.scope;
+    if (frame.scope.isObject()) {
+        // On a timeline (a frame script, or a function the host runs on
+        // one), a global wins over the timeline's own properties: the
+        // global gotoAndStop over the clip's.
+        if (findGlobal(name, value)) {
+            if (receiver) *receiver = Val();
+            return true;
+        }
+        if (self.isObject() && self.ref != frame.scope.ref && findOnObject(self, name, value, false)) {
+            if (receiver) *receiver = self;
+            return true;
+        }
+        if (findOnObject(frame.scope, name, value, false)) {
+            if (receiver) *receiver = frame.scope;
+            return true;
+        }
+    } else if (self.isObject() && findOnObject(self, name, value, false)) {
+        // An instance's dynamic properties, and a host object's.
+        if (receiver) *receiver = self;
         return true;
     }
     bool found = false;
@@ -959,7 +990,7 @@ bool VM::lookupName(CallFrame& frame, const std::string& name, Val& value, Val* 
 
 void VM::assignName(CallFrame& frame, const std::string& name, const Val& value) {
     const Val& self = frame.scopeSelf();
-    if (self.isObject() && setOnObject(self, name, value)) {
+    if (self.isObject() && setOnObject(self, name, value, true)) {
         return;
     }
     for (ClassInfo* at = frame.owner; at; at = at->base.get()) {
@@ -968,16 +999,25 @@ void VM::assignName(CallFrame& frame, const std::string& name, const Val& value)
             return;
         }
     }
-    if (frame.scope.isObject() && frame.scope.ref != self.ref && setOnObject(frame.scope, name, value)) {
+    if (frame.scope.isObject()) {
+        // On a timeline: a global already there, else the timeline's.
+        if (Val* global = globalSlot(name)) {
+            *global = value;
+            ++namesVersion;
+            return;
+        }
+        if (self.isObject() && self.ref != frame.scope.ref && setOnObject(self, name, value, false)) {
+            return;
+        }
+        setProp(frame.scope, name, value, nullptr);
+        return;
+    }
+    if (self.isObject() && setOnObject(self, name, value, false)) {
         return;
     }
     if (Val* global = globalSlot(name)) {
         *global = value;
         ++namesVersion;
-        return;
-    }
-    if (frame.scope.isObject()) {
-        setProp(frame.scope, name, value, nullptr);
         return;
     }
     globals[name] = value;
@@ -1234,8 +1274,9 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
             warnings.push_back("The interface " + faceName + " of " + klass->qualifiedName + " is not defined.");
         }
     }
-    cls->ownMetadata = std::make_shared<std::vector<Metadata>>(klass->metadata);
-    cls->metadata = cls->ownMetadata.get();
+    if (!klass->metadata.empty()) {
+        cls->metadata = std::make_shared<std::vector<Metadata>>(klass->metadata);
+    }
 
     auto object = std::make_shared<Value>();
     object->type = ValueType::Class;
@@ -1247,6 +1288,10 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
     for (const MemberTemplate& member : klass->members) {
         const Coerce coerce = coerceForType(member.typeName);
         std::unordered_map<std::string, Trait>& table = member.isStatic ? cls->statics : cls->traits;
+        std::shared_ptr<std::vector<Metadata>> metadata;
+        if (!member.metadata.empty()) {
+            metadata = std::make_shared<std::vector<Metadata>>(member.metadata);
+        }
         switch (member.kind) {
             case MemberTemplate::Kind::Var:
             case MemberTemplate::Kind::Const: {
@@ -1256,6 +1301,7 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
                 trait.coerce = coerce;
                 trait.declaredBy = cls.get();
                 trait.typeName = member.typeName;
+                trait.metadata = metadata;
                 const Val initial = member.hasLiteral ? member.literal : defaultForCoerce(coerce);
                 if (member.isStatic) {
                     trait.slot = static_cast<uint32_t>(cls->staticSlots.size());
@@ -1276,6 +1322,7 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
                 trait.kind = TraitKind::Method;
                 trait.isFinal = member.isFinal;
                 trait.declaredBy = cls.get();
+                trait.metadata = metadata;
                 trait.method = makeClosure(member.function, cls);
                 table[member.name] = trait;
                 if (!member.isStatic) {
@@ -1297,6 +1344,7 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
                 trait.declaredBy = cls.get();
                 trait.coerce = coerce;
                 trait.typeName = member.typeName;
+                if (metadata) trait.metadata = metadata;
                 Val function = makeClosure(member.function, cls);
                 if (member.kind == MemberTemplate::Kind::Getter) {
                     trait.getter = function;

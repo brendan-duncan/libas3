@@ -375,6 +375,8 @@ struct Trait {
     Val setter;
     ClassInfo* declaredBy = nullptr;
     std::string typeName;
+    // Its metadata tags ([Embed(...)], [Bindable]...), if it has any.
+    std::shared_ptr<std::vector<Metadata>> metadata;
 };
 
 // A class: its name, its superclass and interfaces, and its members, those
@@ -419,8 +421,8 @@ struct ClassInfo {
     std::string elementTypeName;
 
     std::weak_ptr<Value> classObject;
-    std::vector<Metadata>* metadata = nullptr;
-    std::shared_ptr<std::vector<Metadata>> ownMetadata;
+    // The class's metadata tags ([Event(...)], [SWF(...)]), if any.
+    std::shared_ptr<std::vector<Metadata>> metadata;
 
     // Whether this class is that one, extends it or implements it.
     bool isSubclassOf(const ClassInfo* other) const;
