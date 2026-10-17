@@ -215,9 +215,10 @@ as3.adopt = adopt;
 // What a name not defined stands for: anything done with it throws, as in
 // a player, but only when it is done (a class may import what is not
 // there and not use it).
-function undefinedName(name) {
+// A definition whose making failed stands for the error the same way.
+function undefinedName(name, error) {
     const fail = () => {
-        throw new as3.ReferenceError("Error #1065: Variable " + splitName(name)[1] + " is not defined.", 1065);
+        throw error || new as3.ReferenceError("Error #1065: Variable " + splitName(name)[1] + " is not defined.", 1065);
     };
     return new Proxy(function () {}, { get: fail, set: fail, has: fail, apply: fail, construct: fail });
 }
@@ -225,7 +226,13 @@ function undefinedName(name) {
 // The definition of a qualified name, defined now if it is not yet.
 as3.use = function (name) {
     const entry = lookup(definitions, name);
-    if (entry) return load(entry);
+    if (entry) {
+        try {
+            return load(entry);
+        } catch (error) {
+            return undefinedName(name, error);
+        }
+    }
     const value = topLevelValue(name);
     if (value !== undefined) return value;
     const found = outside(String(name).replace("::", "."));
