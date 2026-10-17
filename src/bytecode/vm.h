@@ -249,6 +249,11 @@ public:
     // "C" for one without a package), compiles and runs it, and goes on.
     // The host answers nothing for names it does not have.
     void setClassResolver(ClassResolver resolver) { classResolver = std::move(resolver); }
+    // Definitions the host has as values rather than source (the classes
+    // of ABC loaded with abc::Domain): asked for a qualified name before
+    // the class resolver, true with the value when it has it.
+    using DefinitionProvider = std::function<bool(const std::string& qualifiedName, Val& value)>;
+    void addDefinitionProvider(DefinitionProvider provider) { definitionProviders.push_back(std::move(provider)); }
     // What include "file.as" reads, in what load and the class resolver
     // compile.
     void setIncludeResolver(IncludeResolver resolver) { includeResolver = std::move(resolver); }
@@ -355,6 +360,7 @@ private:
     std::unordered_map<std::string, Val> globals;
     std::unordered_map<std::string, Val> definitions;
     ClassResolver classResolver;
+    std::vector<DefinitionProvider> definitionProviders;
     IncludeResolver includeResolver;
     std::set<std::string> missing;
     std::set<std::string> loading;

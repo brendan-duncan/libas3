@@ -38,6 +38,7 @@ add_library(as3_parser
     src/abc/abc_compiler.cpp
     src/avm1/avm1_compiler.cpp
     src/avm1/avm1_disassembler.cpp
+    src/abc/abc_domain.cpp
 )
 
 target_include_directories(as3_parser PUBLIC
@@ -71,6 +72,7 @@ add_executable(as3_tests
     test/abc_tests.cpp
     test/abc_compiler_tests.cpp
     test/avm1_tests.cpp
+    test/abc_domain_tests.cpp
 )
 
 target_include_directories(as3_tests PRIVATE
