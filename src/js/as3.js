@@ -915,6 +915,11 @@ as3.error = function (thrown) {
     } else {
         made = new as3.Error(message);
     }
+    // A runtime's own error (with its errorID) keeps its message and id.
+    if (typeof thrown.errorID === "number") {
+        made.message = message;
+        made.errorID = thrown.errorID;
+    }
     if (thrown.stack) Object.defineProperty(made, "stack", { value: thrown.stack, configurable: true, writable: true });
     return made;
 };
