@@ -503,7 +503,6 @@ private:
 
     // Names
     std::string bind(const std::string& qualified, ClassModel* source = nullptr, const Definition* definition = nullptr);
-    std::string bindPlayer(const std::string& qualified) { return bind(qualified); }
     std::string classRef(ClassModel* cls);
     std::string bindingLines(const std::string& assign) const;
     std::string memberName(const ClassModel* owner, const std::string& name, const Member& member);
@@ -512,7 +511,7 @@ private:
     bool hasRuntimeBase(const ClassModel* cls) const;
     FunctionDefinition* methodDefinition(const ClassModel* cls, const std::string& name, bool isStatic);
     Ty typeOf(const std::string& written, Unit* where = nullptr);
-    Ty memberType(const ClassModel* owner, const std::string& name, const Member& member);
+    Ty memberType(const ClassModel* owner, const Member& member);
     std::string localName(const std::string& name) const;
     // A field's type as the descriptor gives it: "int", "const String",
     // "private Number".
@@ -544,11 +543,11 @@ private:
     void block(Statement* stmt, Lines& out);
     std::string blockText(Statement* stmt);
     void variableDefinition(VariableDefinition* stmt, Lines& out);
-    void forStatement(ForStatement* stmt, Lines& out, const std::string& label);
-    void forInStatement(ForInStatement* stmt, Lines& out, const std::string& label);
+    void forStatement(ForStatement* stmt, Lines& out);
+    void forInStatement(ForInStatement* stmt, Lines& out);
     void tryStatement(TryStatement* stmt, Lines& out);
     void withStatement(WithStatement* stmt, Lines& out);
-    void switchStatement(SwitchStatement* stmt, Lines& out, const std::string& label);
+    void switchStatement(SwitchStatement* stmt, Lines& out);
     std::string forInTarget(Statement* left, int line);
 
     // Expressions
@@ -559,7 +558,7 @@ private:
     E literal(Literal* lit);
     E binary(BinaryExpression* e);
     E unary(UnaryExpression* e, bool discard);
-    E assignment(AssignmentExpression* e, bool discard);
+    E assignment(AssignmentExpression* e);
     E incDec(Expression* operand, bool increment, bool postfix, bool discard);
     E call(CallExpression* e);
     E construct(NewExpression* e);
@@ -773,9 +772,8 @@ Ty Translator::typeOf(const std::string& written, Unit* where) {
     return convert(type);
 }
 
-Ty Translator::memberType(const ClassModel* owner, const std::string& name, const Member& member) {
+Ty Translator::memberType(const ClassModel* owner, const Member& member) {
     if (member.kind == Member::Method) return Ty::of(Ty::Function);
-    (void)name;
     return typeOf(member.type, owner ? owner->unit : nullptr);
 }
 
@@ -875,7 +873,7 @@ Translator::Ref Translator::resolve(const std::string& name) {
                 ref.object = thisRef();
                 ref.property = memberName(owner, name, *member);
                 ref.text = dotted(ref.object, ref.property);
-                ref.type = memberType(owner, name, *member);
+                ref.type = memberType(owner, *member);
                 ref.isMethod = member->kind == Member::Method;
                 return ref;
             }
@@ -885,7 +883,7 @@ Translator::Ref Translator::resolve(const std::string& name) {
             ref.object = classRef(owner);
             ref.property = memberName(owner, name, *member);
             ref.text = dotted(ref.object, ref.property);
-            ref.type = memberType(owner, name, *member);
+            ref.type = memberType(owner, *member);
             return ref;
         }
     }
@@ -1567,7 +1565,7 @@ void Translator::block(Statement* stmt, Lines& out) {
 
 std::string Translator::discardText(Expression* e) {
     E made;
-    if (e->kind == EK::Assignment) made = assignment(static_cast<AssignmentExpression*>(e), true);
+    if (e->kind == EK::Assignment) made = assignment(static_cast<AssignmentExpression*>(e));
     else if (e->kind == EK::Unary) made = unary(static_cast<UnaryExpression*>(e), true);
     else made = expr(e);
     std::string text = made.s;
@@ -1612,11 +1610,11 @@ void Translator::statement(Statement* stmt, Lines& out) {
     } else if (auto* doLoop = dynamic_cast<DoWhileStatement*>(stmt)) {
         out.add("do " + blockText(doLoop->body.get()) + " while (" + expr(doLoop->test.get()).s + ");", line);
     } else if (auto* forLoop = dynamic_cast<ForStatement*>(stmt)) {
-        forStatement(forLoop, out, std::string());
+        forStatement(forLoop, out);
     } else if (auto* forIn = dynamic_cast<ForInStatement*>(stmt)) {
-        forInStatement(forIn, out, std::string());
+        forInStatement(forIn, out);
     } else if (auto* choice = dynamic_cast<SwitchStatement*>(stmt)) {
-        switchStatement(choice, out, std::string());
+        switchStatement(choice, out);
     } else if (auto* labeled = dynamic_cast<LabeledStatement*>(stmt)) {
         out.add(localName(labeled->label->name) + ":", line);
         statement(labeled->body.get(), out);
@@ -1688,7 +1686,7 @@ void Translator::variableDefinition(VariableDefinition* stmt, Lines& out) {
     }
 }
 
-void Translator::forStatement(ForStatement* stmt, Lines& out, const std::string& label) {
+void Translator::forStatement(ForStatement* stmt, Lines& out) {
     std::string init;
     if (auto* variables = dynamic_cast<VariableDefinition*>(stmt->init.get())) {
         // var i = 0, n = 2: declared as each is.
@@ -1748,7 +1746,6 @@ void Translator::forStatement(ForStatement* stmt, Lines& out, const std::string&
         }
         if (update.empty()) update = discardText(u);
     }
-    (void)label;
     out.add("for (" + init + "; " + test + "; " + update + ") " + blockText(stmt->body.get()), stmt->line);
 }
 
@@ -1779,8 +1776,7 @@ std::string Translator::forInTarget(Statement* left, int line) {
     return "$ignored";
 }
 
-void Translator::forInStatement(ForInStatement* stmt, Lines& out, const std::string& label) {
-    (void)label;
+void Translator::forInStatement(ForInStatement* stmt, Lines& out) {
     const std::string target = forInTarget(stmt->left.get(), stmt->line);
     E object = expr(stmt->right.get());
     std::string source;
@@ -1792,8 +1788,7 @@ void Translator::forInStatement(ForInStatement* stmt, Lines& out, const std::str
     out.add("for (" + target + " of " + source + ") " + blockText(stmt->body.get()), stmt->line);
 }
 
-void Translator::switchStatement(SwitchStatement* stmt, Lines& out, const std::string& label) {
-    (void)label;
+void Translator::switchStatement(SwitchStatement* stmt, Lines& out) {
     out.add("switch (" + expr(stmt->discriminant.get()).s + ") {", stmt->line);
     out.indent();
     for (auto& clause : stmt->cases) {
@@ -2090,7 +2085,7 @@ E Translator::expr(Expression* e) {
             if (yes.t.numeric() && no.t.numeric()) type = yes.t.kind == no.t.kind ? yes.t : Ty::of(Ty::Number);
             return make(paren(test, P_Cond + 1) + " ? " + paren(yes, P_Assign) + " : " + paren(no, P_Assign), P_Cond, type);
         }
-        case EK::Assignment: return assignment(static_cast<AssignmentExpression*>(e), false);
+        case EK::Assignment: return assignment(static_cast<AssignmentExpression*>(e));
         case EK::Call: return call(static_cast<CallExpression*>(e));
         case EK::New: return construct(static_cast<NewExpression*>(e));
         case EK::Member: return member(static_cast<MemberExpression*>(e), false);
@@ -2481,7 +2476,7 @@ Translator::Place Translator::place(Expression* e) {
             if (cls && cls->superClass) {
                 if (const Member* member = findInstance(cls->superClass, name, &owner, true)) {
                     text = dotted("super", memberName(owner, name, *member));
-                    out.type = memberType(owner, name, *member);
+                    out.type = memberType(owner, *member);
                 }
             }
         } else if (name[0] == '@' || name == "*") {
@@ -2500,13 +2495,13 @@ Translator::Place Translator::place(Expression* e) {
                     ClassModel* owner = nullptr;
                     if (const Member* found = findStatic(object.t.cls, name, &owner, false)) {
                         property = memberName(owner, name, *found);
-                        out.type = memberType(owner, name, *found);
+                        out.type = memberType(owner, *found);
                     }
                 } else if (object.t.kind == Ty::Instance && object.t.cls) {
                     ClassModel* owner = nullptr;
                     if (const Member* found = findInstance(object.t.cls, name, &owner, false)) {
                         property = memberName(owner, name, *found);
-                        out.type = memberType(owner, name, *found);
+                        out.type = memberType(owner, *found);
                     }
                 }
                 std::string base = paren(object, P_Call);
@@ -2525,8 +2520,7 @@ Translator::Place Translator::place(Expression* e) {
     return out;
 }
 
-E Translator::assignment(AssignmentExpression* e, bool discard) {
-    (void)discard;
+E Translator::assignment(AssignmentExpression* e) {
     Place target = place(e->left.get());
     if (e->op == OT::Assign) {
         E value = coerce(expr(e->right.get()), target.type);
@@ -2826,7 +2820,7 @@ E Translator::member(MemberExpression* e, bool callee) {
         if (cls && cls->superClass) {
             if (const Member* member = findInstance(cls->superClass, name, &owner, true)) {
                 property = memberName(owner, name, *member);
-                type = memberType(owner, name, *member);
+                type = memberType(owner, *member);
                 isMethod = member->kind == Member::Method;
                 if (isMethod && callee) {
                     if (FunctionDefinition* definition = methodDefinition(owner, name, false)) {
@@ -2859,7 +2853,7 @@ E Translator::member(MemberExpression* e, bool callee) {
             ClassModel* owner = nullptr;
             if (const Member* member = findStatic(object.t.cls, name, &owner, false)) {
                 const std::string property = memberName(owner, name, *member);
-                Ty type = memberType(owner, name, *member);
+                Ty type = memberType(owner, *member);
                 if (member->kind == Member::Method && callee) {
                     if (FunctionDefinition* definition = methodDefinition(owner, name, true)) {
                         if (definition->returnType) {
@@ -2886,7 +2880,7 @@ E Translator::member(MemberExpression* e, bool callee) {
             if (member->kind == Member::Method && !callee) {
                 return make("as3.bind(" + object.s + ", " + quote(property) + ")", P_Call, Ty::of(Ty::Function));
             }
-            Ty type = memberType(owner, name, *member);
+            Ty type = memberType(owner, *member);
             if (member->kind == Member::Method) {
                 if (FunctionDefinition* definition = methodDefinition(owner, name, false)) {
                     if (definition->returnType) {
@@ -3690,12 +3684,7 @@ Output Translator::run(const std::vector<Source>& sources, const std::vector<Tim
         const std::string& path = order[i];
         std::vector<int> lines;
         std::string clean = unmark(output.files[path], lines);
-        std::string sourceName;
-        for (auto& source : model.files) {
-            std::string candidate = path;
-            (void)candidate;
-        }
-        sourceName = model.files[i]->timeline ? model.files[i]->fileName : model.files[i]->fileName;
+        const std::string sourceName = model.files[i]->fileName;
         if (options.sourceMaps) {
             const std::string mapName = path + ".map";
             std::string base = path;
