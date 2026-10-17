@@ -30,6 +30,9 @@ add_library(as3_parser
     src/runtime/builtins_json.cpp
     src/runtime/builtins_utils.cpp
     src/runtime/builtins_xml.cpp
+    src/abc/abc_file.cpp
+    src/abc/abc_opcodes.cpp
+    src/abc/abc_verifier.cpp
 )
 
 target_include_directories(as3_parser PUBLIC
@@ -39,6 +42,7 @@ target_include_directories(as3_parser PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/parser
     ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime
     ${CMAKE_CURRENT_SOURCE_DIR}/src/bytecode
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/abc
 )
 
 if(NOT AS3_TOP_LEVEL)
@@ -59,6 +63,7 @@ add_executable(as3_tests
     test/library_tests.cpp
     test/error_tests.cpp
     test/xml_tests.cpp
+    test/abc_tests.cpp
 )
 
 target_include_directories(as3_tests PRIVATE
@@ -80,6 +85,7 @@ file(MAKE_DIRECTORY ${PACKAGE_DIR}/include/libas3/lexer)
 file(MAKE_DIRECTORY ${PACKAGE_DIR}/include/libas3/parser)
 file(MAKE_DIRECTORY ${PACKAGE_DIR}/include/libas3/runtime)
 file(MAKE_DIRECTORY ${PACKAGE_DIR}/include/libas3/bytecode)
+file(MAKE_DIRECTORY ${PACKAGE_DIR}/include/libas3/abc)
 file(MAKE_DIRECTORY ${PACKAGE_DIR}/lib)
 
 # Copy header files
