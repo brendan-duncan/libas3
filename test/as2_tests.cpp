@@ -102,6 +102,18 @@ static void init_as2_tests() {
                "true true true true false false false\n");
     });
 
+    suite.addTest("Word operators of ActionScript 1", []() {
+        VM vm;
+        expect(run(vm, "trace(1 add 2, 'a' add 'b');\n"
+                       "trace('x' eq 'x', 'x' ne 'x', 1 lt 2, 2 gt 3, 2 le 2, 1 ge 2);\n"
+                       "trace(1 and 0, 0 or 2, not 0, not (1 and 1));\n"),
+               "12 ab\ntrue false true false true false\n0 2 true false\n");
+        // Words still name things: as variables, and at a line break.
+        expect(run(vm, "var and = 1; var add = 2; var not = 3;\ntrace(and + add + not);\nvar x = and\nadd = 4\n"
+                       "trace(x, add);\n"),
+               "6\n1 4\n");
+    });
+
     suite.addTest("Missing and extra arguments", []() {
         VM vm;
         expect(run(vm, "function f(a, b) { return b; }\ntrace(f(1), f(1, 2, 3));"), "undefined 2\n");

@@ -1513,8 +1513,68 @@ int Parser::binaryLevel(OperatorType& op) const {
                 case KeywordType::As: op = OperatorType::As; return kRelational;
                 default: return -1;
             }
+        case TokenType::Identifier: {
+            // ActionScript 1's word operators, on the line of what they
+            // follow (a word on the next line starts a statement) and
+            // before an operand.
+            if (token.newLineBefore || !startsOperand(peek(1))) return -1;
+            static const struct {
+                const char* word;
+                OperatorType op;
+                int level;
+            } words[] = {
+                {"add", OperatorType::Add, kAdditive},
+                {"eq", OperatorType::Equals, kEquality},
+                {"ne", OperatorType::NotEquals, kEquality},
+                {"lt", OperatorType::Lt, kRelational},
+                {"gt", OperatorType::Gt, kRelational},
+                {"le", OperatorType::Le, kRelational},
+                {"ge", OperatorType::Ge, kRelational},
+                {"and", OperatorType::LogicalAnd, kLogicalAnd},
+                {"or", OperatorType::LogicalOr, kLogicalOr},
+            };
+            for (const auto& each : words) {
+                if (token.text == each.word) {
+                    op = each.op;
+                    return each.level;
+                }
+            }
+            return -1;
+        }
         default:
             return -1;
+    }
+}
+
+// Whether a token can begin an operand: a name, a literal, an opening
+// bracket, a prefix operator, or a word that is a value.
+bool Parser::startsOperand(const Token& token) {
+    if (token.newLineBefore) return false;
+    switch (token.type) {
+        case TokenType::Identifier:
+        case TokenType::Number:
+        case TokenType::String:
+        case TokenType::Boolean:
+        case TokenType::Null:
+        case TokenType::LParen:
+        case TokenType::LBracket:
+        case TokenType::Exclamation:
+        case TokenType::Minus:
+        case TokenType::Plus:
+        case TokenType::Tilde:
+            return true;
+        case TokenType::Keyword:
+            switch (token.keyword) {
+                case KeywordType::This:
+                case KeywordType::Typeof:
+                case KeywordType::New:
+                case KeywordType::Void:
+                    return true;
+                default:
+                    return false;
+            }
+        default:
+            return false;
     }
 }
 
@@ -1531,6 +1591,14 @@ std::unique_ptr<Expression> Parser::parseBinaryExpression(int minimum) {
         const int level = binaryLevel(op);
         if (level < 0 || level < minimum) {
             return left;
+        }
+        // a add b joins them as text: ("" + a) + b.
+        if (check(TokenType::Identifier) && currentToken().text == "add") {
+            auto empty = std::make_unique<Literal>(Literal::LiteralKind::String);
+            empty->valueType = Literal::LiteralValueType::String;
+            empty->line = line;
+            left = std::make_unique<BinaryExpression>(OperatorType::Add, std::move(empty), std::move(left));
+            left->line = line;
         }
         advance();
         // ?? groups to the right, as a ?? (b ?? c).
@@ -1574,6 +1642,9 @@ std::unique_ptr<Expression> Parser::parseUnaryExpression() {
     } else if (check(TokenType::Tilde)) {
         op = OperatorType::BitwiseNot;
     } else if (check(TokenType::Exclamation)) {
+        op = OperatorType::LogicalNot;
+    } else if (check(TokenType::Identifier) && currentToken().text == "not" && startsOperand(peek(1))) {
+        // ActionScript 1's not.
         op = OperatorType::LogicalNot;
     } else if (check(KeywordType::Delete)) {
         op = OperatorType::Delete;

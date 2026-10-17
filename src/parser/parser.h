@@ -142,6 +142,8 @@ private:
     std::unique_ptr<Expression> parseConditionalExpression();
     std::unique_ptr<Expression> parseBinaryExpression(int minimum);
     int binaryLevel(OperatorType& op) const;
+    // Whether a token can begin an operand, on the line of what is before.
+    static bool startsOperand(const Token& token);
     std::unique_ptr<Expression> parseUnaryExpression();
     std::unique_ptr<Expression> parsePostfixExpression();
     std::unique_ptr<Expression> parseCallMemberExpression();
