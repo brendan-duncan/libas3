@@ -94,9 +94,11 @@ struct PropertyCache {
     const Trait* trait = nullptr;
     // A static of the class (the object is the class itself).
     bool onClass = false;
-    // For names: the global it found, valid while the VM's names are as
-    // they were (version) and 'this' is of the class seen.
-    uint32_t version = 0;
+    // For names: what it found, valid while the names are as they were
+    // (version) and 'this' is of the class seen: a global by its slot (its
+    // value may change), anything else by its value.
+    uint64_t version = 0;
+    Val* slot = nullptr;
     Val value;
 };
 

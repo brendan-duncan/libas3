@@ -2,6 +2,7 @@
 
 #include "../runtime/value.h"
 #include "chunk.h"
+#include <atomic>
 #include <vector>
 #include <map>
 #include <set>
@@ -384,9 +385,11 @@ private:
     double started = 0;
     std::function<double()> clock;
     std::map<const ClassInfo*, std::shared_ptr<ClassInfo>> vectorClasses;
-    // Bumped when a global or definition is added: cached name lookups
-    // made before are looked up again.
-    uint32_t namesVersion = 1;
+    // Bumped when a global or definition is added, in any VM (the caches
+    // are in the code, which more than one VM may run, and a VM finds its
+    // parent's globals): cached name lookups made before are looked up
+    // again. A global given a new value is read through its slot.
+    static std::atomic<uint64_t> namesVersion;
 
 public:
     // Internal: used by the built-in library.

@@ -1009,8 +1009,13 @@ bool VM::lookupName(CallFrame& frame, const std::string& name, Val& value, Val* 
             found = !value.isUndefined();
         }
     }
+    Val* slot = nullptr;
     if (!found) {
-        found = findGlobal(name, value);
+        slot = globalSlot(name);
+        if (slot) {
+            value = *slot;
+            found = true;
+        }
     }
     if (!found && unit) {
         for (const auto& wildcard : unit->wildcards) {
@@ -1025,8 +1030,12 @@ bool VM::lookupName(CallFrame& frame, const std::string& name, Val& value, Val* 
         value = lookupQualified(name, true);
         found = !value.isUndefined();
         // A global that is undefined is still a name.
-        if (!found && findGlobal(name, value)) {
-            found = true;
+        if (!found) {
+            slot = globalSlot(name);
+            if (slot) {
+                value = *slot;
+                found = true;
+            }
         }
     }
     if (!found) {
@@ -1041,7 +1050,8 @@ bool VM::lookupName(CallFrame& frame, const std::string& name, Val& value, Val* 
     if (cache) {
         cache->version = namesVersion;
         cache->classId = self.isObject() && self->cls ? self->cls->id : 0;
-        cache->value = value;
+        cache->slot = slot;
+        cache->value = slot ? Val() : value;
     }
     return true;
 }
@@ -1061,7 +1071,6 @@ void VM::assignName(CallFrame& frame, const std::string& name, const Val& value)
         // On a timeline: a global already there, else the timeline's.
         if (Val* global = globalSlot(name)) {
             *global = value;
-            ++namesVersion;
             return;
         }
         if (self.isObject() && self.ref != frame.scope.ref && setOnObject(self, name, value, false)) {
@@ -1075,7 +1084,6 @@ void VM::assignName(CallFrame& frame, const std::string& name, const Val& value)
     }
     if (Val* global = globalSlot(name)) {
         *global = value;
-        ++namesVersion;
         return;
     }
     globals[name] = value;

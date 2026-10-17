@@ -11,6 +11,8 @@
 
 namespace as3 {
 
+std::atomic<uint64_t> VM::namesVersion{1};
+
 namespace {
 
 constexpr size_t kStackSize = 1 << 17;
@@ -679,7 +681,7 @@ void VM::run(size_t stopDepth) {
                             if (selfClass == cache.classId && (self.tag != Val::Tag::Object ||
                                                            (!self.ref->host && self.ref->properties.empty())) &&
                                 (frame->scope.isNullish() || frame->scope.ref == self.ref)) {
-                                *sp++ = cache.value;
+                                *sp++ = cache.slot ? *cache.slot : cache.value;
                                 break;
                             }
                         }
@@ -1261,7 +1263,7 @@ void VM::run(size_t stopDepth) {
                             if (selfClass == cache.classId && (self.tag != Val::Tag::Object ||
                                                            (!self.ref->host && self.ref->properties.empty())) &&
                                 (frame->scope.isNullish() || frame->scope.ref == self.ref)) {
-                                function = cache.value;
+                                function = cache.slot ? *cache.slot : cache.value;
                                 cached = true;
                             }
                         }

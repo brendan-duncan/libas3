@@ -398,6 +398,53 @@ static void init_vm_tests() {
             throw std::runtime_error("Runtime error: " + childVM.getError());
         }
     });
+
+    // The inline caches are in the code: a VM running it after another
+    // finds its own globals and classes, not what the first one found.
+    suite.addTest("Compiled code run on two VMs", []() {
+        Parser parser("class Counter { public var n:int = 0; public function bump():int { return ++n; } }\n"
+                      "function total():Number { var c:Counter = new Counter(); c.bump(); return c.bump() + base; }\n"
+                      "var result = total();\n");
+        auto program = parser.parse();
+        Compiler compiler;
+        auto bytecode = compiler.compile(program.get());
+        for (int i = 0; i < 2; ++i) {
+            VM vm;
+            vm.setGlobal("base", Value::makeNumber(i * 100));
+            vm.execute(bytecode);
+            if (vm.hasError()) {
+                throw std::runtime_error("Runtime error: " + vm.getError());
+            }
+            const double result = Val(vm.getGlobal("result")).toNumber();
+            if (result != 2 + i * 100) {
+                throw std::runtime_error("VM " + std::to_string(i) + " got " + numberToString(result));
+            }
+        }
+    });
+
+    // A global read in a loop sees each new value given it, here or by a
+    // parent VM.
+    suite.addTest("Globals read after they change", []() {
+        VM parentVM;
+        parentVM.setGlobal("step", Value::makeNumber(1));
+        VM childVM(&parentVM);
+        childVM.registerBuiltin("bumpStep", [&parentVM](const std::vector<ValuePtr>&) {
+            parentVM.setGlobal("step", Value::makeNumber(10));
+            return Value::makeUndefined();
+        });
+        Parser parser("var sum = 0;\n"
+                      "for (var i = 0; i < 4; i++) { sum = sum + step; if (i == 1) bumpStep(); }\n");
+        auto program = parser.parse();
+        Compiler compiler;
+        childVM.execute(compiler.compile(program.get()));
+        if (childVM.hasError()) {
+            throw std::runtime_error("Runtime error: " + childVM.getError());
+        }
+        const double sum = Val(childVM.getGlobal("sum")).toNumber();
+        if (sum != 22) {
+            throw std::runtime_error("sum is " + numberToString(sum));
+        }
+    });
 }
 
 // Auto-initialize tests

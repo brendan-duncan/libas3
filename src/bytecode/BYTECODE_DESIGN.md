@@ -13,7 +13,7 @@ A **stack-based virtual machine** for ActionScript 3. The parser makes an AST; t
 
 ## Values
 
-`Val` (runtime/value.h) is what the stack, locals, fields and arrays hold: a tag, a number or boolean in place, and a `std::shared_ptr<Value>` for a string or an object. Copying a number touches no reference count.
+`Val` (runtime/value.h) is what the stack, locals, fields and arrays hold: a tag, a number or boolean in place, and a `ValueRef` for a string or an object. Copying a number touches no reference count; copying a string or an object counts it on the `Value`, without atomics. While any `Val` holds a `Value`, the `Value` holds a `std::shared_ptr` to itself, so the host's `ValuePtr`s and `weak_ptr`s see it held as before.
 
 `Value` is the heap object: a string's text, an object's dynamic properties (`PropertyMap`, made on first use), an array's elements, an instance's fields (`slots`), a function's `FunctionInfo`, a class's `ClassInfo`, and the host's `HostObject`. Older host code uses `ValuePtr` (`std::shared_ptr<Value>`); `Val` converts to and from it.
 
@@ -34,7 +34,7 @@ A call pushes a `CallFrame`: where its locals start on the stack (the arguments 
 
 Variables are function-scoped. A local that a closure uses is a `Cell`, shared by the function and its closures (so every closure made in a loop sees the one variable, as in ActionScript); the compiler works out which from the names the nested functions use.
 
-A name that is not a local, a captured variable or a member of the class being compiled is looked up when it runs (`OP_GET_NAME`): on the instance (inherited and native members), the class's statics and its superclasses', the timeline, the imports, the package, the globals, then the wildcard imports and the class resolver. What is found among the globals is cached at the instruction.
+A name that is not a local, a captured variable or a member of the class being compiled is looked up when it runs (`OP_GET_NAME`): on the instance (inherited and native members), the class's statics and its superclasses', the timeline, the imports, the package, the globals, then the wildcard imports and the class resolver. What is found is cached at the instruction until a global or a definition is added (in any VM: the caches are in the code, which more than one VM may run); a global by its slot, so that giving it a new value keeps the cache.
 
 ## Inline caches
 
