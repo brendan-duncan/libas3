@@ -25,12 +25,21 @@ std::vector<uint8_t> readBytes(const std::string& path) {
     return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
+abc::Multiname multinameOf(uint8_t kind, uint32_t ns, uint32_t name, uint32_t set = 0) {
+    abc::Multiname entry;
+    entry.kind = kind;
+    entry.ns = ns;
+    entry.name = name;
+    entry.nsSet = set;
+    return entry;
+}
+
 // A file with one script whose init is the given code.
 abc::AbcFile scriptOf(const std::vector<uint8_t>& code, uint32_t maxStack, uint32_t maxScope = 1) {
     abc::AbcFile file;
     file.pool.strings.push_back("trace");
     file.pool.namespaces.push_back({abc::NS_Package, 0});
-    file.pool.multinames.push_back({abc::MN_QName, 1, 1});
+    file.pool.multinames.push_back(multinameOf(abc::MN_QName, 1, 1));
     file.methods.emplace_back();
     abc::ScriptInfo script;
     script.init = 0;
@@ -71,8 +80,8 @@ static void init_abc_tests() {
         file.pool.uints.push_back(0xFFFFFFFFu);
         file.pool.doubles.push_back(2.5);
         file.pool.nsSets.push_back({{1}});
-        file.pool.multinames.push_back({abc::MN_Multiname, 0, 1, 1});
-        file.pool.multinames.push_back({abc::MN_MultinameL, 0, 0, 1});
+        file.pool.multinames.push_back(multinameOf(abc::MN_Multiname, 0, 1, 1));
+        file.pool.multinames.push_back(multinameOf(abc::MN_MultinameL, 0, 0, 1));
         abc::Multiname vector;
         vector.kind = abc::MN_TypeName;
         vector.base = 1;

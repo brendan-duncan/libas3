@@ -543,7 +543,7 @@ private:
     void compileClass(ClassModel& cls, Function& script);
     void compileTimeline(ClassModel& cls);
     uint32_t methodInfo(const std::vector<std::unique_ptr<Parameter>>& params, Identifier* returnType,
-                        const std::string& name, Unit* unit, bool isSetter);
+                        const std::string& name, Unit* unit);
     uint32_t metadataOf(const std::vector<Metadata>& tags, std::vector<uint32_t>& out);
     void beginFunction(Function& f, const std::vector<std::unique_ptr<Parameter>>* params, Statement* body,
                        const std::string& selfName = std::string(), const std::set<std::string>* members = nullptr);
@@ -1261,7 +1261,7 @@ void AbcCompiler::constantDetail(const Constant& value, const TypeRef& type, uin
 // Methods
 
 uint32_t AbcCompiler::methodInfo(const std::vector<std::unique_ptr<Parameter>>& params, Identifier* returnType,
-                                 const std::string& name, Unit* unit, bool isSetter) {
+                                 const std::string& name, Unit* unit) {
     MethodInfo info;
     info.name = pool.string(name);
     bool defaults = false;
@@ -1287,7 +1287,6 @@ uint32_t AbcCompiler::methodInfo(const std::vector<std::unique_ptr<Parameter>>& 
     }
     // As declared, as compilers have it: a setter or constructor without
     // a type returns *.
-    (void)isSetter;
     info.returnType = returnType ? resolveType(returnType->name, unit).mn : 0;
     file.methods.push_back(info);
     return static_cast<uint32_t>(file.methods.size() - 1);
@@ -1459,7 +1458,7 @@ void AbcCompiler::endFunction(Function& f) {
 uint32_t AbcCompiler::compileClosure(const std::vector<std::unique_ptr<Parameter>>& params, Identifier* returnType,
                                      Statement* body, const std::string& name, const std::string& selfName) {
     Function* outer = cur;
-    const uint32_t m = methodInfo(params, returnType, name.empty() ? std::string() : name, outer->unit, false);
+    const uint32_t m = methodInfo(params, returnType, name, outer->unit);
     Function f(file);
     f.parent = outer;
     f.unit = outer->unit;
@@ -1480,8 +1479,7 @@ uint32_t AbcCompiler::compileClosure(const std::vector<std::unique_ptr<Parameter
 
 uint32_t AbcCompiler::compileMethod(FunctionDefinition* definition, ClassModel* cls, bool isStatic,
                                     const std::string& name, uint32_t initScope) {
-    const uint32_t m = methodInfo(definition->parameters, definition->returnType.get(), name, cls->unit,
-                                  definition->isSetter);
+    const uint32_t m = methodInfo(definition->parameters, definition->returnType.get(), name, cls->unit);
     if (hasAttribute(definition->attributes, AttributeType::Native)) {
         file.methods[m].flags |= METHOD_Native;
         return m;
@@ -1616,7 +1614,7 @@ void AbcCompiler::compileClass(ClassModel& cls, Function& script) {
     } else {
         static const std::vector<std::unique_ptr<Parameter>> noParams;
         const auto& params = constructor ? constructor->parameters : noParams;
-        instance.iinit = methodInfo(params, constructor ? constructor->returnType.get() : nullptr, where, cls.unit, false);
+        instance.iinit = methodInfo(params, constructor ? constructor->returnType.get() : nullptr, where, cls.unit);
         Function f(file);
         f.unit = cls.unit;
         f.cls = &cls;
@@ -1894,6 +1892,10 @@ void AbcCompiler::compileFile(SourceFile& source) {
 }
 
 Output AbcCompiler::run(const std::vector<Source>& sources, const std::vector<Timeline>& timelines) {
+    if (sources.empty() && timelines.empty()) {
+        error("nothing to compile", 0);
+        return output;
+    }
     parseSources(sources);
     for (auto& source : files) collectDefinitions(*source);
     for (const Timeline& timeline : timelines) buildTimeline(timeline);
