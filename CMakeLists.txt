@@ -36,6 +36,7 @@ add_library(as3_parser
     src/abc/abc_builder.cpp
     src/abc/abc_player.cpp
     src/abc/abc_compiler.cpp
+    src/abc/abc_domain.cpp
 )
 
 target_include_directories(as3_parser PUBLIC
@@ -68,6 +69,7 @@ add_executable(as3_tests
     test/xml_tests.cpp
     test/abc_tests.cpp
     test/abc_compiler_tests.cpp
+    test/abc_domain_tests.cpp
 )
 
 target_include_directories(as3_tests PRIVATE

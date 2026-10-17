@@ -1181,6 +1181,12 @@ Val VM::lookupQualified(const std::string& qualifiedName, bool askResolver) {
             return value;
         }
     }
+    for (VM* vm = this; vm; vm = vm->parent) {
+        for (const DefinitionProvider& provider : vm->definitionProviders) {
+            Val value;
+            if (provider(name, value)) return value;
+        }
+    }
     if (!askResolver || !classResolver || missing.count(name) || loading.count(name)) {
         return Val();
     }
