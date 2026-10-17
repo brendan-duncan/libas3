@@ -1237,7 +1237,13 @@ std::unique_ptr<Statement> Parser::parseClassDeclaration(std::vector<AttributePt
     advance();  // class or interface
     std::vector<Metadata> metadata = takeMetadata();
 
+    // An ActionScript 2 class names its package with it: class com.studio.Hat.
     auto name = parseIdentifier();
+    while (check(TokenType::Dot) && isPropertyNameToken(peek(1))) {
+        advance();
+        name->name += "." + tokenWord(currentToken());
+        advance();
+    }
 
     IdentifierPtr superClass = nullptr;
     std::vector<IdentifierPtr> interfaces;

@@ -29,6 +29,24 @@ E4X: XML literals (`<item id={n}>{text}</item>`, `<>...</>`), `XML` and `XMLList
 
 Not supported: namespaces beyond accepting their syntax (`mx_internal function f()` is a plain method).
 
+### SWF action bytecode (AVM1)
+`avm1/avm1.h` compiles ActionScript 1 and 2 to the actions SWF movies carry for Flash Player's first virtual machine, for a host writing SWF files:
+
+```cpp
+#include "avm1/avm1.h"
+
+as3::avm1::Compiler compiler;
+as3::avm1::FrameScript frame = compiler.compileFrameScript("stop();\nhat._alpha = 50;");
+// frame.actions is a DoAction tag's body; frame.initActions, what was
+// between #initclip and #endinitclip, a DoInitAction's.
+std::vector<as3::avm1::Handler> handlers = compiler.compileHandlers("on (release) { gotoAndPlay(2); }");
+as3::avm1::ClassCode hat;
+compiler.compileClass(classSource, hat);   // an ActionScript 2 class, for a DoInitAction
+std::string listing = as3::avm1::disassemble(frame.actions);
+```
+
+It gives a constant pool, `DefineFunction2` functions with their locals in registers (and `this`, `arguments` and `super` where used), the timeline's own actions for `gotoAndPlay`, `getURL`, `getProperty`, `duplicateMovieClip`, `tellTarget` and the rest (frame numbers counted from the scene's start on the main timeline, `Options::scenes`), `switch`, `for-in`, `with`, `try`/`catch`/`finally` (typed catches tried in turn), and ActionScript 2 classes as the prototypes and `Extends` they are made of: members found by their bare names (MovieClip's too, for a class that extends it), getters and setters through `addProperty`, imports and packages. What only ActionScript 3 has is an error.
+
 ## Project Structure
 
 ```
@@ -45,14 +63,19 @@ src/
 │   ├── compiler.h/cpp      # AST → Bytecode
 │   ├── vm.h/cpp            # The interpreter loop, calls, exceptions
 │   └── vm_runtime.cpp      # Properties, names, classes, native classes
-└── abc/              # ActionScript 3 → ABC (AVM2 bytecode), for players
-    ├── abc.h               # compile(): sources and timelines to an abcFile
-    ├── abc_file.h/cpp      # The abcFile as data; read() and write()
-    ├── abc_opcodes.h/cpp   # AVM2's instructions, decoding, stack effects
-    ├── abc_verifier.h/cpp  # verify(), disassemble()
-    ├── abc_builder.h/cpp   # Constant pools and method code as they are made
-    ├── abc_player.h/cpp    # The player's classes, by package
-    └── abc_compiler.cpp    # AST → ABC
+├── abc/              # ActionScript 3 → ABC (AVM2 bytecode), for players
+│   ├── abc.h               # compile(): sources and timelines to an abcFile
+│   ├── abc_file.h/cpp      # The abcFile as data; read() and write()
+│   ├── abc_opcodes.h/cpp   # AVM2's instructions, decoding, stack effects
+│   ├── abc_verifier.h/cpp  # verify(), disassemble()
+│   ├── abc_builder.h/cpp   # Constant pools and method code as they are made
+│   ├── abc_player.h/cpp    # The player's classes, by package
+│   └── abc_compiler.cpp    # AST → ABC
+└── avm1/             # ActionScript 1 and 2 → SWF actions
+    ├── avm1.h              # Compiler, disassemble
+    ├── avm1_actions.h      # The action codes
+    ├── avm1_compiler.cpp   # AST → actions
+    └── avm1_disassembler.cpp
 
 test/                 # One executable, a suite per file
 ```
@@ -315,7 +338,7 @@ std::string text = as3::abc::disassemble(file);
 ./build/Release/as3_tests.exe nativeclasses  # one
 ```
 
-Suites: Parser, Bytecode, VM, AS2 (ActionScript 1 and 2), Language (classes, packages, statements, types), Library (the built-in classes), XML (E4X, and as3corelib's JSON encoder, which uses it), NativeClasses (the host's classes, a JPEG encoder run on a native BitmapData), BunnyPaint (a 6,000-line paint program and as3corelib's JPEG encoder compiled and loaded through the class resolver, skipped where its sources are not), Errors, Abc (reading, writing and verifying ABC, Flash CS5's own among it), AbcCompiler (ActionScript compiled to ABC and verified, bunnyPaint and its main timeline among it), and Benchmark.
+Suites: Parser, Bytecode, VM, AS2 (ActionScript 1 and 2), Language (classes, packages, statements, types), Library (the built-in classes), XML (E4X, and as3corelib's JSON encoder, which uses it), NativeClasses (the host's classes, a JPEG encoder run on a native BitmapData), BunnyPaint (a 6,000-line paint program and as3corelib's JPEG encoder compiled and loaded through the class resolver, skipped where its sources are not), Errors, Abc (reading, writing and verifying ABC, Flash CS5's own among it), AbcCompiler (ActionScript compiled to ABC and verified, bunnyPaint and its main timeline among it), AVM1 (the SWF actions compiled, by their listing and by what a small AVM1 machine in the tests makes of them), and Benchmark.
 
 ## Performance
 
