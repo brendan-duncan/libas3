@@ -54,6 +54,12 @@ enum class OpCode : uint8_t {
     OP_DELETE_INDEX,    // obj key -> boolean
     OP_GET_SUPER,       // [u16 name] -> value (on this)
     OP_SET_SUPER,       // [u16 name] value -> value
+    // The same, on a local or on the instance a method's names find,
+    // without putting the object on the stack.
+    OP_GET_LOCAL_PROP,  // [u16 slot][u16 name][u16 cache] -> value
+    OP_SET_LOCAL_PROP,  // [u16 slot][u16 name][u16 cache] value -> value
+    OP_GET_THIS_PROP,   // [u16 name][u16 cache] -> value
+    OP_SET_THIS_PROP,   // [u16 name][u16 cache] value -> value
 
     // Arithmetic
     OP_ADD,
@@ -108,6 +114,8 @@ enum class OpCode : uint8_t {
     OP_CALL_NAME,       // [u16 name][u8 argc][u16 cache] args... -> result
     OP_CALL_INDEX,      // [u8 argc] obj key args... -> result
     OP_CALL_SUPER,      // [u16 name][u8 argc] args... -> result
+    OP_CALL_THIS_PROP,  // [u16 name][u8 argc][u16 cache] place args... -> result
+    OP_CALL_LOCAL_PROP, // [u16 slot][u16 name][u8 argc][u16 cache] place args... -> result
     OP_SUPER_CTOR,      // [u8 argc] args... -> undefined
     OP_NEW,             // [u8 argc] class args... -> instance
     OP_RETURN,

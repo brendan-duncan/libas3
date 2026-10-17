@@ -890,7 +890,7 @@ Val* VM::globalSlot(const std::string& name) {
 }
 
 bool VM::lookupName(CallFrame& frame, const std::string& name, Val& value, Val* receiver, PropertyCache* cache) {
-    const Val& self = frame.scopeThis;
+    const Val& self = frame.scopeSelf();
     if (self.isObject() && findOnObject(self, name, value)) {
         if (receiver) *receiver = self;
         return true;
@@ -958,7 +958,7 @@ bool VM::lookupName(CallFrame& frame, const std::string& name, Val& value, Val* 
 }
 
 void VM::assignName(CallFrame& frame, const std::string& name, const Val& value) {
-    const Val& self = frame.scopeThis;
+    const Val& self = frame.scopeSelf();
     if (self.isObject() && setOnObject(self, name, value)) {
         return;
     }

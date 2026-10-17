@@ -132,6 +132,13 @@ private:
     void emitSetProp(const std::string& name);
     void emitCallProp(const std::string& name, int argc);
     void emitCoerce(Coerce coerce);
+    // The fused forms: a property of the instance or of a local, without
+    // the object on the stack.
+    void emitThisProp(OpCode op, const std::string& name);
+    void emitLocalProp(OpCode op, uint16_t slot, const std::string& name);
+    void emitFusedCall(OpCode op, uint16_t slot, const std::string& name, int argc);
+    bool localObject(Expression* object, uint16_t& slot);
+    bool thisObject(Expression* object);
 
     // Exceptions and jumps out of try blocks
     void pauseRegions(size_t from);

@@ -280,9 +280,10 @@ Val VM::runCall(const Val& function, const Val& thisValue, Args args, const Val&
     } unwind{*this, depthBefore, result};
     if (invoke(function, thisValue, argStart, static_cast<uint32_t>(args.size()), result)) {
         if (!scope.isUndefined()) {
-            frames.back().scope = scope;
-            if (frames.back().scopeThis.isNullish()) {
-                frames.back().scopeThis = scope;
+            CallFrame& called = frames.back();
+            called.scope = scope;
+            if (!called.methodThis && called.scopeThis.isNullish()) {
+                called.scopeThis = scope;
             }
         }
         run(depthBefore);
@@ -311,11 +312,11 @@ Val VM::callFunction(const Val& function, const Val& thisValue, Args args) {
 }
 
 bool VM::invoke(const Val& function, const Val& thisValue, Val* args, uint32_t argc, Val* result, uint8_t mode,
-                const Val& saved) {
+                const Val& saved, bool borrowed) {
     if (function.tag == Val::Tag::Object) {
         Value* fn = function.ref.get();
         if (fn->function && fn->function->code) {
-            pushFrame(function, *fn->function, thisValue, args, argc, result, mode, saved);
+            pushFrame(function, *fn->function, thisValue, args, argc, result, mode, saved, borrowed);
             return true;
         }
         if (fn->type == ValueType::Class) {
@@ -359,7 +360,7 @@ Val VM::callNative(const Val& function, const Val& thisValue, Val* args, uint32_
 }
 
 void VM::pushFrame(const Val& function, FunctionInfo& info, const Val& thisValue, Val* args, uint32_t argc,
-                   Val* result, uint8_t mode, const Val& saved) {
+                   Val* result, uint8_t mode, const Val& saved, bool borrowed) {
     BytecodeFunction* code = info.code.get();
     if (frames.size() >= kMaxFrames) {
         throwError("Error", "Error #1023: Stack overflow occurred.", 1023);
@@ -386,7 +387,10 @@ void VM::pushFrame(const Val& function, FunctionInfo& info, const Val& thisValue
     frames.emplace_back();
     CallFrame& frame = frames.back();
     frame.code = code;
-    frame.closure = function.ref;
+    frame.closure = function.ref.get();
+    if (!borrowed) {
+        frame.closureHold = function.ref;
+    }
     frame.codeStart = code->chunk.getCode().data();
     frame.ip = frame.codeStart;
     frame.base = args;
@@ -396,8 +400,14 @@ void VM::pushFrame(const Val& function, FunctionInfo& info, const Val& thisValue
     frame.saved = saved;
     frame.thisVal = info.bound ? info.boundThis : thisValue;
     frame.owner = info.owner.get();
-    frame.scopeThis = code->isMethod ? frame.thisVal : info.scopeThis;
-    frame.scope = info.scope;
+    if (code->isMethod) {
+        frame.methodThis = true;
+    } else if (!info.scopeThis.isUndefined()) {
+        frame.scopeThis = info.scopeThis;
+    }
+    if (!info.scope.isUndefined()) {
+        frame.scope = info.scope;
+    }
 
     // Missing arguments are undefined; locals start as their types do.
     for (uint32_t i = argc; i < arity; ++i) {
@@ -492,9 +502,14 @@ void VM::run(size_t stopDepth) {
                 frame->ip = ip + 1;
                 const OpCode op = static_cast<OpCode>(*ip++);
                 switch (op) {
-                    case OpCode::OP_CONSTANT:
-                        *sp++ = constants[READ_U16()];
+                    case OpCode::OP_CONSTANT: {
+                        const Val& constant = constants[READ_U16()];
+                        sp->tag = constant.tag;
+                        sp->num = constant.num;
+                        if (constant.ref) sp->ref = constant.ref;
+                        ++sp;
                         break;
+                    }
                     case OpCode::OP_UNDEFINED:
                         *sp++ = Val();
                         break;
@@ -508,14 +523,19 @@ void VM::run(size_t stopDepth) {
                         *sp++ = Val::boolean(false);
                         break;
                     case OpCode::OP_ZERO:
-                        *sp++ = Val::number(0);
+                        sp->tag = Val::Tag::Number;
+                        sp->num = 0;
+                        ++sp;
                         break;
                     case OpCode::OP_ONE:
-                        *sp++ = Val::number(1);
+                        sp->tag = Val::Tag::Number;
+                        sp->num = 1;
+                        ++sp;
                         break;
 
                     case OpCode::OP_POP:
-                        *--sp = Val();
+                        --sp;
+                        if (sp->ref) sp->ref.reset();
                         break;
                     case OpCode::OP_DUP:
                         *sp = sp[-1];
@@ -549,16 +569,30 @@ void VM::run(size_t stopDepth) {
                         break;
                     }
 
-                    case OpCode::OP_GET_LOCAL:
-                        *sp++ = base[READ_U16()];
+                    case OpCode::OP_GET_LOCAL: {
+                        const Val& local = base[READ_U16()];
+                        // The place is free (no reference held): numbers as they are.
+                        sp->tag = local.tag;
+                        sp->num = local.num;
+                        if (local.ref) sp->ref = local.ref;
+                        ++sp;
                         break;
+                    }
                     case OpCode::OP_SET_LOCAL:
                         base[READ_U16()] = sp[-1];
                         break;
-                    case OpCode::OP_PUT_LOCAL:
-                        base[READ_U16()] = std::move(*--sp);
-                        *sp = Val();
+                    case OpCode::OP_PUT_LOCAL: {
+                        Val& local = base[READ_U16()];
+                        Val& top = *--sp;
+                        if (top.ref || local.ref) {
+                            local = std::move(top);
+                            if (top.ref) top.ref.reset();
+                        } else {
+                            local.tag = top.tag;
+                            local.num = top.num;
+                        }
                         break;
+                    }
                     case OpCode::OP_GET_CELL:
                         *sp++ = frame->cells[READ_U16()]->value;
                         break;
@@ -601,7 +635,7 @@ void VM::run(size_t stopDepth) {
                         PropertyCache& cache = code->caches[READ_U16()];
                         // A global found before, while the names are as they were.
                         if (cache.version == namesVersion) {
-                            const Val& self = frame->scopeThis;
+                            const Val& self = frame->scopeSelf();
                             const ClassInfo* selfClass =
                                 self.tag == Val::Tag::Object ? self.ref->cls.get() : nullptr;
                             if (selfClass == cache.cls && (self.tag != Val::Tag::Object ||
@@ -660,35 +694,15 @@ void VM::run(size_t stopDepth) {
                         const uint16_t name = READ_U16();
                         PropertyCache& cache = code->caches[READ_U16()];
                         Val& object = sp[-1];
-                        if (object.tag == Val::Tag::Object) {
-                            Value* value = object.ref.get();
-                            if (value->cls.get() == cache.cls && cache.cls) {
-                                const Trait* trait = cache.trait;
-                                if (trait->kind == TraitKind::Slot && !cache.onClass &&
-                                    value->type != ValueType::Class) {
-                                    object = value->slots[trait->slot];
-                                    break;
-                                }
-                                if (trait->kind == TraitKind::Accessor && trait->getter.isObject() &&
-                                    value->type != ValueType::Class && !cache.onClass) {
-                                    // A getter: a script one runs in a frame here.
-                                    const Val& getter = trait->getter;
-                                    FunctionInfo& info = *getter.ref->function;
-                                    if (info.code) {
-                                        frame->ip = ip;
-                                        Val self = object;
-                                        pushFrame(getter, info, self, sp, 0, sp - 1, kModeNormal, Val());
-                                        RELOAD();
-                                        break;
-                                    }
-                                    if (info.native) {
-                                        object = info.native(*this, Val(object), Args());
-                                        break;
-                                    }
-                                }
-                            }
-                        }
                         frame->ip = ip;
+                        const int done = cachedGet(object, cache, &object);
+                        if (done == 1) {
+                            break;
+                        }
+                        if (done == 2) {
+                            RELOAD();
+                            break;
+                        }
                         Val result = getProp(object, NAME(name), &cache);
                         sp[-1] = std::move(result);
                         break;
@@ -696,44 +710,20 @@ void VM::run(size_t stopDepth) {
                     case OpCode::OP_SET_PROP: {
                         const uint16_t name = READ_U16();
                         PropertyCache& cache = code->caches[READ_U16()];
-                        Val& object = sp[-2];
-                        if (object.tag == Val::Tag::Object) {
-                            Value* value = object.ref.get();
-                            if (value->cls.get() == cache.cls && cache.cls && !cache.onClass &&
-                                value->type != ValueType::Class) {
-                                const Trait* trait = cache.trait;
-                                if (trait->kind == TraitKind::Slot) {
-                                    Val& slot = value->slots[trait->slot];
-                                    if (trait->coerce == Coerce::None) {
-                                        slot = sp[-1];
-                                    } else {
-                                        slot = coerceValue(sp[-1], trait->coerce);
-                                    }
-                                    sp[-2] = std::move(sp[-1]);
-                                    *--sp = Val();
-                                    break;
-                                }
-                                if (trait->kind == TraitKind::Accessor && trait->setter.isObject()) {
-                                    const Val& setter = trait->setter;
-                                    FunctionInfo& info = *setter.ref->function;
-                                    if (info.code) {
-                                        // The setter runs in a frame; the assignment's
-                                        // value is what it gives.
-                                        frame->ip = ip;
-                                        Val self = std::move(sp[-2]);
-                                        Val assigned = sp[-1];
-                                        sp[-2] = Val();
-                                        pushFrame(setter, info, self, sp - 1, 1, sp - 2, kModeSaved, assigned);
-                                        RELOAD();
-                                        break;
-                                    }
-                                }
-                            }
-                        }
                         frame->ip = ip;
-                        setProp(object, NAME(name), sp[-1], &cache);
+                        // obj value -> value: the object is moved out, its place
+                        // taking the value.
+                        Val object = std::move(sp[-2]);
                         sp[-2] = std::move(sp[-1]);
-                        *--sp = Val();
+                        --sp;
+                        const int done = cachedSet(object, cache, sp - 1);
+                        if (done == 2) {
+                            RELOAD();
+                            break;
+                        }
+                        if (done == 0) {
+                            setProp(object, NAME(name), sp[-1], &cache);
+                        }
                         break;
                     }
                     case OpCode::OP_DELETE_PROP: {
@@ -799,7 +789,7 @@ void VM::run(size_t stopDepth) {
                         const uint16_t name = READ_U16();
                         ClassInfo* base_ = frame->owner ? frame->owner->base.get() : nullptr;
                         const Trait* trait = base_ ? base_->findTrait(NAME(name)) : nullptr;
-                        const Val self = frame->scopeThis.isUndefined() ? frame->thisVal : frame->scopeThis;
+                        const Val self = frame->scopeSelf().isUndefined() ? frame->thisVal : frame->scopeSelf();
                         if (trait) {
                             *sp++ = readTrait(self, *trait, false);
                         } else {
@@ -811,7 +801,7 @@ void VM::run(size_t stopDepth) {
                         const uint16_t name = READ_U16();
                         ClassInfo* base_ = frame->owner ? frame->owner->base.get() : nullptr;
                         const Trait* trait = base_ ? base_->findTrait(NAME(name)) : nullptr;
-                        const Val self = frame->scopeThis.isUndefined() ? frame->thisVal : frame->scopeThis;
+                        const Val self = frame->scopeSelf().isUndefined() ? frame->thisVal : frame->scopeSelf();
                         if (trait) {
                             writeTrait(self, *trait, sp[-1], NAME(name), false);
                         } else {
@@ -820,21 +810,108 @@ void VM::run(size_t stopDepth) {
                         break;
                     }
 
+                    case OpCode::OP_GET_LOCAL_PROP: {
+                        const uint16_t slot = READ_U16();
+                        const uint16_t name = READ_U16();
+                        PropertyCache& cache = code->caches[READ_U16()];
+                        const Val& object = base[slot];
+                        frame->ip = ip;
+                        const int done = cachedGet(object, cache, sp);
+                        if (done == 1) {
+                            ++sp;
+                            break;
+                        }
+                        if (done == 2) {
+                            RELOAD();
+                            break;
+                        }
+                        Val result = getProp(object, NAME(name), &cache);
+                        *sp++ = std::move(result);
+                        break;
+                    }
+                    case OpCode::OP_GET_THIS_PROP: {
+                        const uint16_t name = READ_U16();
+                        PropertyCache& cache = code->caches[READ_U16()];
+                        const Val& object = frame->scopeSelf().isUndefined() ? frame->thisVal : frame->scopeSelf();
+                        frame->ip = ip;
+                        const int done = cachedGet(object, cache, sp);
+                        if (done == 1) {
+                            ++sp;
+                            break;
+                        }
+                        if (done == 2) {
+                            RELOAD();
+                            break;
+                        }
+                        Val result = getProp(object, NAME(name), &cache);
+                        *sp++ = std::move(result);
+                        break;
+                    }
+                    case OpCode::OP_SET_LOCAL_PROP:
+                    case OpCode::OP_SET_THIS_PROP: {
+                        const uint16_t slot = op == OpCode::OP_SET_LOCAL_PROP ? READ_U16() : 0;
+                        const uint16_t name = READ_U16();
+                        PropertyCache& cache = code->caches[READ_U16()];
+                        const Val& object =
+                            op == OpCode::OP_SET_LOCAL_PROP
+                                ? base[slot]
+                                : (frame->scopeSelf().isUndefined() ? frame->thisVal : frame->scopeSelf());
+                        frame->ip = ip;
+                        const int done = cachedSet(object, cache, sp - 1);
+                        if (done == 2) {
+                            RELOAD();
+                            break;
+                        }
+                        if (done == 0) {
+                            setProp(object, NAME(name), sp[-1], &cache);
+                        }
+                        break;
+                    }
+                    case OpCode::OP_CALL_THIS_PROP:
+                    case OpCode::OP_CALL_LOCAL_PROP: {
+                        const uint16_t slot = op == OpCode::OP_CALL_LOCAL_PROP ? READ_U16() : 0;
+                        const uint16_t name = READ_U16();
+                        const uint8_t argc = READ_U8();
+                        PropertyCache& cache = code->caches[READ_U16()];
+                        Val* result = sp - argc - 1;
+                        const Val& object =
+                            op == OpCode::OP_CALL_LOCAL_PROP
+                                ? base[slot]
+                                : (frame->scopeSelf().isUndefined() ? frame->thisVal : frame->scopeSelf());
+                        frame->ip = ip;
+                        const int done = cachedCall(object, cache, result + 1, argc, result);
+                        if (done == 2) {
+                            RELOAD();
+                            break;
+                        }
+                        if (done == 0 && callProp(object, NAME(name), result + 1, argc, result, &cache)) {
+                            RELOAD();
+                        }
+                        break;
+                    }
                     case OpCode::OP_ADD: {
                         Val& a = sp[-2];
-                        const Val& b = sp[-1];
+                        Val& b = sp[-1];
                         if (a.tag == Val::Tag::Number && b.tag == Val::Tag::Number) {
                             a.num += b.num;
-                        } else {
-                            a = add(a, b);
+                            --sp;
+                            break;
                         }
+                        a = add(a, b);
                         *--sp = Val();
                         break;
                     }
 #define NUMERIC_OP(OPERATION)                                                     \
     {                                                                             \
         Val& a = sp[-2];                                                          \
-        const Val& b = sp[-1];                                                    \
+        Val& b = sp[-1];                                                          \
+        if (a.tag == Val::Tag::Number && b.tag == Val::Tag::Number) {             \
+            const double x = a.num;                                               \
+            const double y = b.num;                                               \
+            a.num = OPERATION;                                                    \
+            --sp;                                                                 \
+            break;                                                                \
+        }                                                                         \
         const double x = a.tag == Val::Tag::Number ? a.num : toNumber(a);         \
         const double y = b.tag == Val::Tag::Number ? b.num : toNumber(b);         \
         a = Val::number(OPERATION);                                               \
@@ -930,6 +1007,10 @@ void VM::run(size_t stopDepth) {
                                 case OpCode::OP_LESS_EQUAL: result = a.num <= b.num; break;
                                 default: result = a.num >= b.num; break;
                             }
+                            a.tag = Val::Tag::Boolean;
+                            a.flag = result;
+                            --sp;
+                            break;
                         } else {
                             bool undefinedResult = false;
                             switch (op) {
@@ -1003,6 +1084,9 @@ void VM::run(size_t stopDepth) {
                     case OpCode::OP_COERCE: {
                         const Coerce coerce = static_cast<Coerce>(READ_U8());
                         Val& a = sp[-1];
+                        if (coerce == Coerce::Number && a.tag == Val::Tag::Number) {
+                            break;
+                        }
                         if (coerce == Coerce::Int && a.tag == Val::Tag::Number) {
                             const double n = a.num;
                             if (!(n >= -2147483648.0 && n <= 2147483647.0 &&
@@ -1027,17 +1111,17 @@ void VM::run(size_t stopDepth) {
                     }
                     case OpCode::OP_JUMP_IF_FALSE: {
                         const int32_t offset = READ_S32();
-                        Val& a = sp[-1];
+                        Val& a = *--sp;
                         const bool truth = a.tag == Val::Tag::Boolean ? a.flag : a.toBoolean();
-                        *--sp = Val();
+                        if (a.ref) a.ref.reset();
                         if (!truth) ip += offset;
                         break;
                     }
                     case OpCode::OP_JUMP_IF_TRUE: {
                         const int32_t offset = READ_S32();
-                        Val& a = sp[-1];
+                        Val& a = *--sp;
                         const bool truth = a.tag == Val::Tag::Boolean ? a.flag : a.toBoolean();
-                        *--sp = Val();
+                        if (a.ref) a.ref.reset();
                         if (truth) ip += offset;
                         break;
                     }
@@ -1073,7 +1157,7 @@ void VM::run(size_t stopDepth) {
                         const uint8_t argc = READ_U8();
                         Val* callee = sp - argc - 1;
                         frame->ip = ip;
-                        if (invoke(*callee, Val(), callee + 1, argc, callee)) {
+                        if (invoke(*callee, Val(), callee + 1, argc, callee, kModeNormal, Val(), true)) {
                             RELOAD();
                         }
                         break;
@@ -1084,29 +1168,12 @@ void VM::run(size_t stopDepth) {
                         PropertyCache& cache = code->caches[READ_U16()];
                         Val* object = sp - argc - 1;
                         frame->ip = ip;
-                        if (object->tag == Val::Tag::Object) {
-                            Value* value = object->ref.get();
-                            if (value->cls.get() == cache.cls && cache.cls &&
-                                cache.trait->kind == TraitKind::Method &&
-                                cache.onClass == (value->type == ValueType::Class)) {
-                                const Val& method = cache.trait->method;
-                                FunctionInfo& info = *method.ref->function;
-                                if (info.code) {
-                                    Val self = *object;
-                                    pushFrame(method, info, self, object + 1, argc, object, kModeNormal, Val());
-                                    RELOAD();
-                                    break;
-                                }
-                                if (info.native) {
-                                    Val result = info.native(*this, *object, Args(object + 1, argc));
-                                    for (Val* p = object; p < sp; ++p) *p = Val();
-                                    *object = std::move(result);
-                                    sp = object + 1;
-                                    break;
-                                }
-                            }
+                        const int done = cachedCall(*object, cache, object + 1, argc, object);
+                        if (done == 2) {
+                            RELOAD();
+                            break;
                         }
-                        if (callProp(*object, NAME(name), object + 1, argc, object, &cache)) {
+                        if (done == 0 && callProp(*object, NAME(name), object + 1, argc, object, &cache)) {
                             RELOAD();
                         }
                         break;
@@ -1120,7 +1187,7 @@ void VM::run(size_t stopDepth) {
                         Val receiver;
                         bool cached = false;
                         if (cache.version == namesVersion) {
-                            const Val& self = frame->scopeThis;
+                            const Val& self = frame->scopeSelf();
                             const ClassInfo* selfClass =
                                 self.tag == Val::Tag::Object ? self.ref->cls.get() : nullptr;
                             if (selfClass == cache.cls && (self.tag != Val::Tag::Object ||
@@ -1174,7 +1241,7 @@ void VM::run(size_t stopDepth) {
                         frame->ip = ip;
                         ClassInfo* base_ = frame->owner ? frame->owner->base.get() : nullptr;
                         const Trait* trait = base_ ? base_->findTrait(NAME(name)) : nullptr;
-                        const Val self = frame->scopeThis.isUndefined() ? frame->thisVal : frame->scopeThis;
+                        const Val self = frame->scopeSelf().isUndefined() ? frame->thisVal : frame->scopeSelf();
                         Val function;
                         if (trait) {
                             function = trait->kind == TraitKind::Method ? trait->method : readTrait(self, *trait, false);
@@ -1265,7 +1332,7 @@ void VM::run(size_t stopDepth) {
                         break;
                     }
                     case OpCode::OP_SCOPE_THIS:
-                        *sp++ = frame->scopeThis.isUndefined() ? frame->thisVal : frame->scopeThis;
+                        *sp++ = frame->scopeSelf().isUndefined() ? frame->thisVal : frame->scopeSelf();
                         break;
                     case OpCode::OP_OWNER_CLASS: {
                         Val owner;
@@ -1283,7 +1350,7 @@ void VM::run(size_t stopDepth) {
                         if (frame->closure && frame->closure->function) {
                             info.owner = frame->closure->function->owner;
                         }
-                        info.scopeThis = frame->scopeThis;
+                        info.scopeThis = frame->scopeSelf();
                         info.scope = frame->scope;
                         info.captured.reserve(nested->upvalues.size());
                         for (const UpvalueSource& source : nested->upvalues) {
@@ -1437,6 +1504,102 @@ void VM::run(size_t stopDepth) {
     }
 }
 
+// Inline caches
+
+int VM::cachedGet(const Val& object, const PropertyCache& cache, Val* out) {
+    if (object.tag != Val::Tag::Object) return 0;
+    Value* value = object.ref.get();
+    if (value->cls.get() != cache.cls || !cache.cls || cache.onClass || value->type == ValueType::Class) return 0;
+    const Trait* trait = cache.trait;
+    if (trait->kind == TraitKind::Slot) {
+        const Val& field = value->slots[trait->slot];
+        if (out == &object) {
+            *out = field;
+        } else {
+            // A free place: no reference to let go of.
+            out->tag = field.tag;
+            out->num = field.num;
+            if (field.ref) out->ref = field.ref;
+        }
+        return 1;
+    }
+    if (trait->kind == TraitKind::Accessor && trait->getter.isObject()) {
+        const Val& getter = trait->getter;
+        FunctionInfo& info = *getter.ref->function;
+        if (info.code) {
+            Val self = object;
+            pushFrame(getter, info, self, out + 1, 0, out, kModeNormal, Val(), true);
+            return 2;
+        }
+        if (info.native) {
+            Val result = info.native(*this, object, Args());
+            *out = std::move(result);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int VM::cachedSet(const Val& object, const PropertyCache& cache, Val* value) {
+    if (object.tag != Val::Tag::Object) return 0;
+    Value* self = object.ref.get();
+    if (self->cls.get() != cache.cls || !cache.cls || cache.onClass || self->type == ValueType::Class) return 0;
+    const Trait* trait = cache.trait;
+    if (trait->kind == TraitKind::Slot) {
+        Val& slot = self->slots[trait->slot];
+        if (trait->coerce == Coerce::None) {
+            slot = *value;
+        } else if (trait->coerce == Coerce::Number && value->tag == Val::Tag::Number) {
+            if (slot.ref) slot.ref.reset();
+            slot.tag = Val::Tag::Number;
+            slot.num = value->num;
+        } else {
+            slot = coerceValue(*value, trait->coerce);
+        }
+        return 1;
+    }
+    if (trait->kind == TraitKind::Accessor && trait->setter.isObject()) {
+        const Val& setter = trait->setter;
+        FunctionInfo& info = *setter.ref->function;
+        if (info.code) {
+            // The setter runs in a frame; the assignment's value is what
+            // it gives.
+            Val receiver = object;
+            value[1] = *value;
+            pushFrame(setter, info, receiver, value + 1, 1, value, kModeSaved, *value, true);
+            return 2;
+        }
+        if (info.native) {
+            info.native(*this, object, Args(value, 1));
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int VM::cachedCall(const Val& object, const PropertyCache& cache, Val* args, uint32_t argc, Val* result) {
+    if (object.tag != Val::Tag::Object) return 0;
+    Value* value = object.ref.get();
+    if (value->cls.get() != cache.cls || !cache.cls || cache.trait->kind != TraitKind::Method ||
+        cache.onClass != (value->type == ValueType::Class)) {
+        return 0;
+    }
+    const Val& method = cache.trait->method;
+    FunctionInfo& info = *method.ref->function;
+    if (info.code) {
+        pushFrame(method, info, object, args, argc, result, kModeNormal, Val(), true);
+        return 2;
+    }
+    if (info.native) {
+        Val made = info.native(*this, object, Args(args, argc));
+        for (Val* p = result; p < sp; ++p) *p = Val();
+        *result = std::move(made);
+        sp = result + 1;
+        return 1;
+    }
+    return 0;
+}
+
 // Errors the loop raises, kept out of it.
 
 void VM::undefinedNameError(const std::string& name) {
@@ -1466,7 +1629,8 @@ void VM::constructInto(const Val& cls, Val* args, uint32_t argc, Val* result) {
         Val instance = allocate(cls->cls);
         if (info->constructor.isObject()) {
             const Val& constructor = info->constructor;
-            pushFrame(constructor, *constructor.ref->function, instance, args, argc, result, kModeSaved, instance);
+            pushFrame(constructor, *constructor.ref->function, instance, args, argc, result, kModeSaved, instance,
+                      true);
             return;
         }
         Val replaced;
@@ -1514,7 +1678,7 @@ void VM::superConstruct(CallFrame& frame, Val* args, uint32_t argc, Val* result)
     if (base && self.isObject()) {
         if (base->constructor.isObject()) {
             const Val& constructor = base->constructor;
-            pushFrame(constructor, *constructor.ref->function, self, args, argc, result, kModeDiscard, Val());
+            pushFrame(constructor, *constructor.ref->function, self, args, argc, result, kModeDiscard, Val(), true);
             return;
         }
         Val replaced;

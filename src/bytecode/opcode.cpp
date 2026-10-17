@@ -41,6 +41,12 @@ const char* getOpCodeName(OpCode op) {
         case OpCode::OP_DELETE_INDEX: return "DELETE_INDEX";
         case OpCode::OP_GET_SUPER: return "GET_SUPER";
         case OpCode::OP_SET_SUPER: return "SET_SUPER";
+        case OpCode::OP_GET_LOCAL_PROP: return "GET_LOCAL_PROP";
+        case OpCode::OP_SET_LOCAL_PROP: return "SET_LOCAL_PROP";
+        case OpCode::OP_GET_THIS_PROP: return "GET_THIS_PROP";
+        case OpCode::OP_SET_THIS_PROP: return "SET_THIS_PROP";
+        case OpCode::OP_CALL_THIS_PROP: return "CALL_THIS_PROP";
+        case OpCode::OP_CALL_LOCAL_PROP: return "CALL_LOCAL_PROP";
         case OpCode::OP_ADD: return "ADD";
         case OpCode::OP_SUBTRACT: return "SUBTRACT";
         case OpCode::OP_MULTIPLY: return "MULTIPLY";
@@ -132,6 +138,8 @@ int getOpCodeOperandCount(OpCode op) {
         case OpCode::OP_DEFINE_CLASS:
             return 2;
         case OpCode::OP_INC_LOCAL:
+        case OpCode::OP_GET_THIS_PROP:
+        case OpCode::OP_SET_THIS_PROP:
         case OpCode::OP_GET_NAME:
         case OpCode::OP_SET_NAME:
         case OpCode::OP_GET_PROP:
@@ -150,7 +158,13 @@ int getOpCodeOperandCount(OpCode op) {
             return 3;
         case OpCode::OP_CALL_PROP:
         case OpCode::OP_CALL_NAME:
+        case OpCode::OP_CALL_THIS_PROP:
             return 5;
+        case OpCode::OP_GET_LOCAL_PROP:
+        case OpCode::OP_SET_LOCAL_PROP:
+            return 6;
+        case OpCode::OP_CALL_LOCAL_PROP:
+            return 7;
         case OpCode::OP_JUMP:
         case OpCode::OP_JUMP_IF_FALSE:
         case OpCode::OP_JUMP_IF_TRUE:

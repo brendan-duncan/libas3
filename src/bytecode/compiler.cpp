@@ -339,7 +339,8 @@ void Compiler::emitOp(OpCode op) {
         case OpCode::OP_GET_UPVALUE: case OpCode::OP_GET_NAME: case OpCode::OP_TYPEOF_NAME:
         case OpCode::OP_GET_QNAME: case OpCode::OP_GET_SUPER: case OpCode::OP_THIS: case OpCode::OP_SCOPE_THIS:
         case OpCode::OP_OWNER_CLASS: case OpCode::OP_CLOSURE: case OpCode::OP_NEW_REGEXP:
-        case OpCode::OP_DEFINE_CLASS: case OpCode::OP_ITER_NEXT:
+        case OpCode::OP_DEFINE_CLASS: case OpCode::OP_ITER_NEXT: case OpCode::OP_GET_LOCAL_PROP:
+        case OpCode::OP_GET_THIS_PROP:
             adjust(1);
             break;
         case OpCode::OP_DUP2:
@@ -452,6 +453,47 @@ void Compiler::emitCallProp(const std::string& name, int argc) {
     emitU8(static_cast<uint8_t>(argc));
     emitU16(newCache());
     adjust(-argc);
+}
+
+void Compiler::emitThisProp(OpCode op, const std::string& name) {
+    emitOp(op);
+    emitU16(nameIndex(name));
+    emitU16(newCache());
+}
+
+void Compiler::emitLocalProp(OpCode op, uint16_t slot, const std::string& name) {
+    emitOp(op);
+    emitU16(slot);
+    emitU16(nameIndex(name));
+    emitU16(newCache());
+}
+
+void Compiler::emitFusedCall(OpCode op, uint16_t slot, const std::string& name, int argc) {
+    emitOp(op);
+    if (op == OpCode::OP_CALL_LOCAL_PROP) {
+        emitU16(slot);
+    }
+    emitU16(nameIndex(name));
+    emitU8(static_cast<uint8_t>(argc));
+    emitU16(newCache());
+    adjust(-argc);
+}
+
+bool Compiler::localObject(Expression* object, uint16_t& slot) {
+    if (!object || object->kind != Expression::ExpressionKind::Identifier) {
+        return false;
+    }
+    const Resolved where = resolve(static_cast<Identifier*>(object)->name);
+    if (where.kind != NameKind::Local) {
+        return false;
+    }
+    slot = where.index;
+    return true;
+}
+
+bool Compiler::thisObject(Expression* object) {
+    // this in a method is the instance its names find.
+    return object && object->kind == Expression::ExpressionKind::This && fs->proto->isMethod;
 }
 
 void Compiler::emitCoerce(Coerce coerce) {
@@ -1052,8 +1094,7 @@ void Compiler::emitLoad(const Resolved& where, const std::string& name) {
             emitU16(where.index);
             break;
         case NameKind::Member:
-            emitOp(OpCode::OP_SCOPE_THIS);
-            emitGetProp(name);
+            emitThisProp(OpCode::OP_GET_THIS_PROP, name);
             break;
         case NameKind::Static:
             emitOp(OpCode::OP_OWNER_CLASS);
@@ -1091,8 +1132,11 @@ void Compiler::emitStore(const Resolved& where, const std::string& name, bool ke
             emitU16(where.index);
             break;
         case NameKind::Member:
+            emitThisProp(OpCode::OP_SET_THIS_PROP, name);
+            if (!keep) emitOp(OpCode::OP_POP);
+            break;
         case NameKind::Static:
-            emitOp(where.kind == NameKind::Member ? OpCode::OP_SCOPE_THIS : OpCode::OP_OWNER_CLASS);
+            emitOp(OpCode::OP_OWNER_CLASS);
             emitOp(OpCode::OP_SWAP);
             emitSetProp(name);
             if (!keep) emitOp(OpCode::OP_POP);
@@ -2076,8 +2120,19 @@ void Compiler::compileIncrement(Expression* target, bool increment, bool postfix
             emitU8(static_cast<uint8_t>(where.coerce));
             return;
         }
-        if (where.kind == NameKind::Member || where.kind == NameKind::Static) {
-            emitOp(where.kind == NameKind::Member ? OpCode::OP_SCOPE_THIS : OpCode::OP_OWNER_CLASS);
+        if (where.kind == NameKind::Member) {
+            emitThisProp(OpCode::OP_GET_THIS_PROP, name);
+            if (keepOld) {
+                emitOp(OpCode::OP_TO_NUMBER);
+                emitOp(OpCode::OP_DUP);
+            }
+            emitOp(step);
+            emitThisProp(OpCode::OP_SET_THIS_PROP, name);
+            if (keepOld || discard) emitOp(OpCode::OP_POP);
+            return;
+        }
+        if (where.kind == NameKind::Static) {
+            emitOp(OpCode::OP_OWNER_CLASS);
             emitOp(OpCode::OP_DUP);
             emitGetProp(name);
             if (keepOld) {
@@ -2113,6 +2168,28 @@ void Compiler::compileIncrement(Expression* target, bool increment, bool postfix
             emitOp(step);
             emitOp(OpCode::OP_SET_SUPER);
             emitU16(nameIndex(member->property->name));
+            if (keepOld || discard) emitOp(OpCode::OP_POP);
+            return;
+        }
+        uint16_t slot = 0;
+        const bool onLocal = !member->computed && localObject(member->object.get(), slot);
+        if (onLocal || (!member->computed && thisObject(member->object.get()))) {
+            const std::string& name = member->property->name;
+            if (onLocal) {
+                emitLocalProp(OpCode::OP_GET_LOCAL_PROP, slot, name);
+            } else {
+                emitThisProp(OpCode::OP_GET_THIS_PROP, name);
+            }
+            if (keepOld) {
+                emitOp(OpCode::OP_TO_NUMBER);
+                emitOp(OpCode::OP_DUP);
+            }
+            emitOp(step);
+            if (onLocal) {
+                emitLocalProp(OpCode::OP_SET_LOCAL_PROP, slot, name);
+            } else {
+                emitThisProp(OpCode::OP_SET_THIS_PROP, name);
+            }
             if (keepOld || discard) emitOp(OpCode::OP_POP);
             return;
         }
@@ -2160,8 +2237,20 @@ void Compiler::compileAssignment(AssignmentExpression* expr, bool discard) {
     if (target->kind == Expression::ExpressionKind::Identifier) {
         const std::string& name = static_cast<Identifier*>(target)->name;
         const Resolved where = resolve(name);
-        if (where.kind == NameKind::Member || where.kind == NameKind::Static) {
-            emitOp(where.kind == NameKind::Member ? OpCode::OP_SCOPE_THIS : OpCode::OP_OWNER_CLASS);
+        if (where.kind == NameKind::Member) {
+            if (compound) {
+                emitThisProp(OpCode::OP_GET_THIS_PROP, name);
+                compileExpression(expr->right.get());
+                applyOperator();
+            } else {
+                compileExpression(expr->right.get());
+            }
+            emitThisProp(OpCode::OP_SET_THIS_PROP, name);
+            if (discard) emitOp(OpCode::OP_POP);
+            return;
+        }
+        if (where.kind == NameKind::Static) {
+            emitOp(OpCode::OP_OWNER_CLASS);
             if (compound) {
                 emitOp(OpCode::OP_DUP);
                 emitGetProp(name);
@@ -2197,6 +2286,29 @@ void Compiler::compileAssignment(AssignmentExpression* expr, bool discard) {
             }
             emitOp(OpCode::OP_SET_SUPER);
             emitU16(nameIndex(member->property->name));
+            if (discard) emitOp(OpCode::OP_POP);
+            return;
+        }
+        uint16_t slot = 0;
+        const bool onLocal = !member->computed && localObject(member->object.get(), slot);
+        if (onLocal || (!member->computed && thisObject(member->object.get()))) {
+            const std::string& name = member->property->name;
+            if (compound) {
+                if (onLocal) {
+                    emitLocalProp(OpCode::OP_GET_LOCAL_PROP, slot, name);
+                } else {
+                    emitThisProp(OpCode::OP_GET_THIS_PROP, name);
+                }
+                compileExpression(expr->right.get());
+                applyOperator();
+            } else {
+                compileExpression(expr->right.get());
+            }
+            if (onLocal) {
+                emitLocalProp(OpCode::OP_SET_LOCAL_PROP, slot, name);
+            } else {
+                emitThisProp(OpCode::OP_SET_THIS_PROP, name);
+            }
             if (discard) emitOp(OpCode::OP_POP);
             return;
         }
@@ -2291,6 +2403,15 @@ void Compiler::compileCallExpression(CallExpression* expr) {
             emitCallProp(rest.back(), argc);
             return;
         }
+        uint16_t slot = 0;
+        const bool onLocal = !member->computed && localObject(member->object.get(), slot);
+        if (onLocal || (!member->computed && thisObject(member->object.get()))) {
+            emitOp(OpCode::OP_UNDEFINED);
+            const int argc = compileArguments(expr->arguments);
+            emitFusedCall(onLocal ? OpCode::OP_CALL_LOCAL_PROP : OpCode::OP_CALL_THIS_PROP, slot,
+                          member->property->name, argc);
+            return;
+        }
         compileExpression(member->object.get());
         if (member->computed) {
             compileExpression(member->computedProperty.get());
@@ -2308,9 +2429,14 @@ void Compiler::compileCallExpression(CallExpression* expr) {
         const std::string& name = static_cast<Identifier*>(callee)->name;
         const Resolved where = resolve(name);
         switch (where.kind) {
-            case NameKind::Member:
+            case NameKind::Member: {
+                emitOp(OpCode::OP_UNDEFINED);
+                const int argc = compileArguments(expr->arguments);
+                emitFusedCall(OpCode::OP_CALL_THIS_PROP, 0, name, argc);
+                return;
+            }
             case NameKind::Static: {
-                emitOp(where.kind == NameKind::Member ? OpCode::OP_SCOPE_THIS : OpCode::OP_OWNER_CLASS);
+                emitOp(OpCode::OP_OWNER_CLASS);
                 const int argc = compileArguments(expr->arguments);
                 emitCallProp(name, argc);
                 return;
@@ -2399,6 +2525,15 @@ void Compiler::compileMemberExpression(MemberExpression* expr) {
         for (const auto& part : rest) {
             emitGetProp(part);
         }
+        return;
+    }
+    uint16_t slot = 0;
+    if (!expr->computed && localObject(expr->object.get(), slot)) {
+        emitLocalProp(OpCode::OP_GET_LOCAL_PROP, slot, expr->property->name);
+        return;
+    }
+    if (!expr->computed && thisObject(expr->object.get())) {
+        emitThisProp(OpCode::OP_GET_THIS_PROP, expr->property->name);
         return;
     }
     compileExpression(expr->object.get());

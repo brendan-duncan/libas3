@@ -103,16 +103,22 @@ private:
 // Call frame for function calls
 struct CallFrame {
     BytecodeFunction* code = nullptr;
-    ValuePtr closure;
+    // The function running; held when nothing else is sure to hold it (a
+    // method in a class, the callee's place on the stack, are).
+    Value* closure = nullptr;
+    ValuePtr closureHold;
     const uint8_t* ip = nullptr;
     const uint8_t* codeStart = nullptr;
     // The first local (parameters first), and where the result goes.
     Val* base = nullptr;
     Val* result = nullptr;
     Val thisVal;
-    // The instance names find, and the timeline scope.
+    // The instance names find (for a method, 'this' itself), and the
+    // timeline scope.
     Val scopeThis;
+    bool methodThis = false;
     Val scope;
+    const Val& scopeSelf() const { return methodThis ? thisVal : scopeThis; }
     ClassInfo* owner = nullptr;
     std::vector<std::shared_ptr<Cell>> cells;
     uint32_t argc = 0;
@@ -375,9 +381,9 @@ private:
     // or a native one now. Its arguments are at args, and the result goes
     // to result.
     bool invoke(const Val& function, const Val& thisValue, Val* args, uint32_t argc, Val* result,
-                uint8_t mode = 0, const Val& saved = Val());
+                uint8_t mode = 0, const Val& saved = Val(), bool borrowed = false);
     void pushFrame(const Val& function, FunctionInfo& info, const Val& thisValue, Val* args, uint32_t argc,
-                   Val* result, uint8_t mode, const Val& saved);
+                   Val* result, uint8_t mode, const Val& saved, bool borrowed = false);
     Val callNative(const Val& function, const Val& thisValue, Val* args, uint32_t argc);
     Val callAsFunction(ClassInfo* cls, const Val& classValue, Args args);
     // The function at the top of the stack run to its end: for the host.
@@ -386,6 +392,12 @@ private:
     void superConstruct(CallFrame& frame, Val* args, uint32_t argc, Val* result);
 
     Val getProp(const Val& object, const std::string& name, PropertyCache* cache);
+    // What an inline cache knows, done at once: 0 when it does not know
+    // the object's class, 1 when done, 2 when a getter's, setter's or
+    // method's frame was pushed (run goes on in it).
+    int cachedGet(const Val& object, const PropertyCache& cache, Val* out);
+    int cachedSet(const Val& object, const PropertyCache& cache, Val* value);
+    int cachedCall(const Val& object, const PropertyCache& cache, Val* args, uint32_t argc, Val* result);
     void setProp(const Val& object, const std::string& name, const Val& value, PropertyCache* cache);
     bool callProp(const Val& object, const std::string& name, Val* args, uint32_t argc, Val* result,
                   PropertyCache* cache);

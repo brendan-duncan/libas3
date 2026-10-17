@@ -128,8 +128,12 @@ size_t Chunk::disassembleInstruction(size_t offset) const {
         case OpCode::OP_DELETE_PROP:
         case OpCode::OP_GET_SUPER:
         case OpCode::OP_SET_SUPER:
+        case OpCode::OP_GET_THIS_PROP:
+        case OpCode::OP_SET_THIS_PROP:
+        case OpCode::OP_CALL_THIS_PROP:
             std::cout << "'" << names[getU16(offset + 1)] << "'";
-            if (op == OpCode::OP_CALL_PROP || op == OpCode::OP_CALL_NAME || op == OpCode::OP_CALL_SUPER) {
+            if (op == OpCode::OP_CALL_PROP || op == OpCode::OP_CALL_NAME || op == OpCode::OP_CALL_SUPER ||
+                op == OpCode::OP_CALL_THIS_PROP) {
                 std::cout << " (" << static_cast<int>(code[offset + 3]) << " args)";
             }
             break;
@@ -140,6 +144,11 @@ size_t Chunk::disassembleInstruction(size_t offset) const {
         case OpCode::OP_JUMP_IF_TRUE_KEEP:
         case OpCode::OP_JUMP_IF_NOT_NULLISH_KEEP:
             std::cout << "-> " << (offset + 5 + getS32(offset + 1));
+            break;
+        case OpCode::OP_GET_LOCAL_PROP:
+        case OpCode::OP_SET_LOCAL_PROP:
+        case OpCode::OP_CALL_LOCAL_PROP:
+            std::cout << "local " << getU16(offset + 1) << " '" << names[getU16(offset + 3)] << "'";
             break;
         default:
             if (operands == 1) {

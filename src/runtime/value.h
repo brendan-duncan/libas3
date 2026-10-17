@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <vector>
 #include <functional>
+#include <typeinfo>
 
 namespace as3 {
 
@@ -348,7 +349,15 @@ T* Val::host() const {
     if (tag != Tag::Object || !ref) {
         return nullptr;
     }
-    return dynamic_cast<T*>(ref->host.get());
+    HostObject* object = ref->host.get();
+    if (!object) {
+        return nullptr;
+    }
+    // The exact type is the usual case, and quicker than a dynamic_cast.
+    if (typeid(*object) == typeid(T)) {
+        return static_cast<T*>(object);
+    }
+    return dynamic_cast<T*>(object);
 }
 
 // What a class member is.
