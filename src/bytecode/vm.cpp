@@ -30,6 +30,19 @@ enum FrameMode : uint8_t {
     kModeConstructFunction = 3,
 };
 
+// x % y. Positive whole numbers that fit in an int, the usual case,
+// without fmod (whose -0 and NaN cases they cannot reach).
+inline double modulo(double x, double y) {
+    if (x >= 1 && x <= 2147483647.0 && y >= 1 && y <= 2147483647.0) {
+        const int32_t a = static_cast<int32_t>(x);
+        const int32_t b = static_cast<int32_t>(y);
+        if (a == x && b == y) {
+            return static_cast<double>(a % b);
+        }
+    }
+    return std::fmod(x, y);
+}
+
 double nowMilliseconds() {
     using namespace std::chrono;
     return static_cast<double>(duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count()) / 1000.0;
@@ -426,7 +439,11 @@ void VM::pushFrame(const Val& function, FunctionInfo& info, const Val& thisValue
     frame.argc = argc;
     frame.mode = mode;
     frame.saved = saved;
-    frame.thisVal = info.bound ? info.boundThis : thisValue;
+    if (info.bound) {
+        frame.thisVal = info.boundThis;
+    } else {
+        frame.thisVal = thisValue;
+    }
     frame.owner = info.owner.get();
     if (code->isMethod) {
         frame.methodThis = true;
@@ -457,10 +474,8 @@ void VM::pushFrame(const Val& function, FunctionInfo& info, const Val& thisValue
         if (arg.tag == Val::Tag::Number) {
             // Numbers that are already so.
             if (coerce == Coerce::Number) continue;
-            if (coerce == Coerce::Int && arg.num >= -2147483648.0 && arg.num <= 2147483647.0 &&
-                arg.num == static_cast<double>(static_cast<int32_t>(arg.num))) {
-                continue;
-            }
+            if (coerce == Coerce::Int && isInt32(arg.num)) continue;
+            if (coerce == Coerce::Uint && isUint32(arg.num)) continue;
         } else if (coerce == Coerce::Nullable && arg.tag != Val::Tag::Undefined) {
             continue;
         }
@@ -658,7 +673,12 @@ void VM::run(size_t stopDepth) {
                         const double delta = static_cast<double>(READ_U8()) - 128.0;
                         const Coerce coerce = static_cast<Coerce>(READ_U8());
                         const double value = (local.tag == Val::Tag::Number ? local.num : toNumber(local)) + delta;
-                        if (coerce == Coerce::Int) {
+                        if (local.tag == Val::Tag::Number && coerce <= Coerce::Number) {
+                            // A number stays one: no reference to let go of.
+                            local.num = coerce == Coerce::Int    ? static_cast<double>(toInt32(value))
+                                        : coerce == Coerce::Uint ? static_cast<double>(toUint32(value))
+                                                                 : value;
+                        } else if (coerce == Coerce::Int) {
                             local = Val::number(toInt32(value));
                         } else if (coerce == Coerce::Uint) {
                             local = Val::number(toUint32(value));
@@ -995,7 +1015,7 @@ void VM::run(size_t stopDepth) {
                     case OpCode::OP_DIVIDE:
                         NUMERIC_OP(x / y)
                     case OpCode::OP_MODULO:
-                        NUMERIC_OP(std::fmod(x, y))
+                        NUMERIC_OP(modulo(x, y))
                     case OpCode::OP_BIT_AND:
                         NUMERIC_OP(static_cast<double>(toInt32(x) & toInt32(y)))
                     case OpCode::OP_BIT_OR:
@@ -1158,11 +1178,9 @@ void VM::run(size_t stopDepth) {
                             break;
                         }
                         if (coerce == Coerce::Int && a.tag == Val::Tag::Number) {
-                            const double n = a.num;
-                            if (!(n >= -2147483648.0 && n <= 2147483647.0 &&
-                                  n == static_cast<double>(static_cast<int32_t>(n)))) {
-                                a.num = toInt32(n);
-                            }
+                            if (!isInt32(a.num)) a.num = toInt32(a.num);
+                        } else if (coerce == Coerce::Uint && a.tag == Val::Tag::Number) {
+                            if (!isUint32(a.num)) a.num = toUint32(a.num);
                         } else if (coerce == Coerce::String && a.isObject()) {
                             a = Val::string(toString(a));
                         } else if ((coerce == Coerce::Number || coerce == Coerce::Int || coerce == Coerce::Uint) &&
@@ -1619,7 +1637,9 @@ int VM::cachedSet(const Val& object, const PropertyCache& cache, Val* value) {
         Val& slot = self->slots[trait->slot];
         if (trait->coerce == Coerce::None) {
             slot = *value;
-        } else if (trait->coerce == Coerce::Number && value->tag == Val::Tag::Number) {
+        } else if (value->tag == Val::Tag::Number &&
+                   (trait->coerce == Coerce::Number || (trait->coerce == Coerce::Int && isInt32(value->num)) ||
+                    (trait->coerce == Coerce::Uint && isUint32(value->num)))) {
             if (slot.ref) slot.ref.reset();
             slot.tag = Val::Tag::Number;
             slot.num = value->num;

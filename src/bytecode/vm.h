@@ -110,7 +110,7 @@ struct CallFrame {
     // The function running; held when nothing else is sure to hold it (a
     // method in a class, the callee's place on the stack, are).
     Value* closure = nullptr;
-    ValuePtr closureHold;
+    ValueRef closureHold;
     const uint8_t* ip = nullptr;
     const uint8_t* codeStart = nullptr;
     // The first local (parameters first), and where the result goes.

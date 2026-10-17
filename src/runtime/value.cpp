@@ -402,14 +402,14 @@ Val coerceValue(const Val& value, Coerce coerce) {
         case Coerce::None:
             return value;
         case Coerce::Int:
-            if (value.tag == Val::Tag::Number) {
-                const double n = value.num;
-                if (n >= -2147483648.0 && n <= 2147483647.0 && n == static_cast<double>(static_cast<int32_t>(n))) {
-                    return value;
-                }
+            if (value.tag == Val::Tag::Number && isInt32(value.num)) {
+                return value;
             }
             return Val::number(value.toInt32());
         case Coerce::Uint:
+            if (value.tag == Val::Tag::Number && isUint32(value.num)) {
+                return value;
+            }
             return Val::number(value.toUint32());
         case Coerce::Number:
             return value.tag == Val::Tag::Number ? value : Val::number(value.toNumber());

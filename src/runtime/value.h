@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <memory>
@@ -583,6 +584,16 @@ std::string numberToString(double value);
 double stringToNumber(const std::string& text);
 int32_t toInt32(double value);
 uint32_t toUint32(double value);
+// Whether a number is already what the int (or uint) coercion makes of
+// it, and can be kept as it is: -0 is not (it becomes 0).
+inline bool isInt32(double value) {
+    return value >= -2147483648.0 && value <= 2147483647.0 &&
+           value == static_cast<double>(static_cast<int32_t>(value)) && (value != 0 || !std::signbit(value));
+}
+inline bool isUint32(double value) {
+    return value >= 0 && value <= 4294967295.0 && value == static_cast<double>(static_cast<uint32_t>(value)) &&
+           (value != 0 || !std::signbit(value));
+}
 // The coercion applied to a value.
 Val coerceValue(const Val& value, Coerce coerce);
 // The value a variable of a type starts with: 0 for int and uint, NaN for
