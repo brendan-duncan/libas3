@@ -749,7 +749,7 @@ void VM::run(size_t stopDepth) {
                         }
                         frame->ip = ip;
                         Val value;
-                        if (!lookupName(*frame, NAME(name), value, nullptr, &cache)) {
+                        if (!lookupName(*frame, NAME(name), value, nullptr, &cache) && !looseNames) {
                             undefinedNameError(NAME(name));
                         }
                         *sp++ = std::move(value);

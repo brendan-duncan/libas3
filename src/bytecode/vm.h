@@ -258,6 +258,9 @@ public:
     // What include "file.as" reads, in what load and the class resolver
     // compile.
     void setIncludeResolver(IncludeResolver resolver) { includeResolver = std::move(resolver); }
+    // ActionScript 1 and 2 read a variable that was never set as
+    // undefined; ActionScript 3 throws a ReferenceError. Off by default.
+    void setLooseNames(bool loose) { looseNames = loose; }
 
     // A definition (class, function or value) by qualified name ("a.b.C"
     // or "a.b::C"), asking the class resolver if needed: undefined when
@@ -367,6 +370,7 @@ private:
     std::set<std::string> loading;
     Builtins core;
     bool hadError = false;
+    bool looseNames = false;
     std::string errorMessage;
     int errorLine = -1;
     Val errorValue;

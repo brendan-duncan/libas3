@@ -114,6 +114,13 @@ static void init_as2_tests() {
                "6\n1 4\n");
     });
 
+    suite.addTest("Loose names read a variable never set as undefined", []() {
+        VM vm;
+        vm.setLooseNames(true);
+        expect(run(vm, "trace(never);\nif (never == true) { trace('no'); }\nnever2++;\ntrace(never2, typeof never);\n"),
+               "undefined\nNaN undefined\n");
+    });
+
     suite.addTest("Missing and extra arguments", []() {
         VM vm;
         expect(run(vm, "function f(a, b) { return b; }\ntrace(f(1), f(1, 2, 3));"), "undefined 2\n");
