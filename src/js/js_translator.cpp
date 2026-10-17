@@ -1007,6 +1007,9 @@ struct Declaration {
     bool isConst = false;
     // The loop whose head declares it.
     Statement* loop = nullptr;
+    // The block it is a statement of (not the function's), and where.
+    BlockStatement* block = nullptr;
+    size_t index = 0;
 };
 
 // What a statement uses, but for one statement in it.
@@ -1070,7 +1073,16 @@ void collectDeclarations(Statement* stmt, size_t top, bool atTop, std::vector<De
     } else if (auto* function = dynamic_cast<FunctionDefinition*>(stmt)) {
         functions.push_back(function);
     } else if (auto* block = dynamic_cast<BlockStatement*>(stmt)) {
-        for (auto& s : block->statements) collectDeclarations(s.get(), top, false, out, functions);
+        for (size_t i = 0; i < block->statements.size(); ++i) {
+            const size_t before = out.size();
+            collectDeclarations(block->statements[i].get(), top, false, out, functions);
+            if (dynamic_cast<VariableDefinition*>(block->statements[i].get())) {
+                for (size_t j = before; j < out.size(); ++j) {
+                    out[j].block = block;
+                    out[j].index = i;
+                }
+            }
+        }
     } else if (auto* branch = dynamic_cast<IfStatement*>(stmt)) {
         collectDeclarations(branch->consequent.get(), top, false, out, functions);
         collectDeclarations(branch->alternate.get(), top, false, out, functions);
@@ -1386,7 +1398,21 @@ void Translator::prepareTops(Fn& f, const std::vector<Statement*>& tops) {
             scanExcept(tops[first.top], first.loop, around);
             loopOnly = !around.refs.count(name) && !around.innerFree.count(name);
         }
-        if (list.size() == 1 && !usedBefore && !captured.count(name) && (first.atTop || loopOnly)) {
+        // A block's variable with a value, used only after it in the
+        // block: the block's own.
+        bool blockOnly = false;
+        if (!first.atTop && !first.inLoopHead && first.block && first.init && list.size() == 1 && !captured.count(name)) {
+            bool outside = false;
+            for (Statement* t : tops) {
+                Scan around;
+                scanExcept(t, first.block, around);
+                if (around.refs.count(name) || around.innerFree.count(name)) outside = true;
+            }
+            Scan earlier;
+            for (size_t i = 0; i < first.index; ++i) scanStatement(first.block->statements[i].get(), earlier);
+            blockOnly = !outside && !earlier.refs.count(name) && !earlier.innerFree.count(name);
+        }
+        if (list.size() == 1 && !usedBefore && !captured.count(name) && (first.atTop || loopOnly || blockOnly)) {
             f.declaration[name] = 'l';
         } else if (first.init || ty.kind == Ty::Any) {
             f.declaration[name] = 'v';
