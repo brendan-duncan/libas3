@@ -39,12 +39,20 @@ src/
 ├── runtime/          # Values, classes, the built-in library
 │   ├── value.h/cpp         # Val, Value, ClassInfo, HostObject
 │   └── builtins_*.cpp      # Object, Array, String, Math, Date, RegExp, JSON...
-└── bytecode/         # Compiler and VM
-    ├── opcode.h/cpp        # Instruction set
-    ├── chunk.h/cpp         # Bytecode, functions and classes as compiled
-    ├── compiler.h/cpp      # AST → Bytecode
-    ├── vm.h/cpp            # The interpreter loop, calls, exceptions
-    └── vm_runtime.cpp      # Properties, names, classes, native classes
+├── bytecode/         # Compiler and VM
+│   ├── opcode.h/cpp        # Instruction set
+│   ├── chunk.h/cpp         # Bytecode, functions and classes as compiled
+│   ├── compiler.h/cpp      # AST → Bytecode
+│   ├── vm.h/cpp            # The interpreter loop, calls, exceptions
+│   └── vm_runtime.cpp      # Properties, names, classes, native classes
+└── abc/              # ActionScript 3 → ABC (AVM2 bytecode), for players
+    ├── abc.h               # compile(): sources and timelines to an abcFile
+    ├── abc_file.h/cpp      # The abcFile as data; read() and write()
+    ├── abc_opcodes.h/cpp   # AVM2's instructions, decoding, stack effects
+    ├── abc_verifier.h/cpp  # verify(), disassemble()
+    ├── abc_builder.h/cpp   # Constant pools and method code as they are made
+    ├── abc_player.h/cpp    # The player's classes, by package
+    └── abc_compiler.cpp    # AST → ABC
 
 test/                 # One executable, a suite per file
 ```
@@ -249,6 +257,57 @@ as3::Parser parser(source, "Main.as");
 parser.defineConstant("CONFIG::debug", "true");   // CONFIG::debug { ... } is kept
 ```
 
+## Compiling to ABC
+
+For movies that run in a player rather than in this VM, `as3::abc::compile` makes ABC (AVM2 bytecode, the abcFile a SWF's DoABC tag carries) from the same sources: classes in packages, and the frame scripts of timelines.
+
+```cpp
+#include "abc/abc.h"
+
+std::vector<as3::abc::Source> sources = {{readFile("com/example/Ball.as"), "Ball.as"}};
+
+as3::abc::Timeline main;                       // the main timeline's scripts
+main.className = as3::abc::timelineClassName("game");   // "game_fla.MainTimeline"
+main.instances = {{"ball", "com.example.Ball"}, {"score", "flash.text.TextField"}};
+main.frames = {{0, "import com.example.Ball;\nball.speed = 2;\nstop();"}};
+
+as3::abc::Output out = as3::abc::compile(sources, {main});
+if (!out.ok) {
+    std::cerr << out.errorText();              // "Ball.as:12: error: ..."
+} else {
+    // out.abc: the DoABC tag's ABC (after its flags, 1 for lazy, and its name).
+    // out.classes: "com.example.Ball", ..., "game_fla.MainTimeline", for SymbolClass.
+}
+```
+
+- Each source file is a script: its classes (with their superclasses pushed as scopes as they are made, as compilers do), package functions and variables, and code outside the package. A script runs when one of its definitions is first needed, so files may be given in any order; the timelines' scripts come last.
+- A `Timeline` becomes a dynamic subclass of its `baseClass` (`flash.display.MovieClip` when not given) whose constructor calls `addFrameScript(0, frame1, ...)`. The variables and functions of its frames' scripts are its public members, each frame's code is a method (`frame1` for frame 0), its stage instances are public variables of their types, and the `flash.*` packages are imported without import statements, as the authoring tool does. A library symbol exported for ActionScript with no class file is a `Timeline` without frames.
+- Classes the player provides need no definitions: `import flash.display.Sprite` names `flash.display::Sprite`, as `import fl.controls.Button` names that class for a movie that has the components. A type named through a wildcard import is found in a table of the player's classes (`abc_player.cpp`); one not found there is taken as `*`, with a warning.
+- `Options`: `debugInfo` (debugfile and debugline, for a debugger player), conditional compilation `constants`, an `includeHandler`, and `verify` (on by default: the output is checked with the verifier below, and a problem is an error).
+- Not compiled: namespaces beyond the four access ones (the parser keeps no `ns::name` or `use namespace`: such members are internal), E4X namespaces, and AVM1. A local variable inside `with` is found before the `with` object's property of the same name.
+
+The rest of the format is a library too, for reading ABC from published movies as well as for checking what is made:
+
+```cpp
+#include "abc/abc_file.h"
+#include "abc/abc_opcodes.h"
+#include "abc/abc_verifier.h"
+
+as3::abc::AbcFile file;                        // pools, methods, metadata, instances, classes, scripts, bodies
+std::string error;
+if (!as3::abc::read(bytes, file, error)) { /* not an abcFile: error says why */ }
+std::vector<uint8_t> again = as3::abc::write(file);           // the same bytes
+
+std::vector<as3::abc::Instruction> code;       // a body's instructions, operands decoded
+as3::abc::decodeAll(file.bodies[0].code, code, error);
+as3::abc::StackEffect effect = as3::abc::stackEffect(file, code[0]);
+
+std::vector<std::string> problems = as3::abc::verify(file);   // empty when it verifies
+std::string text = as3::abc::disassemble(file);
+```
+
+`read` takes every abcFile (46.16) a compiler makes: all multiname kinds, metadata, optional parameters, every opcode including the debug ones and `lookupswitch`; it reads, and writes back byte for byte, the 249 KB ABC of a movie Flash CS5 published with the fl components in it. `verify` checks what a player's verifier checks of the structure (not the types): pool indexes, one body for each method that runs and none for an interface's, instructions that decode, branches onto instructions (a backward one onto a `label`), and along every path an operand stack never below empty or above `max_stack` and a scope stack within `max_scope_depth - init_scope_depth`, the same wherever paths meet, with exception handlers starting from one value and no scopes.
+
 ## Running Tests
 
 ```bash
@@ -256,7 +315,7 @@ parser.defineConstant("CONFIG::debug", "true");   // CONFIG::debug { ... } is ke
 ./build/Release/as3_tests.exe nativeclasses  # one
 ```
 
-Suites: Parser, Bytecode, VM, AS2 (ActionScript 1 and 2), Language (classes, packages, statements, types), Library (the built-in classes), XML (E4X, and as3corelib's JSON encoder, which uses it), NativeClasses (the host's classes, a JPEG encoder run on a native BitmapData), BunnyPaint (a 6,000-line paint program and as3corelib's JPEG encoder compiled and loaded through the class resolver, skipped where its sources are not), Errors, and Benchmark.
+Suites: Parser, Bytecode, VM, AS2 (ActionScript 1 and 2), Language (classes, packages, statements, types), Library (the built-in classes), XML (E4X, and as3corelib's JSON encoder, which uses it), NativeClasses (the host's classes, a JPEG encoder run on a native BitmapData), BunnyPaint (a 6,000-line paint program and as3corelib's JPEG encoder compiled and loaded through the class resolver, skipped where its sources are not), Errors, Abc (reading, writing and verifying ABC, Flash CS5's own among it), AbcCompiler (ActionScript compiled to ABC and verified, bunnyPaint and its main timeline among it), and Benchmark.
 
 ## Performance
 
