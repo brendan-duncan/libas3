@@ -513,7 +513,7 @@ void VM::pushFrame(const Val& function, FunctionInfo& info, const Val& thisValue
     if (code->numCells) {
         frame.cells.resize(code->numCells);
         for (uint32_t i = 0; i < code->numCells; ++i) {
-            frame.cells[i] = std::make_shared<Cell>();
+            frame.cells[i] = std::allocate_shared<Cell>(PoolAllocator<Cell>());
             const int32_t init = code->cellInit[i];
             if (init >= 0) {
                 frame.cells[i]->value = defaultForCoerce(static_cast<Coerce>(init));

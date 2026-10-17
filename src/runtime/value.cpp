@@ -11,10 +11,90 @@ namespace as3 {
 
 namespace {
 
+// The pool: blocks of up to kPoolMax bytes, in classes of kPoolStep, kept
+// when freed (up to kPoolKeep bytes a class) for the next of the size.
+// Per thread, so no lock; a block freed on another thread goes to that
+// thread's lists. Once a thread's pool is gone (at its end), the heap.
+constexpr size_t kPoolStep = 16;
+constexpr size_t kPoolMax = 1024;
+constexpr size_t kPoolKeep = 4 << 20;
+constexpr size_t kPoolClasses = kPoolMax / kPoolStep + 1;
+
+struct Pool {
+    struct Free {
+        Free* next;
+    };
+    Free* lists[kPoolClasses] = {};
+    size_t kept[kPoolClasses] = {};
+    bool* gone;
+
+    explicit Pool(bool* goneFlag) : gone(goneFlag) {}
+    ~Pool() {
+        *gone = true;
+        for (Free* list : lists) {
+            while (list) {
+                Free* next = list->next;
+                ::operator delete(list);
+                list = next;
+            }
+        }
+    }
+};
+
+thread_local bool poolGone = false;
+Pool& pool() {
+    thread_local Pool instance(&poolGone);
+    return instance;
+}
+
+size_t poolClass(size_t size) {
+    return size <= kPoolStep ? 1 : (size + kPoolStep - 1) / kPoolStep;
+}
+
+} // namespace
+
+void* poolAllocate(size_t size) {
+    if (size > kPoolMax || poolGone) {
+        return ::operator new(size);
+    }
+    const size_t cls = poolClass(size);
+    Pool& p = pool();
+    if (Pool::Free* block = p.lists[cls]) {
+        p.lists[cls] = block->next;
+        p.kept[cls] -= cls * kPoolStep;
+        return block;
+    }
+    return ::operator new(cls * kPoolStep);
+}
+
+void poolFree(void* block, size_t size) noexcept {
+    if (!block) return;
+    if (size > kPoolMax || poolGone) {
+        ::operator delete(block);
+        return;
+    }
+    const size_t cls = poolClass(size);
+    Pool& p = pool();
+    if (p.kept[cls] + cls * kPoolStep > kPoolKeep) {
+        ::operator delete(block);
+        return;
+    }
+    auto* freed = static_cast<Pool::Free*>(block);
+    freed->next = p.lists[cls];
+    p.lists[cls] = freed;
+    p.kept[cls] += cls * kPoolStep;
+}
+
+ValuePtr makeValue() {
+    return std::allocate_shared<Value>(PoolAllocator<Value>());
+}
+
+namespace {
+
 // Shared values for what has no state of its own.
 const ValuePtr& sharedUndefined() {
     static const ValuePtr value = [] {
-        auto v = std::make_shared<Value>();
+        auto v = makeValue();
         v->type = ValueType::Undefined;
         return v;
     }();
@@ -23,7 +103,7 @@ const ValuePtr& sharedUndefined() {
 
 const ValuePtr& sharedNull() {
     static const ValuePtr value = [] {
-        auto v = std::make_shared<Value>();
+        auto v = makeValue();
         v->type = ValueType::Null;
         return v;
     }();
@@ -32,13 +112,13 @@ const ValuePtr& sharedNull() {
 
 const ValuePtr& sharedBoolean(bool flag) {
     static const ValuePtr yes = [] {
-        auto v = std::make_shared<Value>();
+        auto v = makeValue();
         v->type = ValueType::Boolean;
         v->boolValue = true;
         return v;
     }();
     static const ValuePtr no = [] {
-        auto v = std::make_shared<Value>();
+        auto v = makeValue();
         v->type = ValueType::Boolean;
         return v;
     }();
@@ -112,7 +192,7 @@ Val::operator ValuePtr() const {
 Val Val::string(const std::string& value) {
     Val v;
     v.tag = Tag::String;
-    v.ref = std::make_shared<Value>();
+    v.ref = makeValue();
     v.ref->type = ValueType::String;
     v.ref->stringValue = value;
     return v;
@@ -121,7 +201,7 @@ Val Val::string(const std::string& value) {
 Val Val::string(std::string&& value) {
     Val v;
     v.tag = Tag::String;
-    v.ref = std::make_shared<Value>();
+    v.ref = makeValue();
     v.ref->type = ValueType::String;
     v.ref->stringValue = std::move(value);
     return v;
@@ -474,52 +554,52 @@ bool ClassInfo::isSubclassOf(const ClassInfo* other) const {
 // Value
 
 ValuePtr Value::makeUndefined() {
-    auto v = std::make_shared<Value>();
+    auto v = makeValue();
     v->type = ValueType::Undefined;
     return v;
 }
 
 ValuePtr Value::makeNull() {
-    auto v = std::make_shared<Value>();
+    auto v = makeValue();
     v->type = ValueType::Null;
     return v;
 }
 
 ValuePtr Value::makeBoolean(bool value) {
-    auto v = std::make_shared<Value>();
+    auto v = makeValue();
     v->type = ValueType::Boolean;
     v->boolValue = value;
     return v;
 }
 
 ValuePtr Value::makeNumber(double value) {
-    auto v = std::make_shared<Value>();
+    auto v = makeValue();
     v->type = ValueType::Number;
     v->numberValue = value;
     return v;
 }
 
 ValuePtr Value::makeString(const std::string& value) {
-    auto v = std::make_shared<Value>();
+    auto v = makeValue();
     v->type = ValueType::String;
     v->stringValue = value;
     return v;
 }
 
 ValuePtr Value::makeObject() {
-    auto v = std::make_shared<Value>();
+    auto v = makeValue();
     v->type = ValueType::Object;
     return v;
 }
 
 ValuePtr Value::makeArray() {
-    auto v = std::make_shared<Value>();
+    auto v = makeValue();
     v->type = ValueType::Array;
     return v;
 }
 
 ValuePtr Value::makeFunction(std::shared_ptr<BytecodeFunction> func) {
-    auto v = std::make_shared<Value>();
+    auto v = makeValue();
     v->type = ValueType::Function;
     v->function = std::make_shared<FunctionInfo>();
     if (func) {
@@ -531,14 +611,14 @@ ValuePtr Value::makeFunction(std::shared_ptr<BytecodeFunction> func) {
 }
 
 ValuePtr Value::makeNativeFunction(NativeFunction func) {
-    auto v = std::make_shared<Value>();
+    auto v = makeValue();
     v->type = ValueType::NativeFunction;
     v->nativeFunc = func;
     return v;
 }
 
 ValuePtr Value::makeClass(const std::string& name) {
-    auto v = std::make_shared<Value>();
+    auto v = makeValue();
     v->type = ValueType::Class;
     v->cls = std::make_shared<ClassInfo>();
     v->cls->name = name;
@@ -550,7 +630,7 @@ ValuePtr Value::makeClass(const std::string& name) {
 }
 
 ValuePtr Value::makeHostObject(std::shared_ptr<HostObject> host) {
-    auto v = std::make_shared<Value>();
+    auto v = makeValue();
     v->type = ValueType::Object;
     v->host = std::move(host);
     return v;

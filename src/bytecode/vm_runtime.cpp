@@ -59,7 +59,7 @@ bool arrayIndex(const Val& key, size_t& index) {
 // Making values
 
 Val VM::allocate(const std::shared_ptr<ClassInfo>& cls) {
-    auto value = std::make_shared<Value>();
+    auto value = makeValue();
     value->type = cls ? cls->instanceType : ValueType::Object;
     value->cls = cls;
     if (cls) {
@@ -81,10 +81,10 @@ Val VM::newObject() {
 }
 
 Val VM::makeClosure(const std::shared_ptr<BytecodeFunction>& code, const std::shared_ptr<ClassInfo>& owner) {
-    auto value = std::make_shared<Value>();
+    auto value = makeValue();
     value->type = ValueType::Function;
     value->cls = core.function;
-    value->function = std::make_shared<FunctionInfo>();
+    value->function = std::allocate_shared<FunctionInfo>(PoolAllocator<FunctionInfo>());
     value->function->code = code;
     value->function->owner = owner;
     value->function->name = code ? code->name : std::string();
@@ -95,7 +95,7 @@ Val VM::makeClosure(const std::shared_ptr<BytecodeFunction>& code, const std::sh
 }
 
 Val VM::makeFunction(const std::string& name, NativeMethod function, int length) {
-    auto value = std::make_shared<Value>();
+    auto value = makeValue();
     value->type = ValueType::Function;
     value->cls = core.function;
     value->function = std::make_shared<FunctionInfo>();
@@ -366,7 +366,7 @@ Val VM::boundMethod(const Val& object, const Trait& trait) {
     }
     if (object.tag != Val::Tag::Object) {
         // On a primitive (a string's method): bound, not kept.
-        auto bound = std::make_shared<Value>();
+        auto bound = makeValue();
         bound->type = ValueType::Function;
         bound->cls = core.function;
         bound->function = std::make_shared<FunctionInfo>(*trait.method->function);
@@ -383,7 +383,7 @@ Val VM::boundMethod(const Val& object, const Trait& trait) {
     if (found != self->boundMethods->end()) {
         return Val(found->second);
     }
-    auto bound = std::make_shared<Value>();
+    auto bound = makeValue();
     bound->type = ValueType::Function;
     bound->cls = core.function;
     bound->function = std::make_shared<FunctionInfo>(*trait.method->function);
@@ -1366,7 +1366,7 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
         cls->metadata = std::make_shared<std::vector<Metadata>>(klass->metadata);
     }
 
-    auto object = std::make_shared<Value>();
+    auto object = makeValue();
     object->type = ValueType::Class;
     object->cls = cls;
     cls->classObject = object;
@@ -1499,7 +1499,7 @@ std::shared_ptr<ClassInfo> VM::vectorClass(const Val& elementType) {
     if (element) {
         cls->elementClass = element->classObject.lock() ? element->classObject.lock()->cls : nullptr;
     }
-    auto object = std::make_shared<Value>();
+    auto object = makeValue();
     object->type = ValueType::Class;
     object->cls = cls;
     cls->classObject = object;
@@ -1522,7 +1522,7 @@ Val VM::applyType(const Val& base, const std::vector<Val>& types) {
 // Iteration
 
 Val VM::makeIterator(const Val& object, bool each) {
-    auto state = std::make_shared<Value>();
+    auto state = makeValue();
     state->type = ValueType::Object;
     state->boolValue = each;
     state->numberValue = 0;
@@ -1738,7 +1738,7 @@ Val NativeClassBuilder::define() {
             cls.interfaces.push_back(face);
         }
     }
-    auto object = std::make_shared<Value>();
+    auto object = makeValue();
     object->type = ValueType::Class;
     object->cls = _info;
     cls.classObject = object;

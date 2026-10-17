@@ -765,7 +765,7 @@ void Domain::State::start(Script& script) {
     cls->base = vm.builtins().object;
     globalClasses[cls.get()] = &script;
     script.globalClass = cls;
-    auto object = std::make_shared<Value>();
+    auto object = makeValue();
     object->type = ValueType::Object;
     object->cls = cls;
     vm.track(object);
@@ -841,7 +841,7 @@ Val Domain::State::newClass(Frame& frame, uint32_t index, const Val& base) {
         Val found = resolveType(file, face);
         if (found.isClass()) cls->interfaces.push_back(found->cls);
     }
-    auto object = std::make_shared<Value>();
+    auto object = makeValue();
     object->type = ValueType::Class;
     object->cls = cls;
     cls->classObject = object;
@@ -2178,7 +2178,7 @@ Val Domain::State::loop(Frame& frame) {
 // -- Domain --------------------------------------------------------------------
 
 Domain::Domain(VM& vm) : _state(std::make_shared<State>(vm)) {
-    auto object = std::make_shared<Value>();
+    auto object = makeValue();
     object->type = ValueType::Object;
     object->cls = vm.builtins().object;
     _state->domainObject = Val(object);

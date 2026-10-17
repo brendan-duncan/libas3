@@ -26,6 +26,33 @@ struct Metadata;
 
 using ValuePtr = std::shared_ptr<Value>;
 
+// Memory for what scripts make and let go of all the time (a Value, its
+// properties, a closure's cells): blocks kept on free lists, one list
+// per size and per thread, in place of the heap for each.
+void* poolAllocate(size_t size);
+void poolFree(void* block, size_t size) noexcept;
+
+template <class T>
+struct PoolAllocator {
+    using value_type = T;
+    PoolAllocator() noexcept = default;
+    template <class U>
+    PoolAllocator(const PoolAllocator<U>&) noexcept {}
+    T* allocate(size_t n) { return static_cast<T*>(poolAllocate(n * sizeof(T))); }
+    void deallocate(T* block, size_t n) noexcept { poolFree(block, n * sizeof(T)); }
+    template <class U>
+    bool operator==(const PoolAllocator<U>&) const noexcept {
+        return true;
+    }
+    template <class U>
+    bool operator!=(const PoolAllocator<U>&) const noexcept {
+        return false;
+    }
+};
+
+// A new Value, from the pool.
+ValuePtr makeValue();
+
 // A host function the simple way: the arguments boxed, no 'this'. See
 // NativeMethod for the fast way, with the VM and 'this'.
 using NativeFunction = std::function<ValuePtr(const std::vector<ValuePtr>&)>;
@@ -229,7 +256,7 @@ using NativeMethod = std::function<Val(VM& vm, const Val& self, Args args)>;
 class PropertyMap {
 public:
     using Entry = std::pair<std::string, Val>;
-    using Map = std::vector<Entry>;
+    using Map = std::vector<Entry, PoolAllocator<Entry>>;
     using iterator = Map::iterator;
     using const_iterator = Map::const_iterator;
 
