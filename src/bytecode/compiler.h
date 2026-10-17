@@ -47,6 +47,8 @@ private:
     std::string fileName;
     // The line of the statement being compiled, for what it emits.
     int currentLine = 0;
+    // A call in a with block, its callee looked up as outside it.
+    bool calleeOutsideWith = false;
 
     // Functions
     std::shared_ptr<BytecodeFunction> compileFunction(const std::string& name,
@@ -132,6 +134,9 @@ private:
     void emitSetProp(const std::string& name);
     void emitCallProp(const std::string& name, int argc);
     void emitCoerce(Coerce coerce);
+    // A WITH_GET, WITH_SET or WITH_FIND for the with blocks around: where
+    // its jump is, to patch.
+    size_t emitWith(OpCode op, const std::string& name);
     // The fused forms: a property of the instance or of a local, without
     // the object on the stack.
     void emitThisProp(OpCode op, const std::string& name);

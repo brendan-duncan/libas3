@@ -184,6 +184,18 @@ static void init_as2_tests() {
         expect(run(vm, "trace(count + 1, this == undefined);", rootValue), "3 false\n");
     });
 
+    suite.addTest("with on a clip", []() {
+        VM vm;
+        auto root = std::make_shared<Clip>();
+        auto hat = std::make_shared<Clip>();
+        ValuePtr rootValue = Value::makeHostObject(root);
+        rootValue->setProperty("hat", Value::makeHostObject(hat));
+        run(vm, "with (hat) {\n  gotoAndStop(3);\n  _x = 4;\n  _visible = !_visible;\n}\n", rootValue);
+        if (hat->frame != 3 || hat->x != 4 || hat->visible || root->x != 0) {
+            throw std::runtime_error("with did not act on the clip");
+        }
+    });
+
     suite.addTest("On a timeline, a global wins over the timeline's own", []() {
         VM vm;
         auto root = std::make_shared<Clip>();

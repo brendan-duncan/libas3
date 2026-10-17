@@ -33,6 +33,9 @@ const char* getOpCodeName(OpCode op) {
         case OpCode::OP_DEFINE_VAR: return "DEFINE_VAR";
         case OpCode::OP_DEFINE_FUNCTION: return "DEFINE_FUNCTION";
         case OpCode::OP_GET_QNAME: return "GET_QNAME";
+        case OpCode::OP_WITH_GET: return "WITH_GET";
+        case OpCode::OP_WITH_SET: return "WITH_SET";
+        case OpCode::OP_WITH_FIND: return "WITH_FIND";
         case OpCode::OP_GET_PROP: return "GET_PROP";
         case OpCode::OP_SET_PROP: return "SET_PROP";
         case OpCode::OP_DELETE_PROP: return "DELETE_PROP";

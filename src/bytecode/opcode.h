@@ -44,6 +44,11 @@ enum class OpCode : uint8_t {
     OP_DEFINE_VAR,      // [u16 name] a top-level var: defined with the top's value unless it exists; pops
     OP_DEFINE_FUNCTION, // [u16 name] a top-level function: defined with the top's value; pops
     OP_GET_QNAME,       // [u16 name] a definition by qualified name (a.b.C)
+    // In a with block: the name on one of its objects (in locals, the
+    // innermost first) when one has it. [u16 name][u8 count][u16 local]...[s32]
+    OP_WITH_GET,        // pushes its value and jumps, or goes on
+    OP_WITH_SET,        // value -> value: sets it and jumps, or goes on
+    OP_WITH_FIND,       // pushes the object that has it, or jumps
 
     // Properties
     OP_GET_PROP,        // [u16 name][u16 cache] obj -> value

@@ -23,7 +23,9 @@ This project is being developed for my own learning and experimentation. There a
 ### The library
 `Object`, `Array` (with `sort`'s options and `sortOn`), `Vector.<T>`, `String` (counting in UTF-16 units, with regular expressions in `split`, `replace`, `match` and `search`), `Number` (`toFixed`, `toPrecision`, `toString(radix)`), `int`, `uint`, `Boolean`, `Math`, `Date`, `RegExp`, `JSON`, `Error` and its subclasses (`getStackTrace`), `Function`, `flash.utils.Dictionary`, `getDefinitionByName`, `getQualifiedClassName`, `getQualifiedSuperclassName`, `getTimer`, `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`, and the top-level functions (`trace`, `isNaN`, `isFinite`, `parseInt`, `parseFloat`, `escape`, `unescape`, `encodeURI(Component)`, `decodeURI(Component)`).
 
-Not supported: E4X (XML literals and expressions), `with` (its body runs, but names are not looked up on its object), `include`, and namespaces beyond accepting their syntax.
+Also `with` (names in its body found on its object first) and `include "file.as"` (read through the host, `VM::setIncludeResolver` or `Parser::setIncludeHandler`).
+
+Not supported: E4X (XML literals and expressions), and namespaces beyond accepting their syntax (`mx_internal function f()` is a plain method).
 
 ## Project Structure
 

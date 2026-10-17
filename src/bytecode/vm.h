@@ -33,6 +33,9 @@ struct ClassSource {
 
 using ClassResolver = std::function<std::optional<ClassSource>(const std::string& qualifiedName)>;
 
+// The source of a file an include names, from the file that includes it.
+using IncludeResolver = std::function<std::optional<std::string>(const std::string& path, const std::string& fromFile)>;
+
 // Defines a class the host implements, for scripts to use and extend:
 //
 //   vm.defineNativeClass("flash.geom.Point")
@@ -246,6 +249,9 @@ public:
     // "C" for one without a package), compiles and runs it, and goes on.
     // The host answers nothing for names it does not have.
     void setClassResolver(ClassResolver resolver) { classResolver = std::move(resolver); }
+    // What include "file.as" reads, in what load and the class resolver
+    // compile.
+    void setIncludeResolver(IncludeResolver resolver) { includeResolver = std::move(resolver); }
 
     // A definition (class, function or value) by qualified name ("a.b.C"
     // or "a.b::C"), asking the class resolver if needed: undefined when
@@ -349,6 +355,7 @@ private:
     std::unordered_map<std::string, Val> globals;
     std::unordered_map<std::string, Val> definitions;
     ClassResolver classResolver;
+    IncludeResolver includeResolver;
     std::set<std::string> missing;
     std::set<std::string> loading;
     Builtins core;

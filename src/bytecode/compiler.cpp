@@ -53,6 +53,9 @@ struct Compiler::FunctionState {
     int depth = 0;
     int maxDepth = 0;
     int tempCount = 0;
+    // The locals holding the objects of the with blocks around, outermost
+    // first.
+    std::vector<uint16_t> withLocals;
 };
 
 namespace {
@@ -494,6 +497,18 @@ bool Compiler::localObject(Expression* object, uint16_t& slot) {
 bool Compiler::thisObject(Expression* object) {
     // this in a method is the instance its names find.
     return object && object->kind == Expression::ExpressionKind::This && fs->proto->isMethod;
+}
+
+size_t Compiler::emitWith(OpCode op, const std::string& name) {
+    emitOp(op);
+    emitU16(nameIndex(name));
+    emitU8(static_cast<uint8_t>(fs->withLocals.size()));
+    for (auto it = fs->withLocals.rbegin(); it != fs->withLocals.rend(); ++it) {
+        emitU16(*it);
+    }
+    const size_t at = here();
+    emitS32(0);
+    return at;
 }
 
 void Compiler::emitCoerce(Coerce coerce) {
@@ -1250,11 +1265,17 @@ void Compiler::compileStatement(Statement* stmt) {
     } else if (auto* tryStmt = dynamic_cast<TryStatement*>(stmt)) {
         compileTryStatement(tryStmt);
     } else if (auto* with = dynamic_cast<WithStatement*>(stmt)) {
-        // with is not supported: its object is evaluated, and the body run
-        // as it is.
-        warning("'with' is not supported: names in its body are not looked up on its object");
-        compileDiscarded(with->object.get());
+        // Names in the body are looked for on the object first.
+        compileExpression(with->object.get());
+        const uint16_t object = allocTemp();
+        emitOp(OpCode::OP_PUT_LOCAL);
+        emitU16(object);
+        fs->withLocals.push_back(object);
         compileStatement(with->body.get());
+        fs->withLocals.pop_back();
+        emitOp(OpCode::OP_UNDEFINED);
+        emitOp(OpCode::OP_PUT_LOCAL);
+        emitU16(object);
     }
     // EmptyStatement, NamespaceDefinition do nothing
 }
@@ -1886,6 +1907,16 @@ void Compiler::compileTypeExpression(const std::string& typeName) {
 
 void Compiler::compileIdentifier(Identifier* expr) {
     const std::string& name = expr->name;
+    if (!fs->withLocals.empty()) {
+        // On a with object if one has it, else as it would be.
+        const size_t found = emitWith(OpCode::OP_WITH_GET, name);
+        std::vector<uint16_t> saved;
+        saved.swap(fs->withLocals);
+        compileIdentifier(expr);
+        fs->withLocals.swap(saved);
+        patchJump(found);
+        return;
+    }
     const Resolved where = resolve(name);
     if (where.kind == NameKind::Global) {
         if (name == "undefined") {
@@ -2111,6 +2142,23 @@ void Compiler::compileUnaryExpression(UnaryExpression* expr, bool discard) {
 void Compiler::compileIncrement(Expression* target, bool increment, bool postfix, bool discard) {
     const OpCode step = increment ? OpCode::OP_INCREMENT : OpCode::OP_DECREMENT;
     const bool keepOld = postfix && !discard;
+    if (target->kind == Expression::ExpressionKind::Identifier && !fs->withLocals.empty()) {
+        const std::string& name = static_cast<Identifier*>(target)->name;
+        compileIdentifier(static_cast<Identifier*>(target));
+        if (keepOld) {
+            emitOp(OpCode::OP_TO_NUMBER);
+            emitOp(OpCode::OP_DUP);
+        }
+        emitOp(step);
+        const size_t found = emitWith(OpCode::OP_WITH_SET, name);
+        std::vector<uint16_t> saved;
+        saved.swap(fs->withLocals);
+        emitStore(resolve(name), name, true);
+        fs->withLocals.swap(saved);
+        patchJump(found);
+        if (keepOld || discard) emitOp(OpCode::OP_POP);
+        return;
+    }
     if (target->kind == Expression::ExpressionKind::Identifier) {
         const std::string& name = static_cast<Identifier*>(target)->name;
         const Resolved where = resolve(name);
@@ -2235,6 +2283,24 @@ void Compiler::compileAssignment(AssignmentExpression* expr, bool discard) {
         }
     };
 
+    if (target->kind == Expression::ExpressionKind::Identifier && !fs->withLocals.empty()) {
+        const std::string& name = static_cast<Identifier*>(target)->name;
+        if (compound) {
+            compileIdentifier(static_cast<Identifier*>(target));
+            compileExpression(expr->right.get());
+            applyOperator();
+        } else {
+            compileExpression(expr->right.get());
+        }
+        const size_t found = emitWith(OpCode::OP_WITH_SET, name);
+        std::vector<uint16_t> saved;
+        saved.swap(fs->withLocals);
+        emitStore(resolve(name), name, true);
+        fs->withLocals.swap(saved);
+        patchJump(found);
+        if (discard) emitOp(OpCode::OP_POP);
+        return;
+    }
     if (target->kind == Expression::ExpressionKind::Identifier) {
         const std::string& name = static_cast<Identifier*>(target)->name;
         const Resolved where = resolve(name);
@@ -2426,7 +2492,26 @@ void Compiler::compileCallExpression(CallExpression* expr) {
         emitCallProp(member->property->name, argc);
         return;
     }
+    if (callee->kind == Expression::ExpressionKind::Identifier && !fs->withLocals.empty() && !calleeOutsideWith) {
+        // A with object's method, called on it; else the call as it would be.
+        const std::string& name = static_cast<Identifier*>(callee)->name;
+        const size_t notFound = emitWith(OpCode::OP_WITH_FIND, name);
+        adjust(1);
+        const int argc = compileArguments(expr->arguments);
+        emitCallProp(name, argc);
+        const size_t end = emitJump(OpCode::OP_JUMP);
+        patchJump(notFound);
+        adjust(-1);
+        // The callee as it would be; its arguments still in the with.
+        calleeOutsideWith = true;
+        compileCallExpression(expr);
+        adjust(-1);
+        patchJump(end);
+        adjust(1);
+        return;
+    }
     if (callee->kind == Expression::ExpressionKind::Identifier) {
+        calleeOutsideWith = false;
         const std::string& name = static_cast<Identifier*>(callee)->name;
         const Resolved where = resolve(name);
         switch (where.kind) {

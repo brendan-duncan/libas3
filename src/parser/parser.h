@@ -5,6 +5,8 @@
 #include <vector>
 #include <memory>
 #include <map>
+#include <functional>
+#include <optional>
 #include "../lexer/lexer.h"
 #include "../lexer/token.h"
 #include "../ast/ast_nodes.h"
@@ -40,6 +42,12 @@ public:
         _constants[qualifiedName] = value;
     }
 
+    // What include "file.as" reads: the handler gives the file's source
+    // (nullopt when there is none, an error). Without one, an include is
+    // left out with a warning.
+    using IncludeHandler = std::function<std::optional<std::string>(const std::string& path)>;
+    void setIncludeHandler(IncludeHandler handler) { _includeHandler = std::move(handler); }
+
 private:
     Lexer _lexer;
     std::vector<Token> _tokens;
@@ -54,6 +62,8 @@ private:
     // Metadata read before a definition, for it.
     std::vector<Metadata> _pendingMetadata;
     std::map<std::string, std::string> _constants;
+    IncludeHandler _includeHandler;
+    int _includeDepth = 0;
     // ns::name before a block or a definition: whether that is kept.
     bool atConfigCondition() const;
     bool readConfigCondition();

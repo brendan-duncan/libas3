@@ -359,6 +359,34 @@ static void init_language_tests() {
         expect(out, "debug\ndebug f true 3 phoenix false\n");
     });
 
+    suite.addTest("with: names on its object first", []() {
+        expect(run("var o = {x: 1, f: function() { return this.x * 10; }}; var x = 'outer'; var y = 'outer y';\n"
+                   "function g() { var x = 'local'; with (o) { x = 2; y = x + 1; trace(x, y, f()); x++; } return x; }\n"
+                   "trace(g(), o.x, y);"),
+               "2 3 20\nlocal 3 3\n");
+    });
+
+    suite.addTest("include reads a file", []() {
+        VM vm;
+        vm.setIncludeResolver([](const std::string& path, const std::string& from) -> std::optional<std::string> {
+            if (path == "helpers.as" && from == "main.as") return std::string("function twice(x) { return x * 2; }\n");
+            if (path == "members.as") return std::string("public var extra:int = 5;\n");
+            return std::nullopt;
+        });
+        std::string out;
+        vm.defineFunction("trace", [&out](VM& vm, const Val&, Args args) {
+            out += vm.toString(args[0]) + "\n";
+            return Val();
+        });
+        if (!vm.load("include \"helpers.as\";\nclass K { include \"members.as\"; }\ntrace(twice(new K().extra));", "main.as")) {
+            throw std::runtime_error(vm.getError());
+        }
+        expect(out, "10\n");
+        if (vm.load("include \"missing.as\";", "main.as") || vm.getError().find("missing.as") == std::string::npos) {
+            throw std::runtime_error("a missing include is not an error: " + vm.getError());
+        }
+    });
+
     suite.addTest("Const locals and labeled blocks", []() {
         expect(run("function f():int { const K:int = 4; return K * 2; } trace(f());"), "8\n");
     });

@@ -109,7 +109,15 @@ size_t Chunk::disassembleInstruction(size_t offset) const {
     }
     const OpCode op = static_cast<OpCode>(code[offset]);
     std::cout << std::left << std::setw(26) << getOpCodeName(op) << std::right;
-    const int operands = getOpCodeOperandCount(op);
+    int operands = getOpCodeOperandCount(op);
+    if (op == OpCode::OP_WITH_GET || op == OpCode::OP_WITH_SET || op == OpCode::OP_WITH_FIND) {
+        // A name, the locals of the with objects, and a jump.
+        const int count = code[offset + 3];
+        operands = 2 + 1 + 2 * count + 4;
+        std::cout << "'" << names[getU16(offset + 1)] << "' in " << count << " -> "
+                  << (offset + 1 + operands + getS32(offset + 1 + operands - 4)) << std::endl;
+        return offset + 1 + static_cast<size_t>(operands);
+    }
     switch (op) {
         case OpCode::OP_CONSTANT:
             std::cout << getU16(offset + 1) << " '" << constants[getU16(offset + 1)].toString() << "'";

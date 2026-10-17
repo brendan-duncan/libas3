@@ -677,8 +677,30 @@ std::unique_ptr<Statement> Parser::parseUseOrInclude() {
         }
     } else {
         advance();  // include
-        addWarning("include \"" + currentToken().stringValue + "\" is not supported and was left out");
+        const std::string path = currentToken().stringValue;
         advance();
+        endStatement("Expected ';'");
+        if (!_includeHandler) {
+            addWarning("include \"" + path + "\" was left out: there is nothing to read it with");
+            return std::make_unique<EmptyStatement>();
+        }
+        std::optional<std::string> source = _includeHandler(path);
+        if (!source) {
+            addError("The file \"" + path + "\" to include was not found");
+            return std::make_unique<EmptyStatement>();
+        }
+        if (++_includeDepth > 32) {
+            addError("Too many nested includes (\"" + path + "\")");
+            return std::make_unique<EmptyStatement>();
+        }
+        // Its tokens read next, as if written here.
+        Lexer lexer(*source);
+        std::vector<Token> included = lexer.tokenize();
+        if (!included.empty() && included.back().type == TokenType::EndOfFile) {
+            included.pop_back();
+        }
+        _tokens.insert(_tokens.begin() + static_cast<long>(_position), included.begin(), included.end());
+        return std::make_unique<EmptyStatement>();
     }
     endStatement("Expected ';'");
     return std::make_unique<EmptyStatement>();

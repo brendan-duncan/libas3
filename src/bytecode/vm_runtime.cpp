@@ -1149,6 +1149,11 @@ Val VM::lookupQualified(const std::string& qualifiedName, bool askResolver) {
 
 void VM::loadSource(const ClassSource& source) {
     Parser parser(source.source, source.fileName);
+    if (includeResolver) {
+        IncludeResolver resolver = includeResolver;
+        const std::string fileName = source.fileName;
+        parser.setIncludeHandler([resolver, fileName](const std::string& path) { return resolver(path, fileName); });
+    }
     auto program = parser.parse();
     if (!parser.getWarnings().empty()) {
         warnings.push_back(parser.getWarnings());

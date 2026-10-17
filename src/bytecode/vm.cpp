@@ -201,6 +201,10 @@ void VM::execute(std::shared_ptr<BytecodeFunction> function, ValuePtr scopeValue
 bool VM::load(const std::string& source, const std::string& fileName, ValuePtr scope) {
     clearError();
     Parser parser(source, fileName);
+    if (includeResolver) {
+        IncludeResolver resolver = includeResolver;
+        parser.setIncludeHandler([resolver, fileName](const std::string& path) { return resolver(path, fileName); });
+    }
     auto program = parser.parse();
     if (!parser.getWarnings().empty()) {
         warnings.push_back(parser.getWarnings());
@@ -724,6 +728,36 @@ void VM::run(size_t stopDepth) {
                         break;
                     }
 
+                    case OpCode::OP_WITH_GET:
+                    case OpCode::OP_WITH_SET:
+                    case OpCode::OP_WITH_FIND: {
+                        const uint16_t name = READ_U16();
+                        const uint8_t count = READ_U8();
+                        const uint8_t* locals = ip;
+                        ip += 2 * count;
+                        const int32_t offset = READ_S32();
+                        frame->ip = ip;
+                        const Val key = Val::string(NAME(name));
+                        bool found = false;
+                        for (uint8_t i = 0; i < count && !found; ++i) {
+                            const uint16_t slot = static_cast<uint16_t>(locals[2 * i] | (locals[2 * i + 1] << 8));
+                            const Val object = base[slot];
+                            if (!object.isObject() || !hasKey(object, key)) continue;
+                            found = true;
+                            if (op == OpCode::OP_WITH_GET) {
+                                Val value = getProp(object, NAME(name), nullptr);
+                                *sp++ = std::move(value);
+                            } else if (op == OpCode::OP_WITH_SET) {
+                                setProp(object, NAME(name), sp[-1], nullptr);
+                            } else {
+                                *sp++ = object;
+                            }
+                        }
+                        if (found != (op == OpCode::OP_WITH_FIND)) {
+                            ip += offset;
+                        }
+                        break;
+                    }
                     case OpCode::OP_GET_PROP: {
                         const uint16_t name = READ_U16();
                         PropertyCache& cache = code->caches[READ_U16()];
