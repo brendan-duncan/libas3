@@ -557,6 +557,8 @@ private:
     E identifier(Identifier* id);
     E literal(Literal* lit);
     E binary(BinaryExpression* e);
+    // left op right, as JavaScript writes it, with its type.
+    E combine(const E& left, OperatorType op, const E& right, int line);
     E unary(UnaryExpression* e, bool discard);
     E assignment(AssignmentExpression* e);
     E incDec(Expression* operand, bool increment, bool postfix, bool discard);
@@ -2298,14 +2300,34 @@ E Translator::binary(BinaryExpression* e) {
         E type = typeOperand(e->right.get());
         return make(paren(left, P_Rel) + " instanceof " + paren(type, P_Rel + 1), P_Rel, Ty::of(Ty::Boolean));
     }
+    // Down a long chain (a + b + c...) without recursing for each link.
+    const auto plain = [](const BinaryExpression* b) {
+        return b->op != OT::Is && b->op != OT::As && b->op != OT::LogicalXor && b->op != OT::Instanceof &&
+               b->op != OT::In;
+    };
+    std::vector<BinaryExpression*> chain;
+    Expression* at = e;
+    while (at->kind == EK::Binary && plain(static_cast<BinaryExpression*>(at))) {
+        chain.push_back(static_cast<BinaryExpression*>(at));
+        at = static_cast<BinaryExpression*>(at)->left.get();
+    }
+    if (chain.size() > 1) {
+        E made = expr(at);
+        for (size_t i = chain.size(); i-- > 0;) made = combine(made, chain[i]->op, expr(chain[i]->right.get()), chain[i]->line);
+        return made;
+    }
     E left = expr(e->left.get());
     E right = expr(e->right.get());
     if (op == OT::In && (right.t.isDictionary() || right.t.isXml())) {
         return make("as3.hasItem(" + right.s + ", " + left.s + ")", P_Call, Ty::of(Ty::Boolean));
     }
+    return combine(left, op, right, e->line);
+}
+
+E Translator::combine(const E& left, OperatorType op, const E& right, int line) {
     const char* text = binaryText(op);
     if (!text) {
-        unsupported("this operator", e->line);
+        unsupported("this operator", line);
         return make("undefined", P_Primary);
     }
     const int prec = operatorPrecedence(op);

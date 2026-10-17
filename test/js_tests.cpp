@@ -814,6 +814,19 @@ as3.trace(found["let x = 1;"], found["return x + 1;"], found["class A {"], found
         expect(problems.empty(), "\n" + problems);
     });
 
+    suite.addTest("A chain of 20,000 terms translates", []() {
+        std::string code = "var s:String = 'start'";
+        for (int i = 0; i < 20000; ++i) code += " + " + std::to_string(i % 10);
+        code += ";\nvar n:int = 0";
+        for (int i = 0; i < 20000; ++i) code += i % 2 ? " - 1" : " + 2";
+        code += ";\ntrace(s.length, s.substr(0, 12), n);\n";
+        const js::Output out = translated(code);
+        expect(out.ok, out.errorText());
+        if (!nodeThere()) return;
+        const std::vector<std::string> got = runInNode({out.bundle});
+        expect(got[0] == "20005 start0123456 10000\n", "got " + got[0]);
+    });
+
     suite.addTest("Programs trace the same in the VM and in JavaScript", []() {
         if (!nodeThere()) {
             std::cout << "    (node not found; skipped)" << std::endl;
