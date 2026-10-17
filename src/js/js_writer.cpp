@@ -11,6 +11,7 @@ namespace {
 
 const char kMarkStart = '\x01';
 const char kMarkEnd = '\x02';
+thread_local int markSource = 0;
 
 void vlq(std::string& out, int value) {
     static const char* digits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -25,9 +26,14 @@ void vlq(std::string& out, int value) {
 
 } // namespace
 
+void setMarkSource(int source) {
+    markSource = source;
+}
+
 std::string mark(int sourceLine) {
     if (sourceLine <= 0) return std::string();
-    return std::string(1, kMarkStart) + std::to_string(sourceLine) + kMarkEnd;
+    const std::string source = markSource ? std::to_string(markSource) + ":" : std::string();
+    return std::string(1, kMarkStart) + source + std::to_string(sourceLine) + kMarkEnd;
 }
 
 void Lines::add(const std::string& text) {
@@ -80,19 +86,22 @@ std::string indented(const std::string& text, int depth) {
     return lines.text();
 }
 
-std::string unmark(const std::string& text, std::vector<int>& sourceLines) {
+std::string unmark(const std::string& text, std::vector<int>& sourceLines, std::vector<int>* sources) {
     std::string out;
     out.reserve(text.size());
     int current = 0;
+    int currentSource = 0;
     bool marked = false;
     for (size_t i = 0; i < text.size(); ++i) {
         const char c = text[i];
         if (c == kMarkStart) {
             const size_t close = text.find(kMarkEnd, i);
             if (close == std::string::npos) break;
-            const int line = std::atoi(text.substr(i + 1, close - i - 1).c_str());
+            const std::string body = text.substr(i + 1, close - i - 1);
+            const size_t colon = body.find(':');
             if (!marked) {
-                current = line;
+                currentSource = colon == std::string::npos ? 0 : std::atoi(body.c_str());
+                current = std::atoi(body.c_str() + (colon == std::string::npos ? 0 : colon + 1));
                 marked = true;
             }
             i = close;
@@ -100,11 +109,13 @@ std::string unmark(const std::string& text, std::vector<int>& sourceLines) {
         }
         if (c == '\n') {
             sourceLines.push_back(marked ? current : 0);
+            if (sources) sources->push_back(marked ? currentSource : 0);
             marked = false;
         }
         out += c;
     }
     sourceLines.push_back(marked ? current : 0);
+    if (sources) sources->push_back(marked ? currentSource : 0);
     return out;
 }
 

@@ -580,7 +580,7 @@ package com.example {
                 "playButton.addEventListener(MouseEvent.CLICK, onClick);\n"
                 "trace('frame one', clicks, label, playButton.name, getTimer() >= 0);\n"
                 "stop();"},
-            {4, "trace('frame five', clicks); for (var i:int = 0; i < 2; i++) clicks += i; trace(clicks);"},
+            {4, "trace('frame five', clicks);\n// Two more.\nfor (var i:int = 0; i < 2; i++) clicks += i; trace(clicks);"},
         };
         js::Timeline symbol;
         symbol.className = "Star";
@@ -594,6 +594,10 @@ package com.example {
         expectIn(text, "this.playButton.addEventListener(MouseEvent.CLICK, as3.bind(this, \"onClick\"));");
         expectIn(text, "this.stop();");
         expectIn(out.files.at("Star.js"), "class Star extends MovieClip {");
+        expectIn(text, "            // Two more.\n            for (this.i = 0; this.i < 2;");
+        // Each frame is a source of the map.
+        expectIn(out.sourceMaps.at("movie_fla/MainTimeline.js.map"),
+                 "\"sources\":[\"movie_fla.MainTimeline\",\"movie_fla.MainTimeline, frame 1\",\"movie_fla.MainTimeline, frame 5\"]");
         if (!nodeThere()) return;
         // A MovieClip that places its instances when constructed, as the
         // runtime does, and plays the frames it is asked to.

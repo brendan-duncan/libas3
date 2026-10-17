@@ -456,6 +456,9 @@ private:
     Output output;
     Model model;
     std::map<std::string, std::string> sourceTexts;
+    // Each file's sources, for its source map: its .as file's name, or a
+    // timeline's frames'.
+    std::map<const SourceFile*, std::vector<std::string>> sourceNames;
 
     // Where the translation is.
     SourceFile* file = nullptr;
@@ -3411,10 +3414,19 @@ std::string Translator::translateTimeline(ClassModel& cls) {
     if (!frames.empty()) body.add("this.addFrameScript(" + frames.substr(2) + ");");
     body.dedent();
     body.add("}");
+    // Each frame's script as given (as the model joins a frame's scripts).
+    std::map<int, std::string> frameTexts;
+    for (const FrameScript& script : cls.timeline->frames) frameTexts[script.frame] += script.code + "\n";
+    std::vector<std::string>& names = sourceNames[cls.unit->file];
     for (size_t i = 0; i < cls.unit->members.size(); ++i) {
         auto* block = static_cast<BlockStatement*>(cls.unit->members[i]);
         const int frame = cls.unit->file->frames[i];
         model.currentFile = cls.qualified() + ", frame " + std::to_string(frame + 1);
+        names.push_back(model.currentFile);
+        setMarkSource(static_cast<int>(names.size()));
+        comments = options.comments ? scanComments(frameTexts[frame]) : std::vector<Comment>();
+        commentLow = 0;
+        commentHigh = 1 << 30;
         // The frame's functions: the timeline's methods.
         Scan scan;
         scanStatement(block, scan);
@@ -3434,7 +3446,9 @@ std::string Translator::translateTimeline(ClassModel& cls) {
         static const std::vector<std::unique_ptr<Parameter>> none;
         body.blank();
         body.add(functionText(none, block, f, "frame" + std::to_string(frame + 1), false));
+        setMarkSource(0);
     }
+    comments.clear();
 
     Lines out;
     out.add("as3.define(" + quote(cls.qualified()) + ", () => {");
@@ -3737,20 +3751,25 @@ Output Translator::run(const std::vector<Source>& sources, const std::vector<Tim
     for (size_t i = 0; i < order.size(); ++i) {
         const std::string& path = order[i];
         std::vector<int> lines;
-        std::string clean = unmark(output.files[path], lines);
-        const std::string sourceName = model.files[i]->fileName;
+        std::vector<int> sources;
+        std::string clean = unmark(output.files[path], lines, &sources);
+        // A file's sources: its own (0), a timeline's frames (from 1).
+        std::vector<std::string> names = {model.files[i]->fileName};
+        auto frames = sourceNames.find(model.files[i].get());
+        if (frames != sourceNames.end()) names.insert(names.end(), frames->second.begin(), frames->second.end());
         if (options.sourceMaps) {
             const std::string mapName = path + ".map";
             std::string base = path;
             const size_t slash = base.find_last_of('/');
             if (slash != std::string::npos) base = base.substr(slash + 1);
-            output.sourceMaps[mapName] = sourceMap(base, {sourceName}, std::vector<int>(lines.size(), 0), lines);
+            output.sourceMaps[mapName] = sourceMap(base, names, sources, lines);
             clean += "//# sourceMappingURL=" + base + ".map\n";
         }
         output.files[path] = clean;
-        bundleSources.push_back(sourceName);
+        const int first = static_cast<int>(bundleSources.size());
+        bundleSources.insert(bundleSources.end(), names.begin(), names.end());
         for (size_t j = 0; j + 1 < lines.size(); ++j) {
-            bundleSourceOf.push_back(static_cast<int>(i));
+            bundleSourceOf.push_back(first + sources[j]);
             bundleLines.push_back(lines[j]);
         }
         std::vector<int> ignored;

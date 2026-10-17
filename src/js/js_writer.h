@@ -11,8 +11,11 @@ namespace as3 {
 namespace js {
 
 // A mark for a line of the source: put before code, it maps the generated
-// line the code starts on to that line (from 1).
+// line the code starts on to that line (from 1), of the source marks are
+// for now (setMarkSource: 0 for a file's own, others for a timeline's
+// frames).
 std::string mark(int sourceLine);
+void setMarkSource(int source);
 
 // Lines of code at a depth: each line given is indented to it (the lines
 // of a text with several, each), keeping its marks.
@@ -38,8 +41,8 @@ private:
 std::string indented(const std::string& text, int depth);
 
 // The text without its marks, and for each of its lines the source line
-// its first mark gives (0 for none).
-std::string unmark(const std::string& text, std::vector<int>& sourceLines);
+// its first mark gives (0 for none), and that mark's source.
+std::string unmark(const std::string& text, std::vector<int>& sourceLines, std::vector<int>* sources = nullptr);
 
 // A source map (v3) for a generated file whose lines map, through
 // sourceLines (one for each generated line, from its first), to lines of
