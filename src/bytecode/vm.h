@@ -128,6 +128,38 @@ struct CallFrame {
     Val saved;
 };
 
+// The call frames: made once and used again, so that a call does not
+// make and free one.
+class FrameStack {
+public:
+    explicit FrameStack(size_t capacity) { _frames.reserve(capacity); }
+    size_t size() const { return _count; }
+    bool empty() const { return _count == 0; }
+    CallFrame& back() { return _frames[_count - 1]; }
+    const CallFrame& back() const { return _frames[_count - 1]; }
+    const CallFrame& operator[](size_t i) const { return _frames[i]; }
+    // A frame with every field to be set by the caller.
+    CallFrame& push() {
+        if (_count == _frames.size()) {
+            _frames.emplace_back();
+        }
+        return _frames[_count++];
+    }
+    void pop_back() {
+        CallFrame& frame = _frames[--_count];
+        frame.closureHold.reset();
+        frame.thisVal = Val();
+        if (!frame.scopeThis.isUndefined()) frame.scopeThis = Val();
+        if (!frame.scope.isUndefined()) frame.scope = Val();
+        if (!frame.saved.isUndefined()) frame.saved = Val();
+        frame.cells.clear();
+    }
+
+private:
+    std::vector<CallFrame> _frames;
+    size_t _count = 0;
+};
+
 // Virtual Machine for bytecode execution
 class VM {
 public:
@@ -306,11 +338,14 @@ private:
     friend struct VMAccess;
 
     VM* parent;
-    std::unique_ptr<Val[]> stackStore;
+    // The value stack: its memory taken at once, its values made as it
+    // is first used (up to stackBuilt).
     Val* stackBase = nullptr;
     Val* stackEnd = nullptr;
+    Val* stackBuilt = nullptr;
     Val* sp = nullptr;
-    std::vector<CallFrame> frames;
+    FrameStack frames;
+    void growStack(Val* needed);
     std::unordered_map<std::string, Val> globals;
     std::unordered_map<std::string, Val> definitions;
     ClassResolver classResolver;

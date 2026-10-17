@@ -36,23 +36,25 @@ double nowMilliseconds() {
 } // namespace
 
 VM::VM()
-    : parent(nullptr) {
-    stackStore.reset(new Val[kStackSize]);
-    stackBase = stackStore.get();
+    : parent(nullptr)
+    , frames(kMaxFrames + 16) {
+    stackBase = static_cast<Val*>(::operator new(kStackSize * sizeof(Val)));
     stackEnd = stackBase + kStackSize;
+    stackBuilt = stackBase;
     sp = stackBase;
-    frames.reserve(kMaxFrames + 16);
+    growStack(stackBase + 1024);
     started = nowMilliseconds();
     setupBuiltins();
 }
 
 VM::VM(VM* parentVM)
-    : parent(parentVM) {
-    stackStore.reset(new Val[kStackSize]);
-    stackBase = stackStore.get();
+    : parent(parentVM)
+    , frames(kMaxFrames + 16) {
+    stackBase = static_cast<Val*>(::operator new(kStackSize * sizeof(Val)));
     stackEnd = stackBase + kStackSize;
+    stackBuilt = stackBase;
     sp = stackBase;
-    frames.reserve(kMaxFrames + 16);
+    growStack(stackBase + 1024);
     started = nowMilliseconds();
     // The parent's built-in classes, which its globals hold.
     if (parent) {
@@ -63,6 +65,27 @@ VM::VM(VM* parentVM)
 
 VM::~VM() {
     releaseObjects();
+    while (frames.size() > 0) {
+        frames.pop_back();
+    }
+    for (Val* p = stackBase; p < stackBuilt; ++p) {
+        p->~Val();
+    }
+    ::operator delete(stackBase);
+}
+
+void VM::growStack(Val* needed) {
+    if (needed <= stackBuilt) {
+        return;
+    }
+    if (needed > stackEnd) {
+        throwError("Error", "Error #1023: Stack overflow occurred.", 1023);
+    }
+    // In steps, so that it is not grown at every call.
+    Val* end = std::min(stackEnd, std::max(needed, stackBuilt + 4096));
+    for (; stackBuilt < end; ++stackBuilt) {
+        new (stackBuilt) Val();
+    }
 }
 
 double VM::now() {
@@ -111,7 +134,7 @@ void VM::releaseObjects() {
         }
     }
     timers.clear();
-    for (Val* p = stackBase; p < stackEnd && p < sp + 1; ++p) {
+    for (Val* p = stackBase; p < stackBuilt; ++p) {
         *p = Val();
     }
     errorValue = Val();
@@ -249,9 +272,7 @@ void VM::enterNative(const char* marker) {
 }
 
 Val VM::runCall(const Val& function, const Val& thisValue, Args args, const Val& scope) {
-    if (sp + args.size() + 2 >= stackEnd) {
-        throwError("Error", "Error #1023: Stack overflow occurred.", 1023);
-    }
+    growStack(sp + args.size() + 2);
     char marker = 0;
     enterNative(&marker);
     struct Depth {
@@ -366,8 +387,9 @@ void VM::pushFrame(const Val& function, FunctionInfo& info, const Val& thisValue
         throwError("Error", "Error #1023: Stack overflow occurred.", 1023);
     }
     const uint32_t numLocals = code->numLocals;
-    if (args + std::max<uint32_t>(argc, numLocals) + code->maxStack + 16 >= stackEnd) {
-        throwError("Error", "Error #1023: Stack overflow occurred.", 1023);
+    Val* needed = args + std::max<uint32_t>(argc, numLocals) + code->maxStack + 16;
+    if (needed >= stackBuilt) {
+        growStack(needed);
     }
     const uint32_t arity = static_cast<uint32_t>(code->arity);
 
@@ -384,13 +406,13 @@ void VM::pushFrame(const Val& function, FunctionInfo& info, const Val& thisValue
         arguments->properties["callee"] = function;
     }
 
-    frames.emplace_back();
-    CallFrame& frame = frames.back();
+    CallFrame& frame = frames.push();
     frame.code = code;
     frame.closure = function.ref.get();
     if (!borrowed) {
         frame.closureHold = function.ref;
     }
+    frame.methodThis = false;
     frame.codeStart = code->chunk.getCode().data();
     frame.ip = frame.codeStart;
     frame.base = args;
@@ -422,9 +444,21 @@ void VM::pushFrame(const Val& function, FunctionInfo& info, const Val& thisValue
     const uint32_t given = std::min(argc, arity);
     for (uint32_t i = 0; i < given; ++i) {
         const Coerce coerce = code->paramCoerce[i];
-        if (coerce != Coerce::None) {
-            args[i] = coerceValue(args[i], coerce);
+        if (coerce == Coerce::None) {
+            continue;
         }
+        Val& arg = args[i];
+        if (arg.tag == Val::Tag::Number) {
+            // Numbers that are already so.
+            if (coerce == Coerce::Number) continue;
+            if (coerce == Coerce::Int && arg.num >= -2147483648.0 && arg.num <= 2147483647.0 &&
+                arg.num == static_cast<double>(static_cast<int32_t>(arg.num))) {
+                continue;
+            }
+        } else if (coerce == Coerce::Nullable && arg.tag != Val::Tag::Undefined) {
+            continue;
+        }
+        arg = coerceValue(arg, coerce);
     }
     if (code->numCells) {
         frame.cells.resize(code->numCells);
@@ -1690,9 +1724,7 @@ void VM::superConstruct(CallFrame& frame, Val* args, uint32_t argc, Val* result)
 }
 
 Val VM::construct(const Val& cls, Args args) {
-    if (sp + args.size() + 2 >= stackEnd) {
-        throwError("Error", "Error #1023: Stack overflow occurred.", 1023);
-    }
+    growStack(sp + args.size() + 2);
     char marker = 0;
     enterNative(&marker);
     struct Depth {

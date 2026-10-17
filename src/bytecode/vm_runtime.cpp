@@ -142,8 +142,8 @@ void VM::nullError(const Val& object, const std::string& name) {
 
 std::string VM::stackTrace() {
     std::string trace;
-    for (auto it = frames.rbegin(); it != frames.rend(); ++it) {
-        const CallFrame& frame = *it;
+    for (size_t i = frames.size(); i-- > 0;) {
+        const CallFrame& frame = frames[i];
         if (!frame.code) continue;
         std::string name = frame.code->qualifiedName.empty() ? frame.code->name : frame.code->qualifiedName;
         if (name.empty()) name = "Function/<anonymous>";

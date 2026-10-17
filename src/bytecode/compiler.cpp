@@ -1288,15 +1288,16 @@ void Compiler::compileLoopBody(Statement* body, const std::vector<std::string>& 
 }
 
 void Compiler::compileWhileStatement(WhileStatement* stmt, const std::vector<std::string>& labels) {
-    const size_t start = here();
-    compileExpression(stmt->test.get());
-    const size_t exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE);
+    // The test at the bottom: one jump a time round.
+    const size_t toTest = emitJump(OpCode::OP_JUMP);
+    const size_t top = here();
     compileLoopBody(stmt->body.get(), labels, true);
     ControlEntry entry = std::move(fs->controls.back());
     fs->controls.pop_back();
-    for (size_t jump : entry.continueJumps) patchJumpTo(jump, start);
-    emitJumpTo(OpCode::OP_JUMP, start);
-    patchJump(exitJump);
+    patchJump(toTest);
+    for (size_t jump : entry.continueJumps) patchJump(jump);
+    compileExpression(stmt->test.get());
+    emitJumpTo(OpCode::OP_JUMP_IF_TRUE, top);
     for (size_t jump : entry.breakJumps) patchJump(jump);
 }
 
@@ -1315,14 +1316,9 @@ void Compiler::compileForStatement(ForStatement* stmt, const std::vector<std::st
     if (stmt->init) {
         compileStatement(stmt->init.get());
     }
-    const size_t start = here();
-    size_t exitJump = 0;
-    bool hasExit = false;
-    if (stmt->test) {
-        compileExpression(stmt->test.get());
-        exitJump = emitJump(OpCode::OP_JUMP_IF_FALSE);
-        hasExit = true;
-    }
+    // The test at the bottom: one jump a time round.
+    const size_t toTest = emitJump(OpCode::OP_JUMP);
+    const size_t top = here();
     compileLoopBody(stmt->body.get(), labels, true);
     ControlEntry entry = std::move(fs->controls.back());
     fs->controls.pop_back();
@@ -1331,8 +1327,13 @@ void Compiler::compileForStatement(ForStatement* stmt, const std::vector<std::st
     if (stmt->update) {
         compileDiscarded(stmt->update.get());
     }
-    emitJumpTo(OpCode::OP_JUMP, start);
-    if (hasExit) patchJump(exitJump);
+    patchJump(toTest);
+    if (stmt->test) {
+        compileExpression(stmt->test.get());
+        emitJumpTo(OpCode::OP_JUMP_IF_TRUE, top);
+    } else {
+        emitJumpTo(OpCode::OP_JUMP, top);
+    }
     for (size_t jump : entry.breakJumps) patchJump(jump);
 }
 
