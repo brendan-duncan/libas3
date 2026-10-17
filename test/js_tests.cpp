@@ -779,13 +779,17 @@ map.mappings.split(";").forEach((segment, i) => {
     if (!segment) return;
     const fields = decode(segment.split(",")[0]);
     source += fields[1]; line += fields[2];
-    found[lines[i].trim()] = line + 1;
+    found[lines[i].trim()] = map.sources[source] + ":" + (line + 1);
 });
-as3.trace(found["let x = 1;"], found["return x + 1;"], found["class A {"]);
+as3.trace(found["let x = 1;"], found["return x + 1;"], found["class A {"], found["as3.trace(new A().f());"]);
 )js");
+        // The file's map, and the bundle's.
         const std::string script = "const MAP = " + js::quote(map) + ";\nconst FILE = " + js::quote(out.files.at("p/A.js")) + ";\n" + check;
-        const std::vector<std::string> got = runInNode({script});
-        expect(got[0] == "4 5 2\n", "got " + got[0]);
+        const std::string bundle = "const MAP = " + js::quote(out.sourceMaps.at("bundle.js.map")) + ";\nconst FILE = " +
+                                   js::quote(out.bundle) + ";\n" + check;
+        const std::vector<std::string> got = runInNode({script, bundle});
+        const std::string wanted = "main.as:4 main.as:5 main.as:2 main.as:9\n";
+        expect(got[0] == wanted && got[1] == wanted, "got " + got[0] + got[1]);
     });
 
     suite.addTest("The ABC compiler's sources translate to JavaScript that parses", []() {
