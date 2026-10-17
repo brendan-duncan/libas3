@@ -88,13 +88,12 @@ function setupClass(cls, descriptor, name) {
         interfaces: descriptor.interfaces || [],
         dynamic: !!descriptor.dynamic,
         final: !!descriptor.final,
+        // Its variables, by name: their types ("int", "const String",
+        // "private Number").
+        types: fields,
         fields: Object.keys(fields),
     };
     Object.defineProperty(cls.prototype, Symbol.toStringTag, { value: short, configurable: true });
-    // Fields start at their defaults, kept on the prototype until set.
-    for (const key of Object.keys(fields)) {
-        Object.defineProperty(cls.prototype, key, { value: fields[key], writable: true, enumerable: false, configurable: true });
-    }
 }
 
 function load(entry) {
@@ -176,14 +175,15 @@ as3.use = function (name) {
 };
 
 // A file's definitions outside its packages: only the file sees them.
+// They are kept as "file$name" (so that interfaces name them so), in no
+// package.
 as3.file = function (fileName) {
-    const own = new Map();
     return {
         define(name, factory) {
-            own.set(name, { name, factory, state: 0, value: undefined, scope: fileName });
+            definitions.set(fileName + "$" + name, { name, factory, state: 0, value: undefined, scope: fileName });
         },
         use(name) {
-            const entry = own.get(name);
+            const entry = definitions.get(fileName + "$" + name);
             if (!entry) throw new as3.ReferenceError("Error #1065: Variable " + name + " is not defined.", 1065);
             return load(entry);
         },
@@ -231,6 +231,7 @@ function qualifiedName(cls) {
     if (cls === as3.int) return "int";
     if (cls === as3.uint) return "uint";
     const info = cls[INFO] && (Object.prototype.hasOwnProperty.call(cls, INFO) || cls[INTERFACE]) ? cls[INFO] : null;
+    if (info && info.qualified) return info.qualified;
     if (info) {
         const [pkg, short] = splitName(info.name);
         return pkg ? pkg + "::" + short : short;
@@ -251,16 +252,20 @@ function implementsInterface(value, face) {
     if (value === null || value === undefined) return false;
     const wanted = face[INFO].name;
     const seen = new Set();
+    // Each interface named: the one wanted, or one extending it. One not
+    // defined (the player's) by its name.
     const check = (names) => {
         for (const name of names) {
-            if (name === wanted) return true;
             if (seen.has(name)) continue;
             seen.add(name);
             const entry = lookup(definitions, name);
-            if (entry) {
-                const other = load(entry);
-                if (other && other[INFO] && check(other[INFO].interfaces || [])) return true;
+            if (!entry) {
+                if (name === wanted) return true;
+                continue;
             }
+            const other = load(entry);
+            if (other === face) return true;
+            if (other && other[INFO] && check(other[INFO].interfaces || [])) return true;
         }
         return false;
     };
@@ -365,6 +370,13 @@ as3.trace = function (...values) {
     as3.output(values.map(as3.string).join(" "));
 };
 
+// parseInt(text, radix): with a leading 0 and no radix, octal.
+as3.parseInt = function (text, radix = 0) {
+    const value = String(text).trim();
+    if (!radix && /^[-+]?0[0-7]+$/.test(value)) return parseInt(value, 8);
+    return radix ? parseInt(value, radix) : parseInt(value);
+};
+
 // A method read as a value: bound to its object, the same function each
 // time (so that removeEventListener finds what addEventListener had).
 const BOUND = Symbol("as3.bound");
@@ -380,7 +392,7 @@ as3.bind = function (object, name) {
     let method = bound.get(name);
     if (!method) {
         const original = object[name];
-        if (typeof original !== "function") return original;
+        if (typeof original !== "function" || isClass(original)) return original;
         method = original.bind(object);
         bound.set(name, method);
     }
@@ -618,7 +630,7 @@ function coercerOf(type) {
 function defaultOf(type) {
     switch (type) {
         case as3.int: case as3.uint: return 0;
-        case Number: return NaN;
+        case Number: return 0;
         case Boolean: return false;
         case null: case undefined: return undefined;
         default: return null;
@@ -673,6 +685,7 @@ function makeVector(type) {
     Vector[ELEMENT] = type;
     Vector[INFO] = {
         name: "__AS3__.vec.Vector.<" + elementName.replace("::", ".") + ">",
+        qualified: "__AS3__.vec::Vector.<" + elementName + ">",
         short: "Vector.<" + elementName + ">",
         kind: "class",
         interfaces: [],
@@ -787,6 +800,15 @@ for (const name of ["ArgumentError", "DefinitionError", "EvalError", "RangeError
     as3[name] = errorClass(name, AS3Error);
 }
 
+// flash.errors.
+for (const name of ["IOError", "EOFError", "IllegalOperationError", "InvalidSWFError", "MemoryError", "ScriptTimeoutError",
+    "StackOverflowError"]) {
+    const base = name === "EOFError" ? "IOError" : null;
+    const made = errorClass(name, base ? definitions.get("flash.errors." + base).value : AS3Error);
+    made[INFO].name = "flash.errors." + name;
+    as3.register("flash.errors." + name, made);
+}
+
 // A thrown value as ActionScript has it: JavaScript's own errors become
 // the errors (and messages) a player gives.
 as3.error = function (thrown) {
@@ -810,9 +832,11 @@ as3.error = function (thrown) {
         made = new as3.ReferenceError(name ? "Error #1065: Variable " + name[1] + " is not defined." : message, name ? 1065 : 0);
     } else if (thrown instanceof RangeError) {
         if (/call stack/i.test(message)) made = new as3.Error("Error #1023: Stack overflow occurred.", 1023);
+        else if (/Invalid array length/.test(message)) made = new as3.RangeError("Error #1005: Array index is not a positive integer.", 1005);
         else made = new as3.RangeError(message);
     } else if (thrown instanceof SyntaxError) {
-        made = new as3.SyntaxError(message);
+        if (/JSON/.test(message) || /in JSON at position/.test(message)) made = new as3.SyntaxError("Error #1132: Invalid JSON parse input.", 1132);
+        else made = new as3.SyntaxError(message);
     } else if (thrown instanceof URIError) {
         made = new as3.URIError(message);
     } else if (thrown instanceof EvalError) {
@@ -822,6 +846,19 @@ as3.error = function (thrown) {
     }
     if (thrown.stack) Object.defineProperty(made, "stack", { value: thrown.stack, configurable: true, writable: true });
     return made;
+};
+
+// A regular expression with named groups, (?<name>...): the groups are the
+// match's properties too, as ActionScript has them.
+class AS3RegExp extends RegExp {
+    exec(text) {
+        const match = super.exec(text);
+        if (match && match.groups) Object.assign(match, match.groups);
+        return match;
+    }
+}
+as3.regExp = function (pattern) {
+    return new AS3RegExp(pattern.source, pattern.flags);
 };
 
 // Namespace and QName, as values.
@@ -873,6 +910,29 @@ function dateString(date) {
         two(date.getMinutes()) + ":" + two(date.getSeconds()) + " GMT" + sign + two(Math.floor(abs / 60)) + two(abs % 60) +
         " " + date.getFullYear();
 }
+
+// d.toString() and the rest, as a player writes them.
+as3.dateText = function (date, method) {
+    if (!(date instanceof Date)) return date[method]();
+    if (isNaN(date.getTime())) return "Invalid Date";
+    const local = dateString(date);
+    const parts = local.split(" ");   // day month date clock zone year
+    const hours = date.getHours();
+    const clock12 = two(hours % 12 === 0 ? 12 : hours % 12) + ":" + two(date.getMinutes()) + ":" + two(date.getSeconds()) +
+        (hours < 12 ? " AM" : " PM");
+    switch (method) {
+        case "toString": return local;
+        case "toDateString": case "toLocaleDateString": return parts[0] + " " + parts[1] + " " + parts[2] + " " + parts[5];
+        case "toTimeString": return parts[3] + " " + parts[4];
+        case "toLocaleString": return parts[0] + " " + parts[1] + " " + parts[2] + " " + parts[5] + " " + clock12;
+        case "toLocaleTimeString": return clock12;
+        case "toUTCString":
+            return DAYS[date.getUTCDay()] + " " + MONTHS[date.getUTCMonth()] + " " + date.getUTCDate() + " " +
+                two(date.getUTCHours()) + ":" + two(date.getUTCMinutes()) + ":" + two(date.getUTCSeconds()) + " " +
+                date.getUTCFullYear() + " UTC";
+        default: return date[method]();
+    }
+};
 
 const dateProperties = {
     fullYear: "FullYear", month: "Month", date: "Date", hours: "Hours", minutes: "Minutes", seconds: "Seconds",
@@ -1021,9 +1081,14 @@ function describe(value) {
         for (let at = cls; at && at !== Object && at !== Function.prototype; at = Object.getPrototypeOf(at)) {
             const own = infoOf(at);
             const declaredBy = qualifiedName(at);
-            if (own) {
+            if (own && own.types) {
                 for (const field of own.fields) {
-                    if (!field.includes("$") && !names.has(field)) names.set(field, '<variable name="' + attr(field) + '" type="*"/>');
+                    const type = own.types[field];
+                    if (field.includes("$") || names.has(field) || /^(private|protected|internal) /.test(type)) continue;
+                    const constant = type.startsWith("const ");
+                    const typeName = constant ? type.slice(6) : type;
+                    names.set(field, "<" + (constant ? "constant" : "variable") + ' name="' + attr(field) + '" type="' +
+                        attr(typeName.includes(".") ? typeName.replace(/\.([^.<]*)$/, "::$1") : typeName) + '"/>');
                 }
             }
             for (const key of Object.getOwnPropertyNames(at.prototype || {})) {

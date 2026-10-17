@@ -1,11 +1,14 @@
 #include "test_runner.h"
+#include "js_programs.h"
 #include "../src/js/js.h"
 #include "../src/js/js_writer.h"
 #include "../src/bytecode/vm.h"
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -126,9 +129,22 @@ std::string runInVm(const std::string& code) {
         return Val();
     });
     vm.setClock([]() { return 0.0; });
+    // XML's settings are the process's: back to their defaults.
+    vm.load("XML.ignoreComments = true; XML.ignoreProcessingInstructions = true; XML.ignoreWhitespace = true;"
+            "XML.prettyPrinting = true; XML.prettyIndent = 2;", "settings.as");
     if (!vm.load(code, "main.as")) out += "Error: " + vm.getError() + "\n";
     return out;
 }
+
+// Programs whose output differs, and why: what translated code does not
+// do as the VM does.
+const std::map<std::string, std::string> kKnownDifferences = {
+    {"language_tests.cpp: Default and rest parameters, arguments",
+     "a function's length counts the parameters before the first with a default"},
+    {"library_tests.cpp: Vector", "writing past a Vector's end extends it rather than throwing RangeError #1125"},
+    {"library_tests.cpp: JSON", "JSON.stringify gives a class's fields in their order, the VM's sorted"},
+    {"xml_tests.cpp: describeType", "describeType gives no metadata"},
+};
 
 js::Output translated(const std::string& code, const js::Options& options = js::Options()) {
     return js::translate({{code, "main.as"}}, {}, options);
@@ -142,18 +158,66 @@ void expectIn(const std::string& text, const std::string& wanted) {
     if (text.find(wanted) == std::string::npos) throw std::runtime_error("no \"" + wanted + "\" in:\n" + text);
 }
 
-// Programs for both: classes, statements, the library's semantics.
-struct TestProgram {
-    const char* name;
-    const char* code;
-};
-
-const TestProgram kPrograms[] = {
-    {"trace and arithmetic", R"(
-trace(1 + 2, "a" + 1, 7 / 2, 7 % 3, -5 >> 1, -5 >>> 28, 1 << 31);
-trace(null, undefined, true, 0.1 + 0.2, 1e21, 1 / 3, -0);
-)"},
-};
+// The programs other suites run in the VM: each run("...") of a string,
+// read from their sources (beside this file).
+std::vector<std::pair<std::string, std::string>> testPrograms(const std::string& fileName,
+                                                              const std::string& function = "run") {
+    std::vector<std::pair<std::string, std::string>> programs;
+    const fs::path path = fs::path(__FILE__).parent_path() / fileName;
+    const std::string text = readText(path);
+    std::string testName;
+    for (size_t at = 0; at < text.size(); ++at) {
+        if (text.compare(at, 15, "suite.addTest(\"") == 0) {
+            const size_t end = text.find('"', at + 15);
+            testName = text.substr(at + 15, end - at - 15);
+        }
+        if (text.compare(at, function.size() + 1, function + "(") != 0 ||
+            (at > 0 && (std::isalnum(static_cast<unsigned char>(text[at - 1])) || text[at - 1] == '_'))) {
+            continue;
+        }
+        size_t i = at + function.size() + 1;
+        std::string code;
+        bool any = false;
+        for (;;) {
+            while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+            if (text.compare(i, 3, "R\"(") == 0) {
+                const size_t end = text.find(")\"", i + 3);
+                code += text.substr(i + 3, end - i - 3);
+                i = end + 2;
+                any = true;
+            } else if (i < text.size() && text[i] == '"') {
+                ++i;
+                while (i < text.size() && text[i] != '"') {
+                    char c = text[i++];
+                    if (c == '\\') {
+                        const char e = text[i++];
+                        switch (e) {
+                            case 'n': c = '\n'; break;
+                            case 't': c = '\t'; break;
+                            case 'r': c = '\r'; break;
+                            case 'x': {
+                                size_t used = 0;
+                                c = static_cast<char>(std::stoi(text.substr(i, 2), &used, 16));
+                                i += used;
+                                break;
+                            }
+                            default: c = e; break;
+                        }
+                    }
+                    code += c;
+                }
+                ++i;
+                any = true;
+            } else {
+                break;
+            }
+        }
+        if (any && i < text.size() && (text[i] == ')' || text[i] == ',')) {
+            programs.emplace_back(fileName + ": " + testName, code);
+        }
+    }
+    return programs;
+}
 
 } // namespace
 
@@ -195,23 +259,39 @@ package com.example {
         std::vector<std::string> bundles;
         std::vector<std::string> wanted;
         std::string problems;
-        for (const TestProgram& program : kPrograms) {
-            wanted.push_back(runInVm(program.code));
-            js::Output out = translated(program.code);
-            if (!out.ok) problems += std::string(program.name) + ": does not translate:\n" + out.errorText();
+        std::vector<std::pair<std::string, std::string>> programs;
+        for (const TestProgram& program : kPrograms) programs.emplace_back(program.name, program.code);
+        for (const char* file : {"language_tests.cpp", "library_tests.cpp", "xml_tests.cpp"}) {
+            for (auto& program : testPrograms(file)) programs.push_back(program);
+        }
+        for (auto& program : testPrograms("vm_tests.cpp", "executeAndVerify")) programs.push_back(program);
+        size_t untranslated = 0;
+        for (const auto& program : programs) {
+            wanted.push_back(runInVm(program.second));
+            js::Output out = translated(program.second);
+            if (!out.ok) {
+                problems += program.first + ": does not translate:\n" + out.errorText();
+                ++untranslated;
+            }
             bundles.push_back(out.bundle);
         }
         const std::vector<std::string> got = runInNode(bundles);
         size_t same = 0;
+        size_t known = 0;
         for (size_t i = 0; i < got.size(); ++i) {
             if (got[i] == wanted[i]) {
                 ++same;
                 continue;
             }
-            problems += std::string("--- ") + kPrograms[i].name + "\nVM:\n" + wanted[i] + "JavaScript:\n" + got[i] + "\n";
+            if (kKnownDifferences.count(programs[i].first)) {
+                ++known;
+                continue;
+            }
+            problems += "--- " + programs[i].first + "\n" + programs[i].second + "\nVM:\n" + wanted[i] + "JavaScript:\n" + got[i] + "\n";
             if (std::getenv("AS3_JS_DUMP")) problems += bundles[i] + "\n";
         }
-        std::cout << "    " << same << " of " << got.size() << " programs the same" << std::endl;
+        std::cout << "    " << same << " of " << got.size() << " programs the same, " << known << " known to differ, "
+                  << untranslated << " not translated" << std::endl;
         if (!problems.empty()) throw std::runtime_error("\n" + problems);
     });
 }

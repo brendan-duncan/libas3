@@ -176,7 +176,7 @@ const char* playerFunctionPackage(const std::string& name) {
 // The top level's names, as JavaScript has them.
 std::string topLevelName(const std::string& name) {
     static const std::map<std::string, std::string> names = {
-        {"trace", "as3.trace"}, {"int", "as3.int"}, {"uint", "as3.uint"}, {"Class", "as3.Class"},
+        {"trace", "as3.trace"}, {"parseInt", "as3.parseInt"}, {"int", "as3.int"}, {"uint", "as3.uint"}, {"Class", "as3.Class"},
         {"XML", "as3.XML"}, {"XMLList", "as3.XMLList"}, {"Namespace", "as3.Namespace"}, {"QName", "as3.QName"},
         {"Vector", "as3.Vector"}, {"isXMLName", "as3.isXMLName"}, {"Error", "as3.Error"},
         {"ArgumentError", "as3.ArgumentError"}, {"DefinitionError", "as3.DefinitionError"},
@@ -273,6 +273,8 @@ struct Fn {
     // assignment).
     std::map<std::string, char> declaration;   // 'l', 'v', 'h'
     std::set<std::string> declared;
+    // Untyped variables declared once, with a value: typed as it is.
+    std::set<std::string> inferable;
     std::vector<std::string> hoistedLines;
     // Active with statements' objects, innermost last.
     std::vector<std::string> withs;
@@ -329,6 +331,9 @@ private:
     std::map<const ClassModel*, std::vector<ClassModel*>> subclasses;
     std::map<std::pair<const ClassModel*, std::string>, std::string> privateNames;
     std::map<std::pair<const ClassModel*, std::string>, FunctionDefinition*> methods;
+    // The instance methods' names of every class, for o.name of an o not
+    // known.
+    std::set<std::string> methodNames;
 
     // Diagnostics
     void error(const std::string& message, int line = -1) { model.error(message, line); }
@@ -345,6 +350,8 @@ private:
     std::string translatePackageFunction(FunctionDefinition* function, const Definition& definition);
     std::string translatePackageVariable(VariableDeclaration* decl, const Definition& definition, bool isConst);
     std::string definitionCall(const Definition& definition) const;
+    // The name an interface is found by: a file's own, by the file's.
+    std::string interfaceName(const ClassModel& cls, size_t i) const;
     std::string fileHeader(const std::string& sourceName) const;
     void flushComments(Lines& out, int line);
 
@@ -361,6 +368,9 @@ private:
     Ty typeOf(const std::string& written, Unit* where = nullptr);
     Ty memberType(const ClassModel* owner, const std::string& name, const Member& member);
     std::string localName(const std::string& name) const;
+    // A field's type as the descriptor gives it: "int", "const String",
+    // "private Number".
+    std::string fieldType(const Member& member, bool isConst) const;
     std::string thisRef();
     Fn* methodFn() const;
     ClassModel* contextClass() const;
@@ -442,7 +452,10 @@ private:
     };
     Ref resolve(const std::string& name);
     std::vector<std::string> activeWiths() const;
-    std::string withRead(const std::string& name, const std::string& otherwise) const;
+    // The with objects a name is looked for on first: every active one,
+    // but for a local in an E4X filter, which is the local.
+    std::vector<std::string> withsFor(const Ref& ref) const;
+    std::string withRead(const std::string& name, const std::string& otherwise, const std::vector<std::string>& withs) const;
 };
 
 // Names
@@ -450,6 +463,15 @@ private:
 std::string Translator::localName(const std::string& name) const {
     if (isReserved(name) || name == "as3" || name == "$private") return name + "_";
     return name;
+}
+
+std::string Translator::fieldType(const Member& member, bool isConst) const {
+    std::string type = member.type.empty() ? "*" : member.type;
+    if (isConst || member.kind == Member::Const) type = "const " + type;
+    if (member.access == Access::Private) type = "private " + type;
+    else if (member.access == Access::Protected) type = "protected " + type;
+    else if (member.access == Access::Internal) type = "internal " + type;
+    return type;
 }
 
 Fn* Translator::methodFn() const {
@@ -663,9 +685,17 @@ std::vector<std::string> Translator::activeWiths() const {
     return all;
 }
 
-std::string Translator::withRead(const std::string& name, const std::string& otherwise) const {
+std::vector<std::string> Translator::withsFor(const Ref& ref) const {
+    std::vector<std::string> withs = activeWiths();
+    if (ref.kind == Ref::Local) {
+        if (ref.text == "$item" || ref.text.compare(0, 5, "$with") == 0) return {};
+        withs.erase(std::remove(withs.begin(), withs.end(), std::string("$item")), withs.end());
+    }
+    return withs;
+}
+
+std::string Translator::withRead(const std::string& name, const std::string& otherwise, const std::vector<std::string>& withs) const {
     std::string out = otherwise;
-    const std::vector<std::string> withs = activeWiths();
     for (size_t i = withs.size(); i-- > 0;) {
         out = "as3.has(" + withs[i] + ", " + quote(name) + ") ? " + dotted(withs[i], name) + " : " + out;
     }
@@ -1132,6 +1162,7 @@ void Translator::prepareTops(Fn& f, const std::vector<Statement*>& tops) {
             continue;
         }
         f.locals[name] = Local{localName(name), ty};
+        if (list.size() == 1 && first.init && ty.kind == Ty::Any) f.inferable.insert(name);
         if (f.kind == Fn::Script) {
             f.declaration[name] = 'h';
             continue;
@@ -1392,13 +1423,20 @@ void Translator::variableDefinition(VariableDefinition* stmt, Lines& out) {
             // A frame's variable: the timeline's.
             if (decl->init) {
                 Place target = place(decl->id.get());
-                out.add(target.set(coerce(expr(decl->init.get()), target.type).s) + ";", stmt->line);
+                out.add(target.set(paren(coerce(expr(decl->init.get()), target.type), P_Assign)) + ";", stmt->line);
             }
             continue;
         }
         const char how = f->declaration.count(name) ? f->declaration[name] : 'v';
         const Ty& type = local->second.type;
-        const std::string value = decl->init ? coerce(expr(decl->init.get()), type).s : std::string();
+        E made;
+        if (decl->init) made = coerce(expr(decl->init.get()), type);
+        const std::string value = decl->init ? paren(made, P_Assign) : std::string();
+        // An untyped variable declared once holds what it is made with.
+        if (decl->init && type.kind == Ty::Any && f->inferable.count(name) &&
+            (made.t.kind == Ty::Instance || made.t.kind == Ty::Function)) {
+            local->second.type = made.t;
+        }
         const bool first = f->declared.insert(name).second;
         if (how == 'l') {
             const char* keyword = stmt->isConst && decl->init ? "const " : "let ";
@@ -1425,7 +1463,7 @@ void Translator::forStatement(ForStatement* stmt, Lines& out, const std::string&
             if (!f || local == f->locals.end()) {
                 if (decl->init) {
                     Place target = place(decl->id.get());
-                    parts.push_back(target.set(coerce(expr(decl->init.get()), target.type).s));
+                    parts.push_back(target.set(paren(coerce(expr(decl->init.get()), target.type), P_Assign)));
                 }
                 how = 'a';
                 continue;
@@ -1438,7 +1476,7 @@ void Translator::forStatement(ForStatement* stmt, Lines& out, const std::string&
             else if (!how) how = mine;
             const Ty& type = local->second.type;
             if (decl->init) {
-                parts.push_back(local->second.js + " = " + coerce(expr(decl->init.get()), type).s);
+                parts.push_back(local->second.js + " = " + paren(coerce(expr(decl->init.get()), type), P_Assign));
             } else if (mine != 'a') {
                 parts.push_back(local->second.js + (type.kind == Ty::Any ? std::string() : " = " + defaultValue(type)));
             }
@@ -1872,13 +1910,12 @@ E Translator::identifier(Identifier* id) {
         return make("arguments", P_Primary, Ty::instance("Array"));
     }
     Ref ref = resolve(name);
-    if (ref.kind == Ref::Local) return make(ref.text, P_Primary, ref.type);
     std::string text = ref.text;
     if (ref.kind == Ref::Member && ref.isMethod) text = "as3.bind(" + ref.object + ", " + quote(ref.property) + ")";
-    const std::vector<std::string> withs = activeWiths();
+    const std::vector<std::string> withs = withsFor(ref);
     if (!withs.empty()) {
         if (ref.kind == Ref::Unknown) return make(dotted(withs.front(), name), P_Primary, ref.type);
-        return make(withRead(name, text), P_Cond, Ty());
+        return make(withRead(name, text, withs), P_Cond, Ty());
     }
     return make(text, ref.kind == Ref::Member || ref.kind == Ref::Static ? P_Primary : P_Primary, ref.type);
 }
@@ -1930,6 +1967,14 @@ E Translator::literal(Literal* lit) {
                 pattern = kept;
             }
             if (pattern.empty()) pattern = "(?:)";
+            bool named = false;
+            for (size_t at = pattern.find("(?P<"); at != std::string::npos; at = pattern.find("(?P<", at)) {
+                pattern.erase(at + 2, 1);
+                named = true;
+            }
+            for (size_t at = pattern.find("(?<"); at != std::string::npos; at = pattern.find("(?<", at + 3)) {
+                if (at + 3 < pattern.size() && pattern[at + 3] != '=' && pattern[at + 3] != '!') named = true;
+            }
             std::string escaped;
             bool inClass = false;
             for (size_t i = 0; i < pattern.size(); ++i) {
@@ -1948,7 +1993,9 @@ E Translator::literal(Literal* lit) {
                 }
                 escaped += c;
             }
-            return make("/" + escaped + "/" + flags, P_Primary, Ty::instance("RegExp"));
+            const std::string text = "/" + escaped + "/" + flags;
+            if (named) return make("as3.regExp(" + text + ")", P_Call, Ty::instance("RegExp"));
+            return make(text, P_Primary, Ty::instance("RegExp"));
         }
         default:
             unsupported("this literal", lit->line);
@@ -2093,6 +2140,14 @@ E Translator::unary(UnaryExpression* e, bool discard) {
         // delete of a variable: false, as for a declared one.
         return make("false", P_Primary, Ty::of(Ty::Boolean));
     }
+    if (e->op == OT::Typeof && e->operand && e->operand->kind == EK::Identifier && activeWiths().empty()) {
+        const std::string& name = static_cast<Identifier*>(e->operand.get())->name;
+        Ref ref = resolve(name);
+        if (ref.kind == Ref::Unknown) {
+            return make("typeof " + ref.text + " === \"undefined\" ? \"undefined\" : as3.typeOf(" + ref.text + ")", P_Cond,
+                        Ty::of(Ty::String));
+        }
+    }
     E operand = expr(e->operand.get());
     switch (e->op) {
         case OT::Positive: {
@@ -2140,7 +2195,7 @@ Translator::Place Translator::place(Expression* e) {
             error("'" + name + "' cannot be assigned");
             out.error = true;
         }
-        const std::vector<std::string> withs = ref.kind == Ref::Local ? std::vector<std::string>() : activeWiths();
+        const std::vector<std::string> withs = withsFor(ref);
         const std::string text = ref.text;
         if (withs.empty()) {
             out.get = text;
@@ -2148,7 +2203,7 @@ Translator::Place Translator::place(Expression* e) {
             return out;
         }
         out.simple = false;
-        out.get = withRead(name, text);
+        out.get = withRead(name, text, withs);
         out.set = [withs, name, text](const std::string& v) {
             std::string made = text + " = " + v;
             for (size_t i = withs.size(); i-- > 0;) {
@@ -2249,7 +2304,8 @@ E Translator::assignment(AssignmentExpression* e, bool discard) {
     const bool logical = e->op == OT::LogicalAnd || e->op == OT::LogicalOr || e->op == OT::NullCoalescing;
     const bool plainTarget = target.get.compare(0, 11, "as3.getItem") != 0 && target.get.find(" ? ") == std::string::npos;
     if ((wraps || logical || !plainTarget) && (target.simple || !plainTarget)) {
-        E combined = make(target.get + " " + op + " " + paren(value, prec + 1), prec, Ty());
+        const std::string current = paren(make(target.get, target.get.find(" ? ") != std::string::npos ? P_Cond : P_Primary), prec);
+        E combined = make(current + " " + op + " " + paren(value, prec + 1), prec, Ty());
         if (e->op == OT::Add && (value.t.kind == Ty::String || target.type.kind == Ty::String)) combined.t = Ty::of(Ty::String);
         else if (!logical) combined.t = Ty::of(Ty::Number);
         if (e->op == OT::ShiftLeft || e->op == OT::ShiftRight || e->op == OT::BitwiseAnd || e->op == OT::BitwiseOr ||
@@ -2268,8 +2324,9 @@ E Translator::incDec(Expression* operand, bool increment, bool postfix, bool dis
     const bool wraps = target.type.kind == Ty::Int || target.type.kind == Ty::Uint;
     const bool plainTarget = target.get.compare(0, 11, "as3.getItem") != 0 && target.get.find(" ? ") == std::string::npos;
     if ((wraps && (discard || !postfix) && target.simple) || !plainTarget) {
-        E step = make(target.get + (increment ? " + 1" : " - 1"), P_Add, Ty::of(Ty::Number));
-        if (!plainTarget && !wraps) step.s = "+" + paren(make(target.get, P_Primary), P_Unary) + (increment ? " + 1" : " - 1");
+        const E current = make(target.get, target.get.find(" ? ") != std::string::npos ? P_Cond : P_Primary);
+        E step = make(paren(current, P_Add) + (increment ? " + 1" : " - 1"), P_Add, Ty::of(Ty::Number));
+        if (!plainTarget && !wraps) step.s = "+" + paren(current, P_Unary) + (increment ? " + 1" : " - 1");
         E stored = coerce(step, target.type);
         return make(target.set(paren(stored, P_Assign)), P_Assign, target.type.kind == Ty::Any ? Ty::of(Ty::Number) : target.type);
     }
@@ -2364,7 +2421,7 @@ E Translator::call(CallExpression* e) {
                                               : Ty::of(Ty::String));
             }
         }
-        const std::vector<std::string> withs = ref.kind == Ref::Local ? std::vector<std::string>() : activeWiths();
+        const std::vector<std::string> withs = withsFor(ref);
         const std::string args = arguments(e->arguments);
         Ty result;
         if (ref.kind == Ref::Member || ref.kind == Ref::Static) {
@@ -2407,6 +2464,16 @@ E Translator::call(CallExpression* e) {
         }
         if (!m->computed && m->object->kind != EK::Super) {
             const std::string& name = m->property->name;
+            static const std::set<std::string> dateTexts = {
+                "toString", "toDateString", "toTimeString", "toLocaleString", "toLocaleDateString",
+                "toLocaleTimeString", "toUTCString",
+            };
+            if (dateTexts.count(name) && e->arguments.empty()) {
+                E object = expr(m->object.get());
+                if (object.t.is("Date")) {
+                    return make("as3.dateText(" + object.s + ", " + quote(name) + ")", P_Call, Ty::of(Ty::String));
+                }
+            }
             if (name == "sort" || name == "sortOn" || name == "insertAt" || name == "removeAt") {
                 E object = expr(m->object.get());
                 if (object.t.kind == Ty::Any || object.t.kind == Ty::Object || object.t.isArrayLike()) {
@@ -2587,6 +2654,9 @@ E Translator::member(MemberExpression* e, bool callee) {
     if (object.t.isXml() && !callee && isXmlMethod(name)) {
         return make(base + dot + "child(" + quote(name) + ")", P_Call, Ty::instance("XMLList"));
     }
+    if (!callee && (object.t.kind == Ty::Any || object.t.kind == Ty::Object) && methodNames.count(name) && !e->optional) {
+        return make("as3.bind(" + object.s + ", " + quote(name) + ")", P_Call, Ty::of(Ty::Function));
+    }
     Ty type = builtinMemberType(object.t, name);
     if (callee) {
         type = Ty::of(Ty::Function);
@@ -2690,6 +2760,12 @@ std::string Translator::definitionCall(const Definition& definition) const {
     return "as3.define(" + quote(definition.package.empty() ? definition.name : definition.package + "." + definition.name) + ", ";
 }
 
+std::string Translator::interfaceName(const ClassModel& cls, size_t i) const {
+    const ClassModel* face = cls.interfaceModels[i];
+    if (face && face->outside && face->unit && face->unit->file) return face->unit->file->fileName + "$" + face->name;
+    return cls.interfaceNames[i];
+}
+
 std::string Translator::fileHeader(const std::string& sourceName) const {
     return "// " + sourceName + ", translated to JavaScript by libas3.\n\"use strict\";\n";
 }
@@ -2707,6 +2783,18 @@ std::vector<Statement*> topsOf(Statement* body) {
     return tops;
 }
 
+// The JavaScript constructor: the fields at their first values (constants,
+// as a player has them when the object is made), then, for the class made,
+// the ActionScript constructor.
+std::string constructorText(const std::string& name, bool root, const std::vector<std::string>& fields) {
+    const std::string construct = "if (new.target === " + name + ") this.$construct(...args);";
+    if (fields.empty()) return std::string("constructor(...args) { ") + (root ? "" : "super(); ") + construct + " }";
+    std::string text = "constructor(...args) {\n";
+    if (!root) text += "    super();\n";
+    for (const std::string& field : fields) text += "    " + field + "\n";
+    return text + "    " + construct + "\n}";
+}
+
 std::string fieldKey(const std::string& name) {
     return isIdentifier(name) ? name : quote(name);
 }
@@ -2720,7 +2808,7 @@ std::string methodKey(const std::string& name) {
 
 std::string Translator::translateInterface(ClassModel& cls) {
     std::string extends;
-    for (size_t i = 0; i < cls.interfaceNames.size(); ++i) extends += (i ? ", " : "") + quote(cls.interfaceNames[i]);
+    for (size_t i = 0; i < cls.interfaceNames.size(); ++i) extends += (i ? ", " : "") + quote(interfaceName(cls, i));
     Definition definition;
     definition.name = cls.name;
     definition.package = cls.package;
@@ -2753,6 +2841,7 @@ std::string Translator::translateClass(ClassModel& cls) {
     // The class's members, in order.
     FunctionDefinition* constructor = nullptr;
     std::vector<std::pair<VariableDeclaration*, bool>> instanceFields;   // decl, isConst
+    std::vector<std::string> fieldDefaults;
     std::string fields;
     for (auto& node : cls.ast->members) {
         auto* function = dynamic_cast<FunctionDefinition*>(node.get());
@@ -2769,20 +2858,21 @@ std::string Translator::translateClass(ClassModel& cls) {
                 const Ty type = typeOf(member.type);
                 if (!value.empty()) {
                     // A literal, as its type has it.
-                    value = coerce(expr(decl->init.get()), type).s;
+                    value = paren(coerce(expr(decl->init.get()), type), P_Assign);
                 } else {
                     value = defaultValue(type);
                     if (decl->init) instanceFields.emplace_back(decl.get(), variables->isConst);
                 }
-                fields += (fields.empty() ? "" : ", ") + fieldKey(key) + ": " + value;
+                fieldDefaults.push_back(dotted("this", key) + " = " + value + ";");
+                fields += (fields.empty() ? "" : ", ") + fieldKey(key) + ": " +
+                          quote(fieldType(member, variables->isConst));
             }
         }
     }
 
     Lines body;
     body.indent();
-    body.add(std::string("constructor(...args) { ") + (root ? "" : "super(); ") + "if (new.target === " + cls.name +
-             ") this.$construct(...args); }");
+    body.add(constructorText(cls.name, root, fieldDefaults));
     body.blank();
     {
         Fn f;
@@ -2918,7 +3008,7 @@ std::string Translator::translateClass(ClassModel& cls) {
     out.add("}");
     out.append(after);
     std::string interfaces;
-    for (size_t i = 0; i < cls.interfaceNames.size(); ++i) interfaces += (i ? ", " : "") + quote(cls.interfaceNames[i]);
+    for (size_t i = 0; i < cls.interfaceNames.size(); ++i) interfaces += (i ? ", " : "") + quote(interfaceName(cls, i));
     out.add("return {");
     out.indent();
     out.add("class: " + cls.name + ",");
@@ -2956,13 +3046,15 @@ std::string Translator::translateTimeline(ClassModel& cls) {
 
     // Stage instances and frame variables: fields at their defaults.
     std::string fields;
+    std::vector<std::string> fieldDefaults;
     for (const auto& entry : cls.instance) {
         if (entry.second.kind != Member::Var) continue;
-        fields += (fields.empty() ? "" : ", ") + fieldKey(entry.first) + ": " + defaultValue(typeOf(entry.second.type));
+        fields += (fields.empty() ? "" : ", ") + fieldKey(entry.first) + ": " + quote(fieldType(entry.second, false));
+        fieldDefaults.push_back(dotted("this", entry.first) + " = " + defaultValue(typeOf(entry.second.type)) + ";");
     }
     Lines body;
     body.indent();
-    body.add("constructor(...args) { super(); if (new.target === " + cls.name + ") this.$construct(...args); }");
+    body.add(constructorText(cls.name, false, fieldDefaults));
     body.blank();
     std::string frames;
     for (size_t i = 0; i < cls.unit->members.size(); ++i) {
@@ -3253,6 +3345,9 @@ Output Translator::run(const std::vector<Source>& sources, const std::vector<Tim
     if (model.hasErrors()) return output;
     for (auto& cls : model.classes) {
         if (cls->superClass) subclasses[cls->superClass].push_back(cls.get());
+        for (const auto& member : cls->instance) {
+            if (member.second.kind == Member::Method) methodNames.insert(member.first);
+        }
     }
 
     std::vector<std::string> order;
