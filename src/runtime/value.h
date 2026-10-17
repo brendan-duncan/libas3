@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <vector>
 #include <functional>
+#include <type_traits>
 #include <typeinfo>
 
 namespace as3 {
@@ -83,7 +84,16 @@ public:
     long use_count() const noexcept;
     // The Value as a ValuePtr (an empty one when there is none).
     operator const ValuePtr&() const noexcept;
-    operator std::weak_ptr<Value>() const noexcept { return static_cast<const ValuePtr&>(*this); }
+    // As any shared_ptr or weak_ptr a ValuePtr converts to (shared_ptr<void>,
+    // weak_ptr<Value>), which assign only from shared_ptrs.
+    template <class T, class = std::enable_if_t<std::is_convertible<Value*, T*>::value>>
+    operator std::shared_ptr<T>() const noexcept {
+        return static_cast<const ValuePtr&>(*this);
+    }
+    template <class T, class = std::enable_if_t<std::is_convertible<Value*, T*>::value>>
+    operator std::weak_ptr<T>() const noexcept {
+        return static_cast<const ValuePtr&>(*this);
+    }
 
     friend bool operator==(const ValueRef& a, const ValueRef& b) noexcept { return a._value == b._value; }
     friend bool operator!=(const ValueRef& a, const ValueRef& b) noexcept { return a._value != b._value; }
