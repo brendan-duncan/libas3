@@ -407,7 +407,7 @@ std::unique_ptr<Program> Parser::parse() {
     return program;
 }
 
-std::vector<std::unique_ptr<ImportDirective>> Parser::parseImports() {
+std::vector<std::unique_ptr<ImportDirective>> Parser::parseImports(bool one) {
     std::vector<std::unique_ptr<ImportDirective>> imports;
 
     while (match(KeywordType::Import)) {
@@ -450,6 +450,9 @@ std::vector<std::unique_ptr<ImportDirective>> Parser::parseImports() {
         auto id = std::make_unique<Identifier>(name);
         auto import = std::make_unique<ImportDirective>(path, std::move(id), isWildcard);
         imports.push_back(std::move(import));
+        if (one) {
+            break;
+        }
     }
 
     return imports;
@@ -503,7 +506,8 @@ std::unique_ptr<AstNode> Parser::parseTopLevel() {
     }
 
     if (check(KeywordType::Import)) {
-        auto imports = parseImports();
+        // One at a time: each is a statement of the program.
+        auto imports = parseImports(true);
         if (!imports.empty()) {
             return std::move(imports[0]);
         }

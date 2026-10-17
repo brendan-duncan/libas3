@@ -54,6 +54,19 @@ static void init_language_tests() {
 
     // --- Classes ---
 
+    suite.addTest("Every import of a run outside a package is kept", []() {
+        // A frame script opening with several imports: each name found by
+        // its import, not just the first.
+        // Two classes of one short name: the global name is the first's.
+        expect(run("package a.b { public class Item { public static const N:int = 1; } }\n"
+                   "package c.d { public class Item { public static const N:int = 2; } }\n"
+                   "package e.f { public class Other { public static const N:int = 3; } }\n"
+                   "import e.f.Other;\n"
+                   "import c.d.Item;\n"
+                   "trace(Item.N, Other.N);"),
+               "2 3\n");
+    });
+
     suite.addTest("super() runs the base constructor, implicit too", []() {
         expect(run("class A { public var log:String = 'a'; public function A(x:int = 1) { log += x; } }\n"
                    "class B extends A { public function B() { super(7); log += 'b'; } }\n"

@@ -103,7 +103,8 @@ private:
     std::vector<Metadata> takeMetadata();
 
     std::unique_ptr<Program> parseProgram();
-    std::vector<std::unique_ptr<ImportDirective>> parseImports();
+    // Consecutive imports; only the next one with \a one.
+    std::vector<std::unique_ptr<ImportDirective>> parseImports(bool one = false);
     std::unique_ptr<PackageDefinition> parsePackage();
     std::unique_ptr<AstNode> parseTopLevel();
     // What attributes and metadata come before: a class, interface,
