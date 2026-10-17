@@ -35,6 +35,7 @@ add_library(as3_parser
     src/abc/abc_verifier.cpp
     src/abc/abc_builder.cpp
     src/abc/abc_player.cpp
+    src/abc/abc_model.cpp
     src/abc/abc_compiler.cpp
 )
 

@@ -1,5 +1,6 @@
 #include "abc.h"
 #include "abc_builder.h"
+#include "abc_model.h"
 #include "abc_player.h"
 #include "abc_verifier.h"
 #include "../parser/parser.h"
@@ -56,90 +57,6 @@ struct TypeRef {
     enum Kind { Any, Void, Int, Uint, Number, Boolean, String, Object, Other };
     Kind kind = Any;
     uint32_t mn = 0;   // 0 for *
-};
-
-enum class Access { Public, Private, Protected, Internal };
-
-struct Member {
-    std::string name;
-    enum Kind { Var, Const, Method, Accessor };
-    Kind kind = Var;
-    bool isStatic = false;
-    Access access = Access::Internal;
-    uint32_t ns = 0;
-    std::string type;
-    Expression* init = nullptr;
-};
-
-struct Unit;
-
-struct ClassModel {
-    std::string package;
-    std::string name;
-    bool isInterface = false;
-    bool isFinal = false;
-    bool isDynamic = false;
-    bool isPublic = true;
-    bool outside = false;
-    ClassDefinition* ast = nullptr;
-    Unit* unit = nullptr;
-    const Timeline* timeline = nullptr;
-    int line = 0;
-    // Qualified with a dot; empty for none (an interface).
-    std::string superName;
-    uint32_t superMn = 0;
-    std::vector<uint32_t> interfaceMns;
-    std::map<std::string, Member> instance;
-    std::map<std::string, Member> statics;
-    uint32_t nameMn = 0;
-    uint32_t privateNs = 0;
-    uint32_t protectedNs = 0;
-    uint32_t staticProtectedNs = 0;
-    uint32_t interfaceNs = 0;
-    int classIndex = -1;
-
-    std::string qualified() const { return package.empty() ? name : package + "." + name; }
-};
-
-// A definition at a package's or file's top: a class, function or
-// variable, found by name.
-struct Definition {
-    enum Kind { Class, Function, Variable };
-    Kind kind = Class;
-    ClassModel* cls = nullptr;
-    uint32_t mn = 0;
-    std::string type;
-    bool isConst = false;
-    Expression* init = nullptr;
-};
-
-struct SourceFile;
-
-// What code is compiled in: a package of a file (or the file outside its
-// packages, or a timeline), with what it imports.
-struct Unit {
-    SourceFile* file = nullptr;
-    std::string fileName;
-    std::string package;
-    bool outside = false;
-    std::map<std::string, std::string> imports;
-    std::vector<std::string> wildcards;
-    std::vector<AstNode*> members;
-    std::map<const ClassModel*, uint32_t> openSets;
-};
-
-struct SourceFile {
-    std::string fileName;
-    std::unique_ptr<Program> program;
-    std::vector<std::unique_ptr<Unit>> units;
-    // Definitions outside the packages, which only the file sees.
-    std::map<std::string, Definition> privateDefinitions;
-    uint32_t privateNs = 0;
-    std::vector<ClassModel*> classes;
-    std::vector<FunctionDefinition*> functions;   // a package's, or outside one
-    bool timeline = false;
-    // A timeline's frames, one for each of its program's blocks.
-    std::vector<int> frames;
 };
 
 // Code being compiled
@@ -226,255 +143,24 @@ struct Constant {
     std::string text;
 };
 
-// Scanning functions for what they declare and what their nested
-// functions use, to find the variables closures capture.
 
-struct Scan {
-    std::vector<std::pair<std::string, std::string>> vars;
-    std::vector<FunctionDefinition*> functions;
-    std::set<std::string> refs;
-    std::set<std::string> innerFree;
-    // What var declares (not catch or function).
-    std::set<std::string> declared;
-    bool usesArguments = false;
-    bool callsSuper = false;
+// The pool's names for a class of the model.
+struct ClassNames {
+    uint32_t nameMn = 0;
+    uint32_t superMn = 0;
+    std::vector<uint32_t> interfaceMns;
+    uint32_t privateNs = 0;
+    uint32_t protectedNs = 0;
+    uint32_t staticProtectedNs = 0;
+    uint32_t interfaceNs = 0;
+    int classIndex = -1;
 };
-
-void scanStatement(Statement* stmt, Scan& scan);
-void scanExpression(Expression* expr, Scan& scan);
-std::set<std::string> freeNames(const std::vector<std::unique_ptr<Parameter>>& params, Statement* body,
-                                const std::string& selfName);
-
-// The predicate of an E4X filter, as the parser makes it:
-// $xmlFilter(list, function($item) { with ($item) return predicate; }).
-Expression* filterPredicate(CallExpression* call) {
-    if (!call->callee || call->callee->kind != EK::Identifier ||
-        static_cast<Identifier*>(call->callee.get())->name != "$xmlFilter" || call->arguments.size() != 2 ||
-        call->arguments[1]->kind != EK::Function) {
-        return nullptr;
-    }
-    auto* function = static_cast<FunctionExpression*>(call->arguments[1].get());
-    auto* block = dynamic_cast<BlockStatement*>(function->body.get());
-    if (!block || block->statements.size() != 1) return nullptr;
-    auto* with = dynamic_cast<WithStatement*>(block->statements[0].get());
-    if (!with) return nullptr;
-    auto* result = dynamic_cast<ReturnStatement*>(with->body.get());
-    return result ? result->argument.get() : nullptr;
-}
-
-void scanExpression(Expression* expr, Scan& scan) {
-    if (!expr) return;
-    switch (expr->kind) {
-        case EK::Identifier: {
-            auto* id = static_cast<Identifier*>(expr);
-            scan.refs.insert(id->name);
-            if (id->name == "arguments") scan.usesArguments = true;
-            break;
-        }
-        case EK::Binary: {
-            Expression* at = expr;
-            while (at && at->kind == EK::Binary) {
-                auto* binary = static_cast<BinaryExpression*>(at);
-                scanExpression(binary->right.get(), scan);
-                at = binary->left.get();
-            }
-            scanExpression(at, scan);
-            break;
-        }
-        case EK::Unary:
-            scanExpression(static_cast<UnaryExpression*>(expr)->operand.get(), scan);
-            break;
-        case EK::Conditional: {
-            auto* conditional = static_cast<ConditionalExpression*>(expr);
-            scanExpression(conditional->test.get(), scan);
-            scanExpression(conditional->consequent.get(), scan);
-            scanExpression(conditional->alternate.get(), scan);
-            break;
-        }
-        case EK::Assignment: {
-            auto* assignment = static_cast<AssignmentExpression*>(expr);
-            scanExpression(assignment->left.get(), scan);
-            scanExpression(assignment->right.get(), scan);
-            break;
-        }
-        case EK::Call: {
-            auto* call = static_cast<CallExpression*>(expr);
-            if (Expression* predicate = filterPredicate(call)) {
-                // Compiled in place, not as a closure.
-                scanExpression(call->arguments[0].get(), scan);
-                scanExpression(predicate, scan);
-                break;
-            }
-            if (call->callee && call->callee->kind == EK::Super) scan.callsSuper = true;
-            scanExpression(call->callee.get(), scan);
-            for (auto& arg : call->arguments) scanExpression(arg.get(), scan);
-            break;
-        }
-        case EK::New: {
-            auto* made = static_cast<NewExpression*>(expr);
-            scanExpression(made->callee.get(), scan);
-            for (auto& arg : made->arguments) scanExpression(arg.get(), scan);
-            break;
-        }
-        case EK::Member: {
-            auto* member = static_cast<MemberExpression*>(expr);
-            scanExpression(member->object.get(), scan);
-            if (member->computed) scanExpression(member->computedProperty.get(), scan);
-            break;
-        }
-        case EK::Function: {
-            auto* function = static_cast<FunctionExpression*>(expr);
-            const auto free = freeNames(function->parameters, function->body.get(),
-                                        function->name ? function->name->name : std::string());
-            scan.innerFree.insert(free.begin(), free.end());
-            break;
-        }
-        case EK::Array:
-            for (auto& element : static_cast<ArrayExpression*>(expr)->elements) scanExpression(element.get(), scan);
-            break;
-        case EK::Object:
-            for (auto& property : static_cast<ObjectExpression*>(expr)->properties) {
-                if (property.first && property.first->kind != EK::Identifier) scanExpression(property.first.get(), scan);
-                scanExpression(property.second.get(), scan);
-            }
-            break;
-        case EK::Sequence:
-            for (auto& part : static_cast<SequenceExpression*>(expr)->expressions) scanExpression(part.get(), scan);
-            break;
-        case EK::TypeApplication:
-            scanExpression(static_cast<TypeApplication*>(expr)->base.get(), scan);
-            break;
-        default:
-            break;
-    }
-}
-
-void scanStatement(Statement* stmt, Scan& scan) {
-    if (!stmt) return;
-    if (auto* block = dynamic_cast<BlockStatement*>(stmt)) {
-        for (auto& s : block->statements) scanStatement(s.get(), scan);
-    } else if (auto* expression = dynamic_cast<ExpressionStatement*>(stmt)) {
-        scanExpression(expression->expression.get(), scan);
-    } else if (auto* variables = dynamic_cast<VariableDefinition*>(stmt)) {
-        for (auto& decl : variables->declarations) {
-            scan.vars.emplace_back(decl->id->name, decl->type ? decl->type->name : std::string());
-            scan.declared.insert(decl->id->name);
-            scanExpression(decl->init.get(), scan);
-        }
-    } else if (auto* function = dynamic_cast<FunctionDefinition*>(stmt)) {
-        scan.functions.push_back(function);
-        scan.vars.emplace_back(function->name->name, "Function");
-        const auto free = freeNames(function->parameters, function->body.get(), std::string());
-        scan.innerFree.insert(free.begin(), free.end());
-    } else if (auto* branch = dynamic_cast<IfStatement*>(stmt)) {
-        scanExpression(branch->test.get(), scan);
-        scanStatement(branch->consequent.get(), scan);
-        scanStatement(branch->alternate.get(), scan);
-    } else if (auto* loop = dynamic_cast<WhileStatement*>(stmt)) {
-        scanExpression(loop->test.get(), scan);
-        scanStatement(loop->body.get(), scan);
-    } else if (auto* doLoop = dynamic_cast<DoWhileStatement*>(stmt)) {
-        scanStatement(doLoop->body.get(), scan);
-        scanExpression(doLoop->test.get(), scan);
-    } else if (auto* forLoop = dynamic_cast<ForStatement*>(stmt)) {
-        scanStatement(forLoop->init.get(), scan);
-        scanExpression(forLoop->test.get(), scan);
-        scanExpression(forLoop->update.get(), scan);
-        scanStatement(forLoop->body.get(), scan);
-    } else if (auto* forIn = dynamic_cast<ForInStatement*>(stmt)) {
-        scanStatement(forIn->left.get(), scan);
-        scanExpression(forIn->right.get(), scan);
-        scanStatement(forIn->body.get(), scan);
-    } else if (auto* choice = dynamic_cast<SwitchStatement*>(stmt)) {
-        scanExpression(choice->discriminant.get(), scan);
-        for (auto& clause : choice->cases) {
-            scanExpression(clause->test.get(), scan);
-            for (auto& s : clause->consequent) scanStatement(s.get(), scan);
-        }
-    } else if (auto* labeled = dynamic_cast<LabeledStatement*>(stmt)) {
-        scanStatement(labeled->body.get(), scan);
-    } else if (auto* attempt = dynamic_cast<TryStatement*>(stmt)) {
-        scanStatement(attempt->block.get(), scan);
-        for (auto& clause : attempt->catches) {
-            // Untyped: two catches may give one name different types.
-            scan.vars.emplace_back(clause.variable->name, "*");
-            scanStatement(clause.body.get(), scan);
-        }
-        scanStatement(attempt->finallyBody.get(), scan);
-    } else if (auto* result = dynamic_cast<ReturnStatement*>(stmt)) {
-        scanExpression(result->argument.get(), scan);
-    } else if (auto* thrown = dynamic_cast<ThrowStatement*>(stmt)) {
-        scanExpression(thrown->argument.get(), scan);
-    } else if (auto* with = dynamic_cast<WithStatement*>(stmt)) {
-        scanExpression(with->object.get(), scan);
-        scanStatement(with->body.get(), scan);
-    }
-}
-
-std::set<std::string> freeNames(const std::vector<std::unique_ptr<Parameter>>& params, Statement* body,
-                                const std::string& selfName) {
-    Scan scan;
-    scanStatement(body, scan);
-    std::set<std::string> declared;
-    for (const auto& param : params) declared.insert(param->name->name);
-    for (const auto& var : scan.vars) declared.insert(var.first);
-    declared.insert("arguments");
-    if (!selfName.empty()) declared.insert(selfName);
-    std::set<std::string> free;
-    for (const auto& name : scan.refs) {
-        if (!declared.count(name)) free.insert(name);
-    }
-    for (const auto& name : scan.innerFree) {
-        if (!declared.count(name)) free.insert(name);
-    }
-    return free;
-}
-
-// Whether a constructor's body calls super(), outside nested functions.
-bool callsSuper(Statement* body) {
-    Scan scan;
-    scanStatement(body, scan);
-    return scan.callsSuper;
-}
-
-Access accessOf(const std::vector<AttributePtr>& attributes, Access otherwise) {
-    if (hasAttribute(attributes, AttributeType::Public)) return Access::Public;
-    if (hasAttribute(attributes, AttributeType::Private)) return Access::Private;
-    if (hasAttribute(attributes, AttributeType::Protected)) return Access::Protected;
-    if (hasAttribute(attributes, AttributeType::Internal)) return Access::Internal;
-    return otherwise;
-}
-
-std::string packageOf(const std::string& qualified) {
-    const size_t dot = qualified.find_last_of('.');
-    return dot == std::string::npos ? std::string() : qualified.substr(0, dot);
-}
-
-std::string shortOf(const std::string& qualified) {
-    const size_t dot = qualified.find_last_of('.');
-    return dot == std::string::npos ? qualified : qualified.substr(dot + 1);
-}
-
-// A number as ActionScript writes it, for an object literal's numeric key.
-std::string numberText(double value) {
-    if (std::isnan(value)) return "NaN";
-    if (std::isinf(value)) return value < 0 ? "-Infinity" : "Infinity";
-    if (value == std::floor(value) && std::fabs(value) < 1e21) {
-        char buffer[32];
-        std::snprintf(buffer, sizeof buffer, "%.0f", value);
-        return buffer;
-    }
-    for (int precision = 1; precision <= 17; ++precision) {
-        char buffer[40];
-        std::snprintf(buffer, sizeof buffer, "%.*g", precision, value);
-        if (std::strtod(buffer, nullptr) == value) return buffer;
-    }
-    return std::to_string(value);
-}
 
 class AbcCompiler {
 public:
-    explicit AbcCompiler(const Options& options) : options(options), pool(file) {}
+    explicit AbcCompiler(const Options& options)
+        : options(options), pool(file), model(options, output.diagnostics), currentFile(model.currentFile),
+          currentLine(model.currentLine) {}
 
     Output run(const std::vector<Source>& sources, const std::vector<Timeline>& timelines);
 
@@ -483,30 +169,23 @@ private:
     AbcFile file;
     PoolBuilder pool;
     Output output;
-    std::vector<std::unique_ptr<SourceFile>> files;
-    std::vector<std::unique_ptr<ClassModel>> classes;
-    std::map<std::string, Definition> globals;
+    Model model;
+    std::vector<std::unique_ptr<SourceFile>>& files = model.files;
+    std::map<const ClassModel*, ClassNames> classNames;
+    std::map<const SourceFile*, uint32_t> filePrivateNs;
+    std::map<std::pair<const Unit*, const ClassModel*>, uint32_t> openSets;
     Function* cur = nullptr;
     // The class whose constants are found by name where no code is being
     // compiled (a field's value, a parameter's default).
     ClassModel* constantClass = nullptr;
-    std::string currentFile;
-    int currentLine = 0;
+    std::string& currentFile;
+    int& currentLine;
 
     // Diagnostics
 
-    void error(const std::string& message, int line = -1) {
-        output.diagnostics.push_back({true, currentFile, line < 0 ? currentLine : line, message});
-    }
-    void warning(const std::string& message, int line = -1) {
-        output.diagnostics.push_back({false, currentFile, line < 0 ? currentLine : line, message});
-    }
-    bool hasErrors() const {
-        for (const Diagnostic& diagnostic : output.diagnostics) {
-            if (diagnostic.isError) return true;
-        }
-        return false;
-    }
+    void error(const std::string& message, int line = -1) { model.error(message, line); }
+    void warning(const std::string& message, int line = -1) { model.warning(message, line); }
+    bool hasErrors() const { return model.hasErrors(); }
 
     // Namespaces and names
 
@@ -515,28 +194,25 @@ private:
     uint32_t internalNs(const std::string& package) { return pool.ns(NS_PackageInternal, package); }
     uint32_t publicName(const std::string& name) { return pool.qname(publicNs(), name); }
 
-    ClassModel* sourceClass(const std::string& qualified) {
-        auto found = globals.find(qualified);
-        return found != globals.end() && found->second.kind == Definition::Class ? found->second.cls : nullptr;
-    }
-
-    ClassModel* superOf(const ClassModel* cls) {
-        return cls && !cls->superName.empty() ? sourceClass(cls->superName) : nullptr;
-    }
+    ClassModel* sourceClass(const std::string& qualified) { return model.sourceClass(qualified); }
+    ClassModel* superOf(const ClassModel* cls) { return model.superOf(cls); }
+    ClassNames& names(const ClassModel* cls) { return classNames[cls]; }
 
     uint32_t openSet(Unit* unit, const ClassModel* cls);
-    const Definition* findDefinition(Unit* unit, const std::string& name, std::string* package = nullptr);
-    bool isPackage(Unit* unit, const std::string& name);
-    TypeRef resolveType(const std::string& written, Unit* unit, bool quiet = false);
-    std::vector<std::string> superChain(const ClassModel* cls);
-
-    // Models
-    void parseSources(const std::vector<Source>& sources);
-    void collectDefinitions(SourceFile& source);
-    void addClass(ClassDefinition* definition, Unit* unit, bool outside);
-    void buildTimeline(const Timeline& timeline);
-    void resolveClasses();
-    void addMember(ClassModel& cls, const std::string& name, Member member);
+    const Definition* findDefinition(Unit* unit, const std::string& name, std::string* package = nullptr) {
+        return model.findDefinition(unit, name, package);
+    }
+    bool isPackage(Unit* unit, const std::string& name) { return model.isPackage(unit, name); }
+    TypeRef resolveType(const std::string& written, Unit* unit, bool quiet = false) {
+        return typeRef(model.resolveType(written, unit, quiet));
+    }
+    TypeRef typeRef(const TypeName& type);
+    std::vector<std::string> superChain(const ClassModel* cls) { return model.superChain(cls); }
+    // The multiname of a definition, and the namespace of a member.
+    uint32_t mnOf(const Definition& definition);
+    uint32_t memberNs(const ClassModel& cls, const Member& member);
+    // The pool's names for every class of the model.
+    void assignNames();
 
     // Output
     void compileFile(SourceFile& source);
@@ -633,543 +309,108 @@ private:
     }
 };
 
+
+
+
 // Names
 
 uint32_t AbcCompiler::openSet(Unit* unit, const ClassModel* cls) {
-    auto found = unit->openSets.find(cls);
-    if (found != unit->openSets.end()) return found->second;
+    auto found = openSets.find({unit, cls});
+    if (found != openSets.end()) return found->second;
     std::vector<uint32_t> list = {publicNs(), packageNs(unit->package), internalNs(unit->package)};
-    if (unit->file && unit->file->privateNs) list.push_back(unit->file->privateNs);
+    if (unit->file && filePrivateNs[unit->file]) list.push_back(filePrivateNs[unit->file]);
     for (const ClassModel* c = cls; c; c = superOf(c)) {
-        if (c == cls && c->privateNs) list.push_back(c->privateNs);
-        if (c->protectedNs) list.push_back(c->protectedNs);
-        if (c->staticProtectedNs) list.push_back(c->staticProtectedNs);
+        const ClassNames& n = names(c);
+        if (c == cls && n.privateNs) list.push_back(n.privateNs);
+        if (n.protectedNs) list.push_back(n.protectedNs);
+        if (n.staticProtectedNs) list.push_back(n.staticProtectedNs);
         if (c != cls && c->package == unit->package) list.push_back(internalNs(c->package));
     }
     for (const std::string& wildcard : unit->wildcards) list.push_back(packageNs(wildcard));
     for (const auto& import : unit->imports) list.push_back(packageNs(packageOf(import.second)));
     const uint32_t set = pool.nsSet(list);
-    unit->openSets[cls] = set;
+    openSets[{unit, cls}] = set;
     return set;
 }
 
-const Definition* AbcCompiler::findDefinition(Unit* unit, const std::string& name, std::string* package) {
-    if (unit->file) {
-        auto found = unit->file->privateDefinitions.find(name);
-        if (found != unit->file->privateDefinitions.end()) return &found->second;
+TypeRef AbcCompiler::typeRef(const TypeName& type) {
+    TypeRef ref;
+    switch (type.kind) {
+        case TypeName::Any: return ref;
+        case TypeName::Void: ref.kind = TypeRef::Void; break;
+        case TypeName::Int: ref.kind = TypeRef::Int; break;
+        case TypeName::Uint: ref.kind = TypeRef::Uint; break;
+        case TypeName::Number: ref.kind = TypeRef::Number; break;
+        case TypeName::Boolean: ref.kind = TypeRef::Boolean; break;
+        case TypeName::String: ref.kind = TypeRef::String; break;
+        case TypeName::Object: ref.kind = TypeRef::Object; break;
+        case TypeName::Class:
+            ref.kind = TypeRef::Other;
+            ref.mn = type.definition ? mnOf(*type.definition)
+                                     : pool.qname(packageNs(packageOf(type.qualified)), shortOf(type.qualified));
+            return ref;
+        case TypeName::Vector:
+            ref.kind = TypeRef::Other;
+            ref.mn = pool.typeName(pool.qname(packageNs("__AS3__.vec"), "Vector"), {typeRef(*type.element).mn});
+            return ref;
     }
-    const auto global = [this](const std::string& key) -> const Definition* {
-        auto found = globals.find(key);
-        return found == globals.end() ? nullptr : &found->second;
-    };
-    auto imported = unit->imports.find(name);
-    if (imported != unit->imports.end()) {
-        if (package) *package = packageOf(imported->second);
-        return global(imported->second);
-    }
-    if (const Definition* own = global(unit->package.empty() ? name : unit->package + "." + name)) return own;
-    if (const Definition* top = global(name)) return top;
-    for (const std::string& wildcard : unit->wildcards) {
-        if (const Definition* found = global(wildcard + "." + name)) return found;
-    }
-    return nullptr;
+    ref.mn = publicName(type.qualified);
+    return ref;
 }
 
-bool AbcCompiler::isPackage(Unit* unit, const std::string& name) {
-    if (name.empty()) return false;
-    const auto under = [&name](const std::string& package) {
-        return package == name || package.compare(0, name.size() + 1, name + ".") == 0;
-    };
-    if (under(unit->package)) return true;
-    for (const auto& import : unit->imports) {
-        if (under(packageOf(import.second))) return true;
-    }
-    for (const auto& wildcard : unit->wildcards) {
-        if (under(wildcard)) return true;
-    }
-    for (const auto& definition : globals) {
-        if (under(packageOf(definition.first))) return true;
-    }
-    return name == "flash" || name == "fl" || isPlayerPackage(name) ||
-           name.compare(0, 6, "flash.") == 0 || name.compare(0, 3, "fl.") == 0;
+uint32_t AbcCompiler::mnOf(const Definition& definition) {
+    if (definition.kind == Definition::Class) return names(definition.cls).nameMn;
+    if (definition.outside) return pool.qname(filePrivateNs[definition.file], definition.name);
+    return pool.qname(definition.isPublic ? packageNs(definition.package) : internalNs(definition.package),
+                      definition.name);
 }
 
-TypeRef AbcCompiler::resolveType(const std::string& written, Unit* unit, bool quiet) {
-    TypeRef type;
-    if (written.empty() || written == "*") return type;
-    if (written == "void") {
-        type.kind = TypeRef::Void;
-        type.mn = publicName("void");
-        return type;
+uint32_t AbcCompiler::memberNs(const ClassModel& cls, const Member& member) {
+    const ClassNames& n = names(&cls);
+    if (cls.isInterface) return n.interfaceNs;
+    switch (member.access) {
+        case Access::Public: return publicNs();
+        case Access::Private: return n.privateNs;
+        case Access::Protected: return member.isStatic ? n.staticProtectedNs : n.protectedNs;
+        case Access::Internal: break;
     }
-    static const std::map<std::string, TypeRef::Kind> builtins = {
-        {"int", TypeRef::Int}, {"uint", TypeRef::Uint}, {"Number", TypeRef::Number},
-        {"Boolean", TypeRef::Boolean}, {"String", TypeRef::String}, {"Object", TypeRef::Object},
-    };
-    // Vector.<T>
-    const size_t open = written.find(".<");
-    if (open != std::string::npos && written.back() == '>') {
-        const std::string base = written.substr(0, open);
-        const std::string parameter = written.substr(open + 2, written.size() - open - 3);
-        if (base == "Vector" || base == "__AS3__.vec.Vector") {
-            const TypeRef element = resolveType(parameter, unit, quiet);
-            type.kind = TypeRef::Other;
-            type.mn = pool.typeName(pool.qname(packageNs("__AS3__.vec"), "Vector"), {element.mn});
-            return type;
-        }
-        if (!quiet) warning("unknown generic type " + written + "; taken as *");
-        return type;
-    }
-    if (written.find('.') != std::string::npos) {
-        type.kind = TypeRef::Other;
-        const Definition* definition = nullptr;
-        auto found = globals.find(written);
-        if (found != globals.end()) definition = &found->second;
-        type.mn = definition ? definition->mn : pool.qname(packageNs(packageOf(written)), shortOf(written));
-        return type;
-    }
-    std::string package;
-    if (const Definition* definition = findDefinition(unit, written, &package)) {
-        if (definition->kind == Definition::Class) {
-            type.kind = TypeRef::Other;
-            type.mn = definition->mn;
-            return type;
-        }
-    }
-    if (!package.empty() || unit->imports.count(written)) {
-        // Imported by name: its package is known even without its
-        // definition.
-        type.kind = TypeRef::Other;
-        type.mn = pool.qname(packageNs(packageOf(unit->imports[written])), written);
-        return type;
-    }
-    auto builtin = builtins.find(written);
-    if (builtin != builtins.end()) {
-        type.kind = builtin->second;
-        type.mn = publicName(written);
-        return type;
-    }
-    if (findPlayerClass("", written)) {
-        type.kind = TypeRef::Other;
-        type.mn = publicName(written);
-        return type;
-    }
-    for (const std::string& wildcard : unit->wildcards) {
-        if (findPlayerClass(wildcard, written)) {
-            type.kind = TypeRef::Other;
-            type.mn = pool.qname(packageNs(wildcard), written);
-            return type;
-        }
-    }
-    if (!quiet) warning("type " + written + " is not known (import it by name); taken as *");
-    return type;
+    return internalNs(cls.package);
 }
 
-std::vector<std::string> AbcCompiler::superChain(const ClassModel* cls) {
-    // From Object down to the direct superclass, as far as known.
-    std::vector<std::string> chain;
-    std::string name = cls->superName;
-    for (int guard = 0; !name.empty() && guard < 64; ++guard) {
-        chain.push_back(name);
-        if (ClassModel* model = sourceClass(name)) {
-            name = model->superName;
-        } else if (const PlayerClass* player = findPlayerClass(packageOf(name), shortOf(name))) {
-            name = player->superclass ? player->superclass : "";
+void AbcCompiler::assignNames() {
+    for (auto& source : model.files) filePrivateNs[source.get()] = pool.privateNs(source->fileName + "$");
+    for (auto& entry : model.classes) {
+        const ClassModel& cls = *entry;
+        ClassNames& n = names(&cls);
+        const std::string where = cls.package.empty() ? cls.name : cls.package + ":" + cls.name;
+        if (cls.timeline) {
+            n.nameMn = pool.qname(packageNs(cls.package), cls.name);
+        } else if (cls.outside) {
+            n.nameMn = pool.qname(filePrivateNs[cls.unit->file], cls.name);
         } else {
-            if (name != "Object") chain.push_back("Object");
-            break;
+            n.nameMn = pool.qname(cls.isPublic ? packageNs(cls.package) : internalNs(cls.package), cls.name);
         }
-    }
-    std::reverse(chain.begin(), chain.end());
-    return chain;
-}
-
-// Models
-
-void AbcCompiler::parseSources(const std::vector<Source>& sources) {
-    for (const Source& source : sources) {
-        auto entry = std::make_unique<SourceFile>();
-        entry->fileName = source.fileName;
-        currentFile = source.fileName;
-        Parser parser(source.text, source.fileName);
-        for (const auto& constant : options.constants) parser.defineConstant(constant.first, constant.second);
-        if (options.includeHandler) parser.setIncludeHandler(options.includeHandler);
-        entry->program = parser.parse();
-        const auto report = [this](const std::string& text, bool isError) {
-            std::istringstream lines(text);
-            std::string line;
-            while (std::getline(lines, line)) {
-                if (line.empty()) continue;
-                int number = 0;
-                const size_t at = line.find("line ");
-                if (at != std::string::npos) number = std::atoi(line.c_str() + at + 5);
-                if (isError) error(line, number);
-                else warning(line, number);
-            }
-        };
-        report(parser.getErrors(), true);
-        report(parser.getWarnings(), false);
-        if (!parser.hasErrors() && entry->program) {
-            files.push_back(std::move(entry));
-        }
-    }
-}
-
-void AbcCompiler::addMember(ClassModel& cls, const std::string& name, Member member) {
-    auto& table = member.isStatic ? cls.statics : cls.instance;
-    auto found = table.find(name);
-    if (found != table.end()) {
-        // A getter and its setter are one member.
-        if (found->second.kind == Member::Accessor && member.kind == Member::Accessor) return;
-        error("'" + name + "' is defined twice in " + cls.qualified());
-        return;
-    }
-    member.name = name;
-    if (cls.isInterface) {
-        member.ns = cls.interfaceNs;
-    } else {
-        switch (member.access) {
-            case Access::Public: member.ns = publicNs(); break;
-            case Access::Private: member.ns = cls.privateNs; break;
-            case Access::Protected: member.ns = member.isStatic ? cls.staticProtectedNs : cls.protectedNs; break;
-            case Access::Internal: member.ns = internalNs(cls.package); break;
-        }
-    }
-    table[name] = member;
-}
-
-void AbcCompiler::addClass(ClassDefinition* definition, Unit* unit, bool outside) {
-    auto model = std::make_unique<ClassModel>();
-    ClassModel& cls = *model;
-    cls.package = outside ? std::string() : unit->package;
-    cls.name = definition->name->name;
-    cls.ast = definition;
-    cls.unit = unit;
-    cls.line = definition->line;
-    cls.isInterface = definition->isInterface;
-    cls.isFinal = hasAttribute(definition->attributes, AttributeType::Final);
-    cls.isDynamic = hasAttribute(definition->attributes, AttributeType::Dynamic);
-    cls.isPublic = !outside && hasAttribute(definition->attributes, AttributeType::Public);
-    cls.outside = outside;
-    const std::string where = cls.package.empty() ? cls.name : cls.package + ":" + cls.name;
-    if (outside) {
-        cls.nameMn = pool.qname(unit->file->privateNs, cls.name);
-    } else {
-        cls.nameMn = pool.qname(cls.isPublic ? packageNs(cls.package) : internalNs(cls.package), cls.name);
-    }
-    if (cls.isInterface) {
-        cls.interfaceNs = pool.ns(NS_Namespace, where);
-    } else {
-        cls.privateNs = pool.privateNs(where);
-        cls.protectedNs = pool.ns(NS_Protected, where);
-        cls.staticProtectedNs = pool.ns(NS_StaticProtected, where);
-    }
-    for (auto& node : definition->members) {
-        if (auto* function = dynamic_cast<FunctionDefinition*>(node.get())) {
-            const bool isStatic = hasAttribute(function->attributes, AttributeType::Static);
-            if (!isStatic && function->name->name == cls.name && !function->isGetter && !function->isSetter) continue;
-            Member member;
-            member.isStatic = isStatic;
-            member.access = cls.isInterface ? Access::Public : accessOf(function->attributes, Access::Internal);
-            member.kind = function->isGetter || function->isSetter ? Member::Accessor : Member::Method;
-            if (function->isGetter && function->returnType) member.type = function->returnType->name;
-            addMember(cls, function->name->name, member);
-        } else if (auto* variables = dynamic_cast<VariableDefinition*>(node.get())) {
-            for (auto& decl : variables->declarations) {
-                Member member;
-                member.isStatic = hasAttribute(variables->attributes, AttributeType::Static);
-                member.access = accessOf(variables->attributes, Access::Internal);
-                member.kind = variables->isConst ? Member::Const : Member::Var;
-                member.type = decl->type ? decl->type->name : std::string();
-                member.init = decl->init.get();
-                addMember(cls, decl->id->name, member);
-            }
-        }
-    }
-    Definition entry;
-    entry.kind = Definition::Class;
-    entry.cls = &cls;
-    entry.mn = cls.nameMn;
-    if (outside) {
-        unit->file->privateDefinitions[cls.name] = entry;
-    } else {
-        if (globals.count(cls.qualified())) error(cls.qualified() + " is defined twice", cls.line);
-        globals[cls.qualified()] = entry;
-    }
-    unit->file->classes.push_back(&cls);
-    classes.push_back(std::move(model));
-}
-
-void AbcCompiler::collectDefinitions(SourceFile& source) {
-    currentFile = source.fileName;
-    source.privateNs = pool.privateNs(source.fileName + "$");
-    const auto addImport = [](Unit& unit, ImportDirective* import) {
-        if (import->isPackage) {
-            unit.wildcards.push_back(import->path);
-        } else {
-            unit.imports[import->name->name] =
-                import->path.empty() ? import->name->name : import->path + "." + import->name->name;
-        }
-    };
-    auto outside = std::make_unique<Unit>();
-    outside->file = &source;
-    outside->fileName = source.fileName;
-    outside->outside = true;
-    for (auto& import : source.program->imports) addImport(*outside, import.get());
-    for (auto& node : source.program->statements) {
-        if (auto* import = dynamic_cast<ImportDirective*>(node.get())) addImport(*outside, import);
-    }
-    for (auto& node : source.program->statements) {
-        if (auto* package = dynamic_cast<PackageDefinition*>(node.get())) {
-            auto unit = std::make_unique<Unit>(*outside);
-            unit->outside = false;
-            unit->package = package->name ? package->name->name : std::string();
-            for (auto& import : package->imports) addImport(*unit, import.get());
-            for (auto& member : package->members) {
-                if (auto* import = dynamic_cast<ImportDirective*>(member.get())) addImport(*unit, import);
-                else unit->members.push_back(member.get());
-            }
-            source.units.push_back(std::move(unit));
-        } else if (!dynamic_cast<ImportDirective*>(node.get())) {
-            outside->members.push_back(node.get());
-        }
-    }
-    source.units.push_back(std::move(outside));
-
-    for (auto& unit : source.units) {
-        for (AstNode* node : unit->members) {
-            if (auto* definition = dynamic_cast<ClassDefinition*>(node)) {
-                addClass(definition, unit.get(), unit->outside);
-            } else if (auto* function = dynamic_cast<FunctionDefinition*>(node)) {
-                Definition entry;
-                entry.kind = Definition::Function;
-                const bool isPublic = hasAttribute(function->attributes, AttributeType::Public);
-                if (unit->outside) {
-                    entry.mn = pool.qname(source.privateNs, function->name->name);
-                    source.privateDefinitions[function->name->name] = entry;
-                } else {
-                    entry.mn = pool.qname(isPublic ? packageNs(unit->package) : internalNs(unit->package), function->name->name);
-                    globals[unit->package.empty() ? function->name->name : unit->package + "." + function->name->name] = entry;
-                }
-                source.functions.push_back(function);
-            } else if (auto* variables = dynamic_cast<VariableDefinition*>(node)) {
-                const bool isPublic = hasAttribute(variables->attributes, AttributeType::Public);
-                for (auto& decl : variables->declarations) {
-                    Definition entry;
-                    entry.kind = Definition::Variable;
-                    entry.type = decl->type ? decl->type->name : std::string();
-                    entry.isConst = variables->isConst;
-                    entry.init = decl->init.get();
-                    const std::string& name = decl->id->name;
-                    if (unit->outside) {
-                        entry.mn = pool.qname(source.privateNs, name);
-                        source.privateDefinitions[name] = entry;
-                    } else {
-                        entry.mn = pool.qname(isPublic ? packageNs(unit->package) : internalNs(unit->package), name);
-                        globals[unit->package.empty() ? name : unit->package + "." + name] = entry;
-                    }
-                }
-            }
-        }
-    }
-}
-
-void AbcCompiler::buildTimeline(const Timeline& timeline) {
-    auto source = std::make_unique<SourceFile>();
-    source->fileName = timeline.className;
-    source->timeline = true;
-    source->program = std::make_unique<Program>();
-    source->privateNs = pool.privateNs(timeline.className + "$");
-    currentFile = timeline.className;
-    auto unit = std::make_unique<Unit>();
-    unit->file = source.get();
-    unit->fileName = timeline.className;
-    unit->package = packageOf(timeline.className);
-    // Frame scripts see the player's packages without importing them.
-    for (const char* package : {"flash.accessibility", "flash.display", "flash.errors", "flash.events", "flash.external",
-                                "flash.filters", "flash.geom", "flash.media", "flash.net", "flash.printing",
-                                "flash.system", "flash.text", "flash.ui", "flash.utils", "flash.xml"}) {
-        unit->wildcards.push_back(package);
-    }
-
-    auto model = std::make_unique<ClassModel>();
-    ClassModel& cls = *model;
-    cls.package = unit->package;
-    cls.name = shortOf(timeline.className);
-    cls.timeline = &timeline;
-    cls.isDynamic = true;
-    cls.unit = unit.get();
-    const std::string where = cls.package.empty() ? cls.name : cls.package + ":" + cls.name;
-    cls.nameMn = pool.qname(packageNs(cls.package), cls.name);
-    cls.privateNs = pool.privateNs(where);
-    cls.protectedNs = pool.ns(NS_Protected, where);
-    cls.staticProtectedNs = pool.ns(NS_StaticProtected, where);
-    cls.superName = timeline.baseClass.empty() ? "flash.display.MovieClip" : timeline.baseClass;
-
-    // Each frame's script, parsed; its imports are the class's.
-    std::map<int, std::string> frames;
-    for (const FrameScript& frame : timeline.frames) {
-        if (frame.frame < 0) {
-            error("frame " + std::to_string(frame.frame) + " is not a frame");
-            continue;
-        }
-        frames[frame.frame] += frame.code + "\n";
-    }
-    for (const auto& frame : frames) {
-        const std::string name = timeline.className + ", frame " + std::to_string(frame.first + 1);
-        currentFile = name;
-        Parser parser(frame.second, name);
-        for (const auto& constant : options.constants) parser.defineConstant(constant.first, constant.second);
-        if (options.includeHandler) parser.setIncludeHandler(options.includeHandler);
-        auto program = parser.parse();
-        if (parser.hasErrors() || !program) {
-            std::istringstream lines(parser.getErrors());
-            std::string line;
-            while (std::getline(lines, line)) {
-                const size_t at = line.find("line ");
-                if (!line.empty()) error(line, at == std::string::npos ? 0 : std::atoi(line.c_str() + at + 5));
-            }
-            continue;
-        }
-        // The frame's code becomes a block; frame1's.
-        auto block = std::make_unique<BlockStatement>(std::vector<StatementPtr>());
-        for (auto& import : program->imports) {
-            if (import->isPackage) unit->wildcards.push_back(import->path);
-            else unit->imports[import->name->name] = import->path.empty() ? import->name->name : import->path + "." + import->name->name;
-        }
-        for (auto& node : program->statements) {
-            if (auto* import = dynamic_cast<ImportDirective*>(node.get())) {
-                if (import->isPackage) unit->wildcards.push_back(import->path);
-                else unit->imports[import->name->name] = import->path.empty() ? import->name->name : import->path + "." + import->name->name;
-                continue;
-            }
-            if (dynamic_cast<Statement*>(node.get())) {
-                block->statements.push_back(StatementPtr(static_cast<Statement*>(node.release())));
-            } else {
-                error("this is not allowed in a frame script");
-            }
-        }
-        // Kept on the program, so that its nodes live as long as it.
-        source->program->statements.push_back(std::move(block));
-        source->frames.push_back(frame.first);
-        source->program->fileName = name;
-    }
-    unit->members.clear();
-    for (auto& node : source->program->statements) unit->members.push_back(node.get());
-
-    // Members: the stage's instances, then each frame's variables and
-    // functions (public, as published movies have them).
-    for (const StageInstance& instance : timeline.instances) {
-        Member member;
-        member.access = Access::Public;
-        member.type = instance.type;
-        if (!cls.instance.count(instance.name)) addMember(cls, instance.name, member);
-    }
-    for (AstNode* node : unit->members) {
-        // Every var of a frame's code (outside its functions) and every
-        // function it defines.
-        Scan scan;
-        scanStatement(static_cast<BlockStatement*>(node), scan);
-        for (FunctionDefinition* function : scan.functions) {
-            if (cls.instance.count(function->name->name)) {
-                error("'" + function->name->name + "' is defined twice in the timeline", function->line);
-                continue;
-            }
-            Member member;
-            member.access = Access::Public;
-            member.kind = Member::Method;
-            addMember(cls, function->name->name, member);
-        }
-        for (const auto& var : scan.vars) {
-            if (!scan.declared.count(var.first) || cls.instance.count(var.first)) continue;
-            Member member;
-            member.access = Access::Public;
-            member.type = var.second;
-            addMember(cls, var.first, member);
-        }
-    }
-    for (const auto& frame : frames) {
-        Member member;
-        member.access = Access::Internal;
-        member.kind = Member::Method;
-        const std::string name = "frame" + std::to_string(frame.first + 1);
-        if (!cls.instance.count(name)) addMember(cls, name, member);
-    }
-
-    Definition entry;
-    entry.kind = Definition::Class;
-    entry.cls = &cls;
-    entry.mn = cls.nameMn;
-    if (globals.count(timeline.className)) error(timeline.className + " is defined twice");
-    globals[timeline.className] = entry;
-    source->classes.push_back(&cls);
-    source->units.push_back(std::move(unit));
-    classes.push_back(std::move(model));
-    files.push_back(std::move(source));
-}
-
-void AbcCompiler::resolveClasses() {
-    for (auto& model : classes) {
-        ClassModel& cls = *model;
-        currentFile = cls.unit->fileName;
-        currentLine = cls.line;
         if (cls.isInterface) {
-            for (auto& face : cls.ast->interfaces) {
-                TypeRef type = resolveType(face->name, cls.unit, true);
-                if (type.mn) cls.interfaceMns.push_back(type.mn);
-                else error("interface " + face->name + " is not known; import it by name");
-            }
-            continue;
+            n.interfaceNs = pool.ns(NS_Namespace, where);
+        } else {
+            n.privateNs = pool.privateNs(where);
+            n.protectedNs = pool.ns(NS_Protected, where);
+            n.staticProtectedNs = pool.ns(NS_StaticProtected, where);
         }
-        if (cls.ast) {
-            if (cls.ast->superClass && cls.ast->superClass->name != "Object") {
-                const std::string& written = cls.ast->superClass->name;
-                std::string qualified;
-                std::string package;
-                if (written.find('.') != std::string::npos) {
-                    qualified = written;
-                } else if (const Definition* definition = findDefinition(cls.unit, written, &package)) {
-                    if (definition->kind == Definition::Class) qualified = definition->cls->qualified();
-                } else if (cls.unit->imports.count(written)) {
-                    qualified = cls.unit->imports[written];
-                } else if (findPlayerClass("", written)) {
-                    qualified = written;
-                } else {
-                    for (const std::string& wildcard : cls.unit->wildcards) {
-                        if (findPlayerClass(wildcard, written)) qualified = wildcard + "." + written;
-                    }
-                }
-                if (qualified.empty()) {
-                    error("superclass " + written + " of " + cls.qualified() + " is not known; import it by name");
-                    qualified = "Object";
-                }
-                cls.superName = qualified;
-            } else {
-                cls.superName = "Object";
-            }
-            for (auto& face : cls.ast->interfaces) {
-                TypeRef type = resolveType(face->name, cls.unit, true);
-                if (type.mn) cls.interfaceMns.push_back(type.mn);
-                else error("interface " + face->name + " is not known; import it by name");
-            }
+    }
+    for (auto& entry : model.classes) {
+        const ClassModel& cls = *entry;
+        ClassNames& n = names(&cls);
+        for (size_t i = 0; i < cls.interfaceNames.size(); ++i) {
+            const ClassModel* face = cls.interfaceModels[i];
+            n.interfaceMns.push_back(face ? names(face).nameMn
+                                          : pool.qname(packageNs(packageOf(cls.interfaceNames[i])),
+                                                       shortOf(cls.interfaceNames[i])));
         }
-        // Outside-package classes keep their names in the file's
-        // namespace; a definition found so gives its multiname.
-        ClassModel* base = sourceClass(cls.superName);
-        if (!base && cls.unit->file) {
-            auto found = cls.unit->file->privateDefinitions.find(cls.superName);
-            if (found != cls.unit->file->privateDefinitions.end() && found->second.kind == Definition::Class) {
-                base = found->second.cls;
-            }
-        }
-        cls.superMn = base ? base->nameMn
-                           : pool.qname(packageNs(packageOf(cls.superName)), shortOf(cls.superName));
-        if (base) cls.superName = base->qualified();
-        if (base == &cls) {
-            error(cls.qualified() + " extends itself");
-            cls.superName = "Object";
-            cls.superMn = publicName("Object");
-        }
+        if (cls.isInterface) continue;
+        if (cls.superClass) n.superMn = names(cls.superClass).nameMn;
+        else if (cls.superName == "Object") n.superMn = publicName("Object");
+        else n.superMn = pool.qname(packageNs(packageOf(cls.superName)), shortOf(cls.superName));
     }
 }
 
@@ -1515,19 +756,19 @@ void AbcCompiler::emitClassDefinition(ClassModel& cls, Function& script) {
     c.op(OP_getscopeobject, 0);
     if (cls.isInterface) {
         c.op(OP_pushnull);
-        c.op(OP_newclass, static_cast<uint32_t>(cls.classIndex));
+        c.op(OP_newclass, static_cast<uint32_t>(names(&cls).classIndex));
     } else {
         const std::vector<std::string> chain = superChain(&cls);
         for (const std::string& name : chain) {
-            ClassModel* model = sourceClass(name);
-            c.op(OP_getlex, model ? model->nameMn : (name == "Object" ? publicName("Object") : pool.qname(packageNs(packageOf(name)), shortOf(name))));
+            ClassModel* base = sourceClass(name);
+            c.op(OP_getlex, base ? names(base).nameMn : (name == "Object" ? publicName("Object") : pool.qname(packageNs(packageOf(name)), shortOf(name))));
             c.op(OP_pushscope);
         }
-        c.op(OP_getlex, cls.superMn);
-        c.op(OP_newclass, static_cast<uint32_t>(cls.classIndex));
+        c.op(OP_getlex, names(&cls).superMn);
+        c.op(OP_newclass, static_cast<uint32_t>(names(&cls).classIndex));
         for (size_t i = 0; i < chain.size(); ++i) c.op(OP_popscope);
     }
-    c.op(OP_initproperty, cls.nameMn);
+    c.op(OP_initproperty, names(&cls).nameMn);
 }
 
 void AbcCompiler::compileClass(ClassModel& cls, Function& script) {
@@ -1542,16 +783,16 @@ void AbcCompiler::compileClass(ClassModel& cls, Function& script) {
 
     InstanceInfo instance;
     ClassInfo info;
-    instance.name = cls.nameMn;
-    instance.superName = cls.isInterface ? 0 : cls.superMn;
-    instance.interfaces = cls.interfaceMns;
+    instance.name = names(&cls).nameMn;
+    instance.superName = cls.isInterface ? 0 : names(&cls).superMn;
+    instance.interfaces = names(&cls).interfaceMns;
     if (cls.isInterface) {
         instance.flags = INSTANCE_Interface | INSTANCE_Sealed;
     } else {
         instance.flags = INSTANCE_ProtectedNs;
         if (!cls.isDynamic) instance.flags |= INSTANCE_Sealed;
         if (cls.isFinal) instance.flags |= INSTANCE_Final;
-        instance.protectedNs = cls.protectedNs;
+        instance.protectedNs = names(&cls).protectedNs;
     }
 
     std::vector<std::pair<uint32_t, Expression*>> instanceInits;
@@ -1570,7 +811,7 @@ void AbcCompiler::compileClass(ClassModel& cls, Function& script) {
             const Member& member = (isStatic ? cls.statics : cls.instance)[function->name->name];
             const std::string prefix = function->isGetter ? "get " : function->isSetter ? "set " : "";
             Trait trait;
-            trait.name = pool.qname(member.ns, function->name->name);
+            trait.name = pool.qname(memberNs(cls, member), function->name->name);
             trait.kind = function->isGetter ? TRAIT_Getter : function->isSetter ? TRAIT_Setter : TRAIT_Method;
             if (hasAttribute(function->attributes, AttributeType::Override)) trait.attributes |= ATTR_Override;
             if (hasAttribute(function->attributes, AttributeType::Final)) trait.attributes |= ATTR_Final;
@@ -1583,7 +824,7 @@ void AbcCompiler::compileClass(ClassModel& cls, Function& script) {
             for (auto& decl : variables->declarations) {
                 const Member& member = (isStatic ? cls.statics : cls.instance)[decl->id->name];
                 Trait trait;
-                trait.name = pool.qname(member.ns, decl->id->name);
+                trait.name = pool.qname(memberNs(cls, member), decl->id->name);
                 trait.kind = variables->isConst ? TRAIT_Const : TRAIT_Slot;
                 const TypeRef type = resolveType(member.type, cls.unit);
                 trait.typeName = type.mn;
@@ -1666,14 +907,14 @@ void AbcCompiler::compileClass(ClassModel& cls, Function& script) {
         cur = nullptr;
     }
 
-    file.instances[cls.classIndex] = std::move(instance);
-    file.classes[cls.classIndex] = std::move(info);
+    file.instances[names(&cls).classIndex] = std::move(instance);
+    file.classes[names(&cls).classIndex] = std::move(info);
 
     // The class in its script.
     Trait trait;
-    trait.name = cls.nameMn;
+    trait.name = names(&cls).nameMn;
     trait.kind = TRAIT_Class;
-    trait.index = static_cast<uint32_t>(cls.classIndex);
+    trait.index = static_cast<uint32_t>(names(&cls).classIndex);
     metadataOf(cls.ast->metadata, trait.metadata);
     file.scripts.back().traits.push_back(trait);
     constantClass = nullptr;
@@ -1688,10 +929,10 @@ void AbcCompiler::compileTimeline(ClassModel& cls) {
     const std::string where = cls.package.empty() ? cls.name : cls.package + ":" + cls.name;
     InstanceInfo instance;
     ClassInfo info;
-    instance.name = cls.nameMn;
-    instance.superName = cls.superMn;
+    instance.name = names(&cls).nameMn;
+    instance.superName = names(&cls).superMn;
     instance.flags = INSTANCE_ProtectedNs;
-    instance.protectedNs = cls.protectedNs;
+    instance.protectedNs = names(&cls).protectedNs;
 
     // Stage instances and frame variables, then frame functions.
     std::set<std::string> members;
@@ -1789,8 +1030,8 @@ void AbcCompiler::compileTimeline(ClassModel& cls) {
         endFunction(f);
         cur = nullptr;
     }
-    file.instances[cls.classIndex] = std::move(instance);
-    file.classes[cls.classIndex] = std::move(info);
+    file.instances[names(&cls).classIndex] = std::move(instance);
+    file.classes[names(&cls).classIndex] = std::move(info);
 }
 
 void AbcCompiler::compileFile(SourceFile& source) {
@@ -1816,7 +1057,7 @@ void AbcCompiler::compileFile(SourceFile& source) {
     };
     for (ClassModel* cls : source.classes) place(cls);
     for (ClassModel* cls : ordered) {
-        cls->classIndex = static_cast<int>(file.instances.size());
+        names(cls).classIndex = static_cast<int>(file.instances.size());
         file.instances.emplace_back();
         file.classes.emplace_back();
     }
@@ -1836,9 +1077,9 @@ void AbcCompiler::compileFile(SourceFile& source) {
     if (source.timeline) {
         compileTimeline(*ordered.front());
         Trait trait;
-        trait.name = ordered.front()->nameMn;
+        trait.name = names(ordered.front()).nameMn;
         trait.kind = TRAIT_Class;
-        trait.index = static_cast<uint32_t>(ordered.front()->classIndex);
+        trait.index = static_cast<uint32_t>(names(ordered.front()).classIndex);
         file.scripts.back().traits.push_back(trait);
         cur = &f;
         emitClassDefinition(*ordered.front(), f);
@@ -1858,7 +1099,7 @@ void AbcCompiler::compileFile(SourceFile& source) {
             if (auto* function = dynamic_cast<FunctionDefinition*>(node)) {
                 const Definition* definition = findDefinition(unit.get(), function->name->name);
                 Trait trait;
-                trait.name = definition ? definition->mn : publicName(function->name->name);
+                trait.name = definition ? mnOf(*definition) : publicName(function->name->name);
                 trait.kind = TRAIT_Method;
                 const std::string name = unit->package.empty() ? function->name->name : unit->package + ":" + function->name->name;
                 const uint32_t m = compileClosure(function->parameters, function->returnType.get(), function->body.get(),
@@ -1869,7 +1110,7 @@ void AbcCompiler::compileFile(SourceFile& source) {
                 for (auto& decl : variables->declarations) {
                     const Definition* definition = findDefinition(unit.get(), decl->id->name);
                     Trait trait;
-                    trait.name = definition ? definition->mn : publicName(decl->id->name);
+                    trait.name = definition ? mnOf(*definition) : publicName(decl->id->name);
                     trait.kind = variables->isConst ? TRAIT_Const : TRAIT_Slot;
                     trait.typeName = resolveType(decl->type ? decl->type->name : std::string(), unit.get()).mn;
                     file.scripts.back().traits.push_back(trait);
@@ -1896,10 +1137,11 @@ Output AbcCompiler::run(const std::vector<Source>& sources, const std::vector<Ti
         error("nothing to compile", 0);
         return output;
     }
-    parseSources(sources);
-    for (auto& source : files) collectDefinitions(*source);
-    for (const Timeline& timeline : timelines) buildTimeline(timeline);
-    resolveClasses();
+    model.parseSources(sources);
+    for (auto& source : files) model.collectDefinitions(*source);
+    for (const Timeline& timeline : timelines) model.buildTimeline(timeline);
+    model.resolveClasses();
+    assignNames();
     if (!hasErrors()) {
         // Scripts in the order given, the timelines last.
         for (auto& source : files) {
@@ -2438,7 +1680,7 @@ NameRef AbcCompiler::resolve(const std::string& name) {
                 auto found = c->instance.find(name);
                 if (found == c->instance.end() || (found->second.access == Access::Private && c != top.cls)) continue;
                 ref.kind = cur == &top ? NameRef::ThisMember : NameRef::Lexical;
-                ref.mn = pool.qname(found->second.ns, name);
+                ref.mn = pool.qname(memberNs(*c, found->second), name);
                 return ref;
             }
         }
@@ -2446,7 +1688,7 @@ NameRef AbcCompiler::resolve(const std::string& name) {
             auto found = c->statics.find(name);
             if (found == c->statics.end() || (found->second.access == Access::Private && c != top.cls)) continue;
             ref.kind = NameRef::Lexical;
-            ref.mn = pool.qname(found->second.ns, name);
+            ref.mn = pool.qname(memberNs(*c, found->second), name);
             return ref;
         }
     }
@@ -2457,7 +1699,7 @@ NameRef AbcCompiler::resolve(const std::string& name) {
     if (!dynamic) {
         std::string package;
         if (const Definition* definition = findDefinition(unit, name, &package)) {
-            ref.mn = definition->mn;
+            ref.mn = mnOf(*definition);
             ref.cls = definition->kind == Definition::Class ? definition->cls : nullptr;
             return ref;
         }
@@ -2592,7 +1834,7 @@ uint32_t AbcCompiler::propertyName(MemberExpression* e, bool& runtime) {
         for (ClassModel* c = context; c; c = superOf(c)) {
             auto found = c->instance.find(name);
             if (found != c->instance.end() && (found->second.access != Access::Private || c == context)) {
-                return pool.qname(found->second.ns, name);
+                return pool.qname(memberNs(*c, found->second), name);
             }
         }
     }
@@ -2600,7 +1842,7 @@ uint32_t AbcCompiler::propertyName(MemberExpression* e, bool& runtime) {
         for (ClassModel* c = owner; c; c = superOf(c)) {
             auto found = c->statics.find(name);
             if (found != c->statics.end() && (found->second.access != Access::Private || c == context)) {
-                return pool.qname(found->second.ns, name);
+                return pool.qname(memberNs(*c, found->second), name);
             }
         }
     }
@@ -2608,7 +1850,7 @@ uint32_t AbcCompiler::propertyName(MemberExpression* e, bool& runtime) {
         for (ClassModel* c = superOf(context); c; c = superOf(c)) {
             auto found = c->instance.find(name);
             if (found != c->instance.end() && found->second.access != Access::Private) {
-                return pool.qname(found->second.ns, name);
+                return pool.qname(memberNs(*c, found->second), name);
             }
         }
     }
