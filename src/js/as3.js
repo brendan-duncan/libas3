@@ -154,7 +154,7 @@ as3.register = function (name, value) {
         !Object.prototype.hasOwnProperty.call(value, INFO)) {
         setupClass(value, { interfaces: value.interfaces || [] }, name);
     }
-    const entry = { name, factory: null, state: 2, value, scope: null, writable: false };
+    const entry = { name, factory: null, state: 2, value: adopt(value), scope: null, writable: false };
     definitions.set(name, entry);
     install(entry);
     return value;
@@ -191,6 +191,27 @@ function outside(name) {
     return undefined;
 }
 
+// A runtime class made without the construction protocol (a constructor
+// that does all, no $construct): translated subclasses call
+// super.$construct(...args), which then makes one with those arguments and
+// takes its properties, or does nothing when there are none (the object
+// was made by super() already).
+function adopt(cls) {
+    if (typeof cls !== "function" || !cls.prototype || typeof cls.prototype.$construct === "function") return cls;
+    if (!isClass(cls) || cls === Object || cls === Function) return cls;
+    Object.defineProperty(cls.prototype, "$construct", {
+        value: function $construct(...args) {
+            if (!args.length) return;
+            const made = Reflect.construct(cls, args);
+            for (const key of Object.keys(made)) this[key] = made[key];
+        },
+        writable: true,
+        configurable: true,
+    });
+    return cls;
+}
+as3.adopt = adopt;
+
 // What a name not defined stands for: anything done with it throws, as in
 // a player, but only when it is done (a class may import what is not
 // there and not use it).
@@ -208,7 +229,7 @@ as3.use = function (name) {
     const value = topLevelValue(name);
     if (value !== undefined) return value;
     const found = outside(String(name).replace("::", "."));
-    if (found !== undefined) return found;
+    if (found !== undefined) return adopt(found);
     return undefinedName(name);
 };
 

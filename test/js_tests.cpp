@@ -714,6 +714,36 @@ as3.register("flash.events.MouseEvent", MouseEvent);
                "got:\n" + got[0]);
     });
 
+    suite.addTest("Classes extend a runtime's classes made without $construct", []() {
+        const js::Output out = translated(R"(
+package app {
+    import flash.events.Event;
+    import flash.display.Sprite;
+    public class Ping extends Event {
+        public var count:int = 1;
+        public function Ping(type:String) { super(type, true); count++; }
+    }
+    public class Box extends Sprite {
+        public var side:Number = 3;
+        public function Box() { super(); side *= 2; }
+    }
+}
+import app.*;
+var p:Ping = new Ping("ping"); var b:Box = new Box();
+trace(p.type, p.bubbles, p.count, p is Event, b.side, b.kind, b is Sprite);
+)");
+        expect(out.ok, out.errorText());
+        if (!nodeThere()) return;
+        // Plain classes, as a runtime may have them, found on the package
+        // tree it made itself.
+        const std::vector<std::string> got = runInNode({out.bundle}, R"js(
+class Event { constructor(type, bubbles = false) { this.type = type; this.bubbles = bubbles; } }
+class Sprite { constructor() { this.kind = "sprite"; } }
+globalThis.flash = { events: { Event }, display: { Sprite } };
+)js");
+        expect(got[0] == "ping true 2 true 6 sprite true\n", "got " + got[0]);
+    });
+
     suite.addTest("Timers run as the VM runs them", []() {
         const std::string program =
             "import flash.utils.*;\n"
