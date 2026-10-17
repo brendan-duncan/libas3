@@ -4,6 +4,8 @@
 #include "../src/js/js_writer.h"
 #include "../src/bytecode/vm.h"
 
+#include <optional>
+
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -348,6 +350,105 @@ const char* kStandIns = R"js(
 })();
 )js";
 
+// BitmapData and ByteArray as JPGEncoder needs them: for the VM, and as
+// JavaScript.
+struct Bitmap : HostObject {
+    int width = 0;
+    int height = 0;
+    std::vector<uint32_t> pixels;
+};
+
+struct Bytes : HostObject {
+    std::vector<uint8_t> bytes;
+    size_t position = 0;
+};
+
+void defineImageClasses(VM& vm) {
+    vm.defineNativeClass("flash.display.BitmapData")
+        .constructor([](VM&, const Val& self, Args args) {
+            auto state = std::make_shared<Bitmap>();
+            state->width = args.integer(0);
+            state->height = args.integer(1);
+            state->pixels.assign(static_cast<size_t>(state->width) * static_cast<size_t>(state->height),
+                                 args.size() > 3 ? args[3].toUint32() : 0xFFFFFFFF);
+            self->host = state;
+            return Val();
+        })
+        .getter("width", [](VM&, const Val& self, Args) { return Val::number(self.host<Bitmap>()->width); })
+        .getter("height", [](VM&, const Val& self, Args) { return Val::number(self.host<Bitmap>()->height); })
+        .method("getPixel32", [](VM&, const Val& self, Args args) {
+            Bitmap* bitmap = self.host<Bitmap>();
+            const int x = args.integer(0);
+            const int y = args.integer(1);
+            if (x < 0 || y < 0 || x >= bitmap->width || y >= bitmap->height) return Val::number(0);
+            return Val::number(bitmap->pixels[static_cast<size_t>(y * bitmap->width + x)]);
+        })
+        .method("setPixel32", [](VM&, const Val& self, Args args) {
+            Bitmap* bitmap = self.host<Bitmap>();
+            const int x = args.integer(0);
+            const int y = args.integer(1);
+            if (x >= 0 && y >= 0 && x < bitmap->width && y < bitmap->height) {
+                bitmap->pixels[static_cast<size_t>(y * bitmap->width + x)] = args[2].toUint32();
+            }
+            return Val();
+        })
+        .define();
+    vm.defineNativeClass("flash.utils.ByteArray")
+        .constructor([](VM&, const Val& self, Args) {
+            self->host = std::make_shared<Bytes>();
+            return Val();
+        })
+        .method("writeByte", [](VM&, const Val& self, Args args) {
+            Bytes* bytes = self.host<Bytes>();
+            if (bytes->position >= bytes->bytes.size()) bytes->bytes.resize(bytes->position + 1);
+            bytes->bytes[bytes->position++] = static_cast<uint8_t>(args[0].toInt32());
+            return Val();
+        })
+        .method("readUnsignedByte", [](VM&, const Val& self, Args) {
+            Bytes* bytes = self.host<Bytes>();
+            return Val::number(bytes->position < bytes->bytes.size() ? bytes->bytes[bytes->position++] : 0);
+        })
+        .getter("length", [](VM&, const Val& self, Args) { return Val::number(static_cast<double>(self.host<Bytes>()->bytes.size())); })
+        .property("position", [](VM&, const Val& self, Args) { return Val::number(static_cast<double>(self.host<Bytes>()->position)); },
+                  [](VM&, const Val& self, Args args) {
+                      self.host<Bytes>()->position = args[0].toUint32();
+                      return Val();
+                  })
+        .define();
+}
+
+const char* kImageClasses = R"js(
+(function () {
+    class BitmapData {
+        constructor(...args) { if (new.target === BitmapData) this.$construct(...args); }
+        $construct(width, height, transparent = true, fill = 0xFFFFFFFF) {
+            this.w = width | 0;
+            this.h = height | 0;
+            this.pixels = new Uint32Array(this.w * this.h).fill(fill >>> 0);
+        }
+        get width() { return this.w; }
+        get height() { return this.h; }
+        getPixel32(x, y) {
+            x |= 0; y |= 0;
+            return x < 0 || y < 0 || x >= this.w || y >= this.h ? 0 : this.pixels[y * this.w + x];
+        }
+        setPixel32(x, y, color) {
+            x |= 0; y |= 0;
+            if (x >= 0 && y >= 0 && x < this.w && y < this.h) this.pixels[y * this.w + x] = color >>> 0;
+        }
+    }
+    class ByteArray {
+        constructor(...args) { if (new.target === ByteArray) this.$construct(...args); }
+        $construct() { this.bytes = []; this.position = 0; }
+        writeByte(value) { this.bytes[this.position++] = value & 0xFF; }
+        readUnsignedByte() { return this.position < this.bytes.length ? this.bytes[this.position++] : 0; }
+        get length() { return this.bytes.length; }
+    }
+    as3.register("flash.display.BitmapData", BitmapData);
+    as3.register("flash.utils.ByteArray", ByteArray);
+})();
+)js";
+
 // The flash.* and fl.* names a bundle uses.
 std::vector<std::string> playerNames(const std::string& bundle) {
     std::vector<std::string> names;
@@ -468,6 +569,49 @@ static void init_js_paint_tests() {
         for (const std::string& name : playerNames(out.bundle)) names += (names.empty() ? "" : ", ") + js::quote(name);
         const std::vector<std::string> got = runInNode({out.bundle}, std::string(kStandIns) + "standIns([" + names + "]);\n");
         expect(got[0] == "99b2cc 10072780\ntrue true\n7.2 8 16 1 255 true 0.035\n0 0 null\n", "got \"" + got[0] + "\"");
+    });
+
+    suite.addTest("as3corelib's JPGEncoder makes the same bytes", []() {
+        const fs::path images = fs::path(kPaint) / "as3corelib-.93/src/com/adobe/images";
+        if (!fs::exists(images / "JPGEncoder.as") || !nodeThere()) {
+            std::cout << "    (sources or node not found; skipped)" << std::endl;
+            return;
+        }
+        const std::string program =
+            "import com.adobe.images.JPGEncoder;\n"
+            "import flash.display.BitmapData;\n"
+            "import flash.utils.ByteArray;\n"
+            "var image:BitmapData = new BitmapData(40, 24, false, 0xFF336699);\n"
+            "for (var y:int = 0; y < 24; y++) for (var x:int = 0; x < 40; x++) image.setPixel32(x, y, 0xFF000000 | (x * 6) << 16 | (y * 10) << 8 | ((x * y) & 0xFF));\n"
+            "for each (var quality:int in [10, 50, 80, 100]) {\n"
+            "    var jpeg:ByteArray = new JPGEncoder(quality).encode(image);\n"
+            "    jpeg.position = 0; var sum:uint = 0; var hex:String = '';\n"
+            "    for (var i:int = 0; i < jpeg.length; i++) { var b:int = jpeg.readUnsignedByte(); sum = (sum * 31 + b) >>> 0; if (i < 12) hex += (b < 16 ? '0' : '') + b.toString(16); }\n"
+            "    trace(quality, jpeg.length, sum, hex);\n"
+            "}\n";
+        VM vm;
+        defineImageClasses(vm);
+        std::string wanted;
+        vm.defineFunction("trace", [&wanted](VM& vm, const Val&, Args args) {
+            for (size_t i = 0; i < args.size(); ++i) wanted += (i ? " " : "") + vm.toString(args[i]);
+            wanted += "\n";
+            return Val();
+        });
+        vm.setClassResolver([images](const std::string& name) -> std::optional<ClassSource> {
+            const std::string prefix = "com.adobe.images.";
+            if (name.compare(0, prefix.size(), prefix) != 0) return std::nullopt;
+            const fs::path path = images / (name.substr(prefix.size()) + ".as");
+            if (!fs::exists(path)) return std::nullopt;
+            return ClassSource{readText(path), path.filename().string()};
+        });
+        if (!vm.load(program, "jpeg.as")) throw std::runtime_error(vm.getError());
+        const js::Output out = js::translate({{readText(images / "JPGEncoder.as"), "JPGEncoder.as"},
+                                              {readText(images / "BitString.as"), "BitString.as"},
+                                              {program, "jpeg.as"}});
+        expect(out.ok, out.errorText());
+        const std::vector<std::string> got = runInNode({out.bundle}, kImageClasses);
+        expect(got[0] == wanted, "VM:\n" + wanted + "JavaScript:\n" + got[0]);
+        std::cout << "    " << wanted.substr(0, wanted.find('\n')) << std::endl;
     });
 
     suite.addTest("bunnyPaint translates", []() {
