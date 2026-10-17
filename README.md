@@ -78,12 +78,15 @@ src/
 │   ├── avm1_actions.h      # The action codes
 │   ├── avm1_compiler.cpp   # AST → actions
 │   └── avm1_disassembler.cpp
-└── js/               # ActionScript 3 → JavaScript, for HTML5 pages
+└── js/               # ActionScript 3, 1 and 2 → JavaScript, for HTML5 pages
     ├── js.h                # translate(): sources and timelines to JavaScript
     ├── js_translator.cpp   # AST → JavaScript
     ├── js_writer.h/cpp     # Lines, source maps, JavaScript literals
     ├── as3.js              # The runtime translated code needs (js::runtime())
-    └── js_runtime.cpp      # as3.js, embedded
+    ├── js_runtime.cpp      # as3.js, embedded
+    ├── as2.h               # as2::translate(): ActionScript 1 and 2 to JavaScript
+    ├── as2_translator.cpp  # AST → JavaScript on avm1.js
+    └── avm1.js             # AVM1's semantics for translated code (as2::runtime())
 
 test/                 # One executable, a suite per file
 ```
@@ -452,7 +455,7 @@ The language's semantics JavaScript lacks:
 - Date's properties (`fullYear`, `month`, `time`...), and its strings as a player writes them where the type is known (`as3.dateText(d, "toUTCString")`); regular expressions with named groups (`(?P<word>...)`) give the groups on the match.
 - `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` and `getTimer` (from `as3.clock`); with `as3.manualTimers` the host runs what is due with `as3.runTimers(now)`, as the VM's `runTimers`.
 
-What cannot be translated is an error naming it (`cannot translate arguments.callee to JavaScript`): `arguments.callee`, `super` in a nested function that has its own `this`, a type applied to anything but `Vector`. What the parser does not keep (namespaces beyond the access ones, `ns::name`, E4X namespaces) is not translated either, nor AVM1. Known differences from the VM: a function's `length` counts the parameters before the first with a default; writing past a Vector's end extends it rather than throwing RangeError #1125; `JSON.stringify` of a class instance gives its fields in their order; `describeType` gives no metadata; `++` and `--` on an `int` inside an expression or a `for` loop's update do not wrap at 2147483647; a value of unknown type stored in an object-typed variable stays undefined (rather than null) when it is undefined.
+What cannot be translated is an error naming it (`cannot translate arguments.callee to JavaScript`): `arguments.callee`, `super` in a nested function that has its own `this`, a type applied to anything but `Vector`. What the parser does not keep (namespaces beyond the access ones, `ns::name`, E4X namespaces) is not translated either; ActionScript 1 and 2 have a translator of their own (below). Known differences from the VM: a function's `length` counts the parameters before the first with a default; writing past a Vector's end extends it rather than throwing RangeError #1125; `JSON.stringify` of a class instance gives its fields in their order; `describeType` gives no metadata; `++` and `--` on an `int` inside an expression or a `for` loop's update do not wrap at 2147483647; a value of unknown type stored in an object-typed variable stays undefined (rather than null) when it is undefined.
 
 ### The runtime it targets
 
@@ -472,6 +475,73 @@ The flash.* runtime (Phoenix's, in its `resources/html5`) and translated code me
 - `trace` writes to `as3.output(text)` (console.log until the runtime sets its own); `as3.clock()` gives the milliseconds since the movie started, which `getTimer` and the timers count; `as3.manualTimers` and `as3.runTimers(now)` let the runtime drive the timers from its frames.
 - as3.js defines `flash.utils`' functions, `Dictionary`, `ByteArray` (both byte orders, `b[i]`, the read and write methods but AMF's and compression) and `Endian`, and `flash.errors`' classes; the runtime may replace any of them with `as3.register`.
 
+## ActionScript 1 and 2 to JavaScript
+
+`as3::js::as2::translate` (`js/as2.h`) makes one JavaScript module of a movie's ActionScript 1 and 2: its frame scripts (and their `#initclip` parts), the `on()` and `onClipEvent()` handlers of its instances, its ActionScript 2 classes, and the symbols linked to classes. It runs on `avm1.js` (`as3::js::as2::runtime()`, the source in `src/js/avm1.js`), which gives the language as the first virtual machine (AVM1) has it, and on a host that gives movie clips their ActionScript 2 face (Phoenix's `resources/html5/as2.js`).
+
+```cpp
+#include "js/as2.h"
+
+as3::js::as2::Movie movie;
+movie.frames.push_back({"", 0, "stop();\nhat._visible = false;", "Scene 1", "Scene 1, frame 1"});
+movie.instances.push_back({7, "on (release) { gotoAndPlay(2); }", "button play_btn"});
+movie.classes.push_back({readFile("com/studio/Hat.as"), "Hat.as"});
+movie.registrations.push_back({"hat", "com.studio.Hat"});   // Object.registerClass("hat", com.studio.Hat)
+
+as3::js::as2::Options options;
+options.swfVersion = 8;                         // from 7 names are case sensitive
+as3::js::as2::Output out = as3::js::as2::translate(movie, options);
+// out.code: avm1.movie(function ($, movie) { ... });  out.errors: "Scene 1, frame 1, line 3: ..."
+```
+
+A script that does not translate is left out with its error; the rest of the movie is there.
+
+### What is made
+
+```javascript
+avm1.movie(function ($, movie) {
+    const $g = $.global;
+    $.version = 8;
+    movie.classes({
+        "com.studio.Hat": [["MovieClip"], function ($s) { /* defines _global.com.studio.Hat */ }],
+    });
+    movie.register("hat", "com.studio.Hat");
+    // Scene 1, layer actions, frame 1
+    movie.frame("", 0, function ($s) {
+        $s.def("count", 0);                       // var count = 0;  (on the timeline)
+        $s.def("add", function add(n) {           // function add(n) { ... }
+            var total = 0;
+            for (var i = 0; $.lt(i, n); i++) {
+                total = total + i;                // total is known to be a number
+            }
+            return total;
+        });
+        $s.stop();                                // stop();
+        $.put($s.get("hat"), "_x", $.add($s.call("add", [3]), $s.get("count")));
+    });
+    movie.handlers(7, [{events: ["release"], clip: false, run: function ($s) { $s.goto(true, 2, "Scene 1"); }}]);
+});
+```
+
+- Each script is a function of its scope, `$s` (an `avm1.Scope`), called with the timeline's clip as `this`. A function's parameters and variables are JavaScript's own locals; every other name goes along the scope chain as AVM1 has it: `with` blocks' objects, the timeline the code is on (its target), then `_global` (`$s.get`, `$s.call`, which calls a function with the object it was found on as `this`). An assignment to a name not found sets it on the timeline, never on `_global`; `var` on a timeline is the timeline's (`$s.def`). `_root`, `_parent`, `_global`, `_levelN` and `this` are what they are where the code runs. A function keeps the scope it was defined in, so a timeline's function finds that timeline's names wherever it is called from.
+- In an ActionScript 2 class's methods a bare name that is one of the class's members (or those of the classes it extends, MovieClip's among them) is `this.name`, a static one `Class.name`; a class is a prototype function on `_global` (`com.studio.Hat`), its instance variables' values on its prototype, getters and setters properties (as `addProperty` makes them), `super(...)` and `super.method(...)` the superclass's, `implements` checked by `instanceof`. Classes are defined before those that extend them.
+- The global functions that are actions of their own act on the scope's target: `play`, `stop`, `gotoAndPlay` (a main timeline's script names its scene, so a frame number counts from that scene's start, as a player has it), `nextScene`, `getProperty`, `setProperty`, `duplicateMovieClip`, `removeMovieClip`, `startDrag`, `tellTarget` (a scope with another target), `eval` and `set` (paths: `"/a/b:score"`, `"_root.a.b"`, `"../a"`), `loadMovie`, `loadVariables`, `ifFrameLoaded`, `call`; `trace`, `getTimer`, `random`, `int`, `chr`, `ord`, `length`, `substring`, `getURL` and `fscommand` are `avm1.js`'s. The others (`setInterval`, `escape`, `parseInt`...) are on `_global` as a player has them.
+- Operators convert as AVM1 does: `$.add` (strings when either side is one), `$.n` and `$.s` (ToNumber and ToString: numbers with 15 significant digits, `0.1 + 0.2` is `0.3`; `"0x1A"` is 26; `null` and `undefined` are `NaN`, and `undefined` is `"undefined"` in strings, from SWF 7; 0 and `""` before), `$.eq` (`==`), `$.lt` and the other comparisons (`undefined` when a side is `NaN`), `$.typeOf` (`"movieclip"`, `"null"`), `$.instanceOf`; where both sides are known to be numbers the JavaScript operator is used as it is. Before SWF 7 a string is true when it is a number other than 0.
+- A member of what is not an object is `undefined`, as AVM1 has it, not an error: `a?.b`, `$.put(o, "k", v)`, `o?.f?.(...)`.
+- `for (k in o)` gives the names the latest made first, as AVM1 does (`$.keys`); `delete`, `with`, `switch`, labels, `try` with typed `catch` clauses, `arguments` (and `arguments.callee`: the module is not strict), `Function.prototype.apply` and `call` are JavaScript's.
+- Arrays' `sort` and `sortOn` take AVM1's options (`Array.NUMERIC`, `DESCENDING`, `CASEINSENSITIVE`, `UNIQUESORT`, `RETURNINDEXEDARRAY`): `$.sort(a, ...)`.
+- Case: from SWF 7 names count their case. Before, a name is found whatever its case: the translator gives every name the movie's scripts have one spelling (the player's for its own names, `gotoAndPlay`, `_x`, `Math`; else the first written), and the module gives that table to `avm1.js` (`$.names`), which folds the names scripts make at run time (`o[k]`, `eval`, paths, instance names the host registers) the same way. A name made at run time that no script spells keeps its own case.
+
+### The host
+
+`avm1.js` defines `avm1` (and `module.exports` in Node). A host sets `avm1.host`: `root(clip)` and `level(n)` (the movie's timelines), `targetPath(clip)` (`"_level0.a.b"`), `gotoScene(clip, scene, frame, play)`, `scene(clip, ±1)`, `callFrame(clip, frame)`, `stopDrag()`, `getURL(url, window, method)`, `fscommand(command, argument)`, `stopAllSounds()`; `avm1.output` (trace), `avm1.clock` (milliseconds since the start), and `avm1.manualTimers` with `avm1.runTimers(now)` to drive `setInterval` from its frames. Movie clips are objects with `$clip` true whose timeline actions are their methods (`gotoAndPlay`, `play`...), whose properties (`_x`, `_name`, `_parent`) the host keeps. It runs the translated modules with `avm1.runMovies(movie)`, `movie` having `classes(defines)` (give it to `avm1.defineClasses(defines, scope)`), `register(linkage, className)`, `initclip(timeline, order, run)`, `frame(timeline, frame, run)` and `handlers(id, list)`; `avm1.registered` holds the classes `Object.registerClass` linked, by linkage name.
+
+### Tests
+
+The JavaScriptAS2 suite runs, where Node is installed, every program of the AVM1 suite both on the AVM1 test machine (compiled to SWF actions) and translated on `avm1.js`, and a set of its own programs (conversions, the scope chain, target paths, `tellTarget`, prototype and ActionScript 2 classes, getters and setters, for-in's order, timers, sorting, case before SWF 7) whose output is what Flash Player gives.
+
+Not translated: `intrinsic` classes (the parser does not read them: they declare the player's own classes, which the host gives), `__resolve`, `watch`. A function's `arguments.caller` is not there.
+
 ## Running Tests
 
 ```bash
@@ -479,7 +549,7 @@ The flash.* runtime (Phoenix's, in its `resources/html5`) and translated code me
 ./build/Release/as3_tests.exe nativeclasses  # one
 ```
 
-Suites: Parser, Bytecode, VM, AS2 (ActionScript 1 and 2), Language (classes, packages, statements, types), Library (the built-in classes), XML (E4X, and as3corelib's JSON encoder, which uses it), NativeClasses (the host's classes, a JPEG encoder run on a native BitmapData), BunnyPaint (a 6,000-line paint program and as3corelib's JPEG encoder compiled and loaded through the class resolver, skipped where its sources are not), Errors, Abc (reading, writing and verifying ABC, Flash CS5's own among it), AbcCompiler (ActionScript compiled to ABC and verified, bunnyPaint and its main timeline among it), AVM1 (the SWF actions compiled, by their listing and by what a small AVM1 machine in the tests makes of them), AbcDomain (programs compiled to ABC and run by a Domain, against the same source run directly; ABC classes over native ones and under source ones; a published movie's ABC making its classes), JavaScript (ActionScript translated to JavaScript; where Node is installed, the programs of the Language, Library, XML and VM suites and of its own run both in the VM and translated in Node, tracing the same, as3corelib's JPEG encoder makes the same bytes, as3corelib translates and its hashes, JSON and utilities give the VM's results, and bunnyPaint with its main timeline translates, loads and runs its classes that need no display against stand-ins for the flash.* classes), and Benchmark.
+Suites: Parser, Bytecode, VM, AS2 (ActionScript 1 and 2), Language (classes, packages, statements, types), Library (the built-in classes), XML (E4X, and as3corelib's JSON encoder, which uses it), NativeClasses (the host's classes, a JPEG encoder run on a native BitmapData), BunnyPaint (a 6,000-line paint program and as3corelib's JPEG encoder compiled and loaded through the class resolver, skipped where its sources are not), Errors, Abc (reading, writing and verifying ABC, Flash CS5's own among it), AbcCompiler (ActionScript compiled to ABC and verified, bunnyPaint and its main timeline among it), AVM1 (the SWF actions compiled, by their listing and by what a small AVM1 machine in the tests makes of them), AbcDomain (programs compiled to ABC and run by a Domain, against the same source run directly; ABC classes over native ones and under source ones; a published movie's ABC making its classes), JavaScript (ActionScript translated to JavaScript; where Node is installed, the programs of the Language, Library, XML and VM suites and of its own run both in the VM and translated in Node, tracing the same, as3corelib's JPEG encoder makes the same bytes, as3corelib translates and its hashes, JSON and utilities give the VM's results, and bunnyPaint with its main timeline translates, loads and runs its classes that need no display against stand-ins for the flash.* classes), JavaScriptAS2 (ActionScript 1 and 2 translated to JavaScript: the AVM1 suite's programs on the AVM1 test machine and translated in Node, and programs traced as Flash Player traces them), and Benchmark.
 
 ## Performance
 
