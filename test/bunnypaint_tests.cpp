@@ -209,6 +209,73 @@ static void init_bunnypaint_tests() {
         }
         std::cout << "    " << loaded.size() << " classes loaded" << std::endl;
     });
+
+    suite.addTest("Classes that need no display run", []() {
+        if (!sourcesThere()) {
+            std::cout << "    (sources not found; skipped)" << std::endl;
+            return;
+        }
+        VM vm;
+        defineStandIns(vm);
+        // A ByteArray of floats, as BP_Random keeps its numbers.
+        struct Floats : HostObject {
+            std::vector<float> values;
+            size_t position = 0;
+        };
+        vm.defineNativeClass("flash.utils.ByteArray")
+            .constructor([](VM&, const Val& self, Args) {
+                self->host = std::make_shared<Floats>();
+                return Val();
+            })
+            .method("writeFloat", [](VM&, const Val& self, Args args) {
+                Floats* floats = self.host<Floats>();
+                floats->values.push_back(static_cast<float>(args.number(0)));
+                floats->position = floats->values.size() * 4;
+                return Val();
+            })
+            .method("readFloat", [](VM&, const Val& self, Args) {
+                Floats* floats = self.host<Floats>();
+                const size_t index = floats->position / 4;
+                floats->position += 4;
+                return Val::number(index < floats->values.size() ? floats->values[index] : 0.0);
+            })
+            .getter("length", [](VM&, const Val& self, Args) {
+                return Val::number(static_cast<double>(self.host<Floats>()->values.size() * 4));
+            })
+            .property("position", [](VM&, const Val& self, Args) {
+                return Val::number(static_cast<double>(self.host<Floats>()->position));
+            }, [](VM&, const Val& self, Args args) {
+                self.host<Floats>()->position = args[0].toUint32();
+                return Val();
+            })
+            .define();
+        setResolver(vm, nullptr);
+        std::string out;
+        vm.defineFunction("trace", [&out](VM& vm, const Val&, Args args) {
+            for (size_t i = 0; i < args.size(); ++i) out += (i ? " " : "") + vm.toString(args[i]);
+            out += "\n";
+            return Val();
+        });
+        vm.load("import com.hulabunny.bunnyPaint.*;\n"
+                "var c = BP_FloatColor.fromInt(0x336699);\n"
+                "c.mixWith(new BP_FloatColor(1, 1, 1), 0.5);\n"
+                "trace(c.uintValue.toString(16), c.uintValue);\n"
+                "var random = new BP_Random(); random.reset(5); var v = random.value();\n"
+                "var copy = new BP_Random(random); copy.reset(5);\n"
+                "trace(v >= 0 && v < 1, copy.value() >= 0);\n"
+                "var options = new BP_ToolOptions(15, 0, 0.6);\n"
+                "options.brushSize = 7.2; options.brushAlpha = 2;\n"
+                "trace(options.brushSize, options.brushSizeInt, options.sizeInt, options.brushAlpha, options.brushAlphaInt, options.type == BP_ToolOptions.B_ROUND_AIRBRUSH, options.spacing);\n"
+                "var dab = new BP_BrushDab(); dab.width = 4; dab.setPosition(10, 10);\n"
+                "trace(dab.x, dab.y, dab.brush);\n",
+                "paint.as");
+        if (vm.hasError()) {
+            throw std::runtime_error(vm.getError() + "\n" + vm.getErrorStack());
+        }
+        if (out != "99b2cc 10072780\ntrue true\n7.2 8 16 1 255 true 0.035\n0 0 null\n") {
+            throw std::runtime_error("got \"" + out + "\"");
+        }
+    });
 }
 
 static struct BunnyPaintTestInit {
