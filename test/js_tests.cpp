@@ -473,26 +473,44 @@ static void init_js_tests() {
         js::Output out = translated(R"(
 package com.example {
     import flash.display.Sprite;
+    import flash.events.Event;
+
     public class Ball extends Sprite {
-        public static const SIDES:int = 4;
-        public var speed:Number = 2;
-        private var label:String = "ball";
-        public function Ball(size:int = 3) { trace(size); }
-        public function get area():Number { return speed * 2; }
-        public function move(dx:int):void { x += dx; }
+        public static const RADIUS:int = 10;
+        public var speed:Number;
+        private var hits:int;
+
+        public function Ball(speed:Number = 2) {
+            this.speed = speed;
+            addEventListener(Event.ENTER_FRAME, move);
+        }
+
+        // Each frame, a step to the right.
+        private function move(e:Event):void {
+            x += speed;
+            if (x > 400) hits++;
+        }
+
+        public function get bounces():int { return hits; }
     }
 }
 )");
         expect(out.ok, out.errorText());
         expect(out.files.count("com/example/Ball.js") == 1, "no com/example/Ball.js");
-        const std::string& text = out.files["com/example/Ball.js"];
+        const std::string& text = out.files.at("com/example/Ball.js");
         expectIn(text, "as3.define(\"com.example.Ball\", () => {");
         expectIn(text, "const Sprite = as3.use(\"flash.display.Sprite\");");
+        expectIn(text, "let Event;");
         expectIn(text, "class Ball extends Sprite {");
-        expectIn(text, "$construct(size = 3) {");
-        expectIn(text, "get area() {");
-        expectIn(text, "this.x += dx;");
-        expectIn(text, "Ball.SIDES = 4;");
+        expectIn(text, "            this.speed = NaN;\n            this.hits = 0;\n");
+        expectIn(text, "$construct(speed = 2) {\n            super.$construct();");
+        expectIn(text, "this.addEventListener(Event.ENTER_FRAME, as3.bind(this, \"move\"));");
+        expectIn(text, "        // Each frame, a step to the right.\n        move(e) {");
+        expectIn(text, "this.x += this.speed;");
+        expectIn(text, "this.hits = (this.hits + 1) | 0;");
+        expectIn(text, "get bounces() {");
+        expectIn(text, "Ball.RADIUS = 10;");
+        expectIn(text, "Event = as3.use(\"flash.events.Event\");");
         if (std::getenv("AS3_JS_DUMP")) std::cout << text << std::endl;
     });
 

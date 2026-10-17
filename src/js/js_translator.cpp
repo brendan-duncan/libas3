@@ -121,41 +121,61 @@ std::string dotted(const std::string& object, const std::string& name) {
     return isIdentifier(name) ? object + "." + name : object + "[" + quote(name) + "]";
 }
 
-// The names flash.* classes have that a script class's private member must
-// not take (DisplayObject's and the rest, EventDispatcher's, Object's).
-const std::set<std::string>& runtimeMemberNames() {
-    static const std::set<std::string> names = {
-        // DisplayObject
-        "x", "y", "z", "width", "height", "scaleX", "scaleY", "scaleZ", "rotation", "rotationX", "rotationY",
-        "rotationZ", "alpha", "visible", "name", "parent", "root", "stage", "mask", "filters", "blendMode",
-        "blendShader", "transform", "cacheAsBitmap", "cacheAsBitmapMatrix", "opaqueBackground", "scrollRect",
-        "loaderInfo", "mouseX", "mouseY", "accessibilityProperties", "scale9Grid", "getBounds", "getRect",
-        "globalToLocal", "localToGlobal", "globalToLocal3D", "local3DToGlobal", "hitTestObject", "hitTestPoint",
-        // InteractiveObject
-        "mouseEnabled", "doubleClickEnabled", "tabEnabled", "tabIndex", "focusRect", "contextMenu",
-        "accessibilityImplementation", "needsSoftKeyboard", "softKeyboardInputAreaOfInterest",
-        // DisplayObjectContainer
-        "numChildren", "mouseChildren", "tabChildren", "textSnapshot", "addChild", "addChildAt", "removeChild",
-        "removeChildAt", "removeChildren", "getChildAt", "getChildByName", "getChildIndex", "setChildIndex",
-        "swapChildren", "swapChildrenAt", "contains", "areInaccessibleObjectsUnderPoint", "getObjectsUnderPoint",
-        "stopAllMovieClips",
-        // Sprite, MovieClip
-        "graphics", "buttonMode", "useHandCursor", "hitArea", "dropTarget", "soundTransform", "startDrag",
-        "stopDrag", "currentFrame", "totalFrames", "currentLabel", "currentFrameLabel", "currentLabels",
-        "currentScene", "scenes", "framesLoaded", "enabled", "trackAsMenu", "isPlaying", "play", "stop",
-        "gotoAndPlay", "gotoAndStop", "nextFrame", "prevFrame", "nextScene", "prevScene", "addFrameScript",
-        // EventDispatcher, Event
-        "addEventListener", "removeEventListener", "dispatchEvent", "hasEventListener", "willTrigger", "type",
-        "target", "currentTarget", "bubbles", "cancelable", "eventPhase", "clone", "stopPropagation",
-        "stopImmediatePropagation", "preventDefault", "isDefaultPrevented", "formatToString",
-        // TextField, Bitmap, components
-        "text", "htmlText", "length", "textColor", "bitmapData", "smoothing", "pixelSnapping", "value", "label",
-        "selected", "selectedIndex", "selectedItem", "dataProvider", "setSize", "move", "drawNow", "data",
-        // Object
-        "toString", "valueOf", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString",
-        "constructor", "$construct",
+// The members the player's classes have, by class, which a script class's
+// private member must not be named as (its object would have both).
+bool isRuntimeMember(const std::string& playerClass, const std::string& name) {
+    static const std::map<std::string, std::set<std::string>> members = {
+        {"Object", {"toString", "valueOf", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString",
+                    "constructor", "$construct"}},
+        {"flash.events.EventDispatcher",
+         {"addEventListener", "removeEventListener", "dispatchEvent", "hasEventListener", "willTrigger"}},
+        {"flash.events.Event",
+         {"type", "target", "currentTarget", "bubbles", "cancelable", "eventPhase", "clone", "stopPropagation",
+          "stopImmediatePropagation", "preventDefault", "isDefaultPrevented", "formatToString"}},
+        {"flash.display.DisplayObject",
+         {"x", "y", "z", "width", "height", "scaleX", "scaleY", "scaleZ", "rotation", "rotationX", "rotationY",
+          "rotationZ", "alpha", "visible", "name", "parent", "root", "stage", "mask", "filters", "blendMode",
+          "blendShader", "transform", "cacheAsBitmap", "cacheAsBitmapMatrix", "opaqueBackground", "scrollRect",
+          "loaderInfo", "mouseX", "mouseY", "accessibilityProperties", "scale9Grid", "getBounds", "getRect",
+          "globalToLocal", "localToGlobal", "globalToLocal3D", "local3DToGlobal", "hitTestObject", "hitTestPoint"}},
+        {"flash.display.InteractiveObject",
+         {"mouseEnabled", "doubleClickEnabled", "tabEnabled", "tabIndex", "focusRect", "contextMenu",
+          "accessibilityImplementation", "needsSoftKeyboard", "softKeyboardInputAreaOfInterest"}},
+        {"flash.display.DisplayObjectContainer",
+         {"numChildren", "mouseChildren", "tabChildren", "textSnapshot", "addChild", "addChildAt", "removeChild",
+          "removeChildAt", "removeChildren", "getChildAt", "getChildByName", "getChildIndex", "setChildIndex",
+          "swapChildren", "swapChildrenAt", "contains", "areInaccessibleObjectsUnderPoint", "getObjectsUnderPoint",
+          "stopAllMovieClips"}},
+        {"flash.display.Sprite",
+         {"graphics", "buttonMode", "useHandCursor", "hitArea", "dropTarget", "soundTransform", "startDrag",
+          "stopDrag"}},
+        {"flash.display.MovieClip",
+         {"currentFrame", "totalFrames", "currentLabel", "currentFrameLabel", "currentLabels", "currentScene",
+          "scenes", "framesLoaded", "enabled", "trackAsMenu", "isPlaying", "play", "stop", "gotoAndPlay",
+          "gotoAndStop", "nextFrame", "prevFrame", "nextScene", "prevScene", "addFrameScript"}},
+        {"flash.display.SimpleButton",
+         {"upState", "overState", "downState", "hitTestState", "enabled", "trackAsMenu", "useHandCursor",
+          "soundTransform"}},
+        {"flash.display.Bitmap", {"bitmapData", "smoothing", "pixelSnapping"}},
+        {"flash.text.TextField",
+         {"text", "htmlText", "length", "textColor", "textWidth", "textHeight", "type", "selectable", "multiline",
+          "wordWrap", "autoSize", "border", "background", "maxChars", "restrict", "appendText", "setTextFormat",
+          "getTextFormat", "defaultTextFormat", "embedFonts", "numLines", "scrollV", "scrollH", "displayAsPassword"}},
+        {"fl.core.UIComponent",
+         {"setSize", "move", "drawNow", "enabled", "setStyle", "getStyle", "clearStyle", "focusEnabled",
+          "validateNow", "invalidate", "componentInspectorSetting"}},
+        {"fl.controls.Button", {"label", "selected", "toggle", "emphasized", "labelPlacement", "autoRepeat"}},
+        {"fl.controls.CheckBox", {"label", "selected", "labelPlacement"}},
+        {"fl.controls.Slider", {"value", "minimum", "maximum", "snapInterval", "tickInterval", "liveDragging", "direction"}},
+        {"fl.controls.NumericStepper", {"value", "minimum", "maximum", "stepSize", "nextValue", "previousValue"}},
+        {"fl.controls.ComboBox", {"dataProvider", "selectedIndex", "selectedItem", "selectedLabel", "text", "value",
+                                  "editable", "rowCount", "addItem", "removeAll", "getItemAt"}},
+        {"fl.controls.List", {"dataProvider", "selectedIndex", "selectedItem", "selectedItems", "rowCount",
+                              "addItem", "removeAll", "getItemAt", "labelField"}},
+        {"fl.controls.ColorPicker", {"selectedColor", "colors", "hexValue", "open", "close", "showTextField"}},
     };
-    return names;
+    auto found = members.find(playerClass);
+    return found != members.end() && found->second.count(name) > 0;
 }
 
 // Package-level functions of the player's packages, found through their
@@ -660,7 +680,12 @@ std::string Translator::memberName(const ClassModel* owner, const std::string& n
     for (const ClassModel* c = owner->superClass; c && !collides; c = c->superClass) {
         if (c->instance.count(name)) collides = true;
     }
-    if (!collides && hasRuntimeBase(owner) && runtimeMemberNames().count(name)) collides = true;
+    if (!collides && hasRuntimeBase(owner)) {
+        for (const std::string& player : model.superChain(owner)) {
+            if (isRuntimeMember(player, name)) collides = true;
+        }
+    }
+    if (!collides && isRuntimeMember("Object", name)) collides = true;
     std::vector<const ClassModel*> pending = {owner};
     while (!collides && !pending.empty()) {
         const ClassModel* c = pending.back();

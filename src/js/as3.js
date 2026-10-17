@@ -162,8 +162,34 @@ as3.register = function (name, value) {
 
 // Whether a name is defined (without defining it).
 as3.isDefined = function (name) {
-    return !!lookup(definitions, name) || topLevelValue(name) !== undefined;
+    return !!lookup(definitions, name) || topLevelValue(name) !== undefined ||
+        outside(String(name).replace("::", ".")) !== undefined;
 };
+
+// Where a name not defined through as3 is looked for last: a runtime that
+// keeps its classes elsewhere adds a function (name) => value, undefined
+// for a name it does not have.
+as3.resolvers = [];
+
+function outside(name) {
+    // In the package tree (a runtime may have put its classes there
+    // itself), then by the runtime's own resolvers.
+    const [pkg, short] = splitName(name);
+    if (pkg) {
+        let at = root;
+        for (const part of pkg.split(".")) {
+            at = at !== null && at !== undefined && Object.prototype.hasOwnProperty.call(at, part) ? at[part] : undefined;
+        }
+        if (at !== null && at !== undefined && Object.prototype.hasOwnProperty.call(at, short) && at[short] !== undefined) {
+            return at[short];
+        }
+    }
+    for (const resolve of as3.resolvers) {
+        const value = resolve(name);
+        if (value !== undefined && value !== null) return value;
+    }
+    return undefined;
+}
 
 // The definition of a qualified name, defined now if it is not yet.
 as3.use = function (name) {
@@ -171,6 +197,8 @@ as3.use = function (name) {
     if (entry) return load(entry);
     const value = topLevelValue(name);
     if (value !== undefined) return value;
+    const found = outside(String(name).replace("::", "."));
+    if (found !== undefined) return found;
     throw new as3.ReferenceError("Error #1065: Variable " + splitName(name)[1] + " is not defined.", 1065);
 };
 
