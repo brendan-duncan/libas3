@@ -457,6 +457,119 @@ package {
         expectIn(methodText(out, "bunnyPaint_fla:MainTimeline iinit"), "callpropvoid addFrameScript 2");
         std::cout << "    " << result.classes.size() << " classes, " << result.abc.size() << " bytes" << std::endl;
     });
+
+    suite.addTest("Parameters, metadata, super and qualified names", []() {
+        const std::string out = compiled(std::vector<abc::Source>{
+            {"package base { public class Shape { protected var size:Number = 1;\n"
+             "  public function Shape(s:Number) { size = s; }\n"
+             "  public function get area():Number { return 0; }\n"
+             "  protected function grow(by:Number):void { size += by; } } }",
+             "Shape.as"},
+            {R"(package app {
+    import base.Shape;
+    [Event(name="change", type="flash.events.Event")]
+    public class Square extends Shape {
+        [Inspectable(defaultValue="2")]
+        public var sides:int = 4;
+        public static const ORIGIN:flash.geom.Point = new flash.geom.Point(0, 0);
+        public function Square(s:Number = -1.5, name:String = "sq", flag:Boolean = true, o:Object = null, ...more) {
+            super(s * more.length);
+        }
+        override public function get area():Number { return super.area + size * size; }
+        override protected function grow(by:Number):void { super.grow(by * 2); super.size = by; }
+        public function stamp():Number { return flash.utils.getTimer() + Square.ORIGIN.x; }
+        public function count():int {
+            var f:Function = function fact(n:int):int { return n <= 1 ? 1 : n * fact(n - 1); };
+            var v:Vector.<Number> = new Vector.<Number>(3);
+            var i:int = 0;
+            v[i] += 2; v[i]++; ++v[1];
+            sides++; this.sides--; Square.ORIGIN.y += 1;
+            var a:Array = [1, 2];
+            if (1 in a) delete a[1];
+            return f(5) + arguments2(1, 2);
+        }
+        public function arguments2(a:int, b:int):int { return arguments.length; }
+    }
+})", "Square.as"},
+        });
+        expectIn(out, "app:Square iinit (Number, String, Boolean, Object):* rest defaults 4");
+        expectIn(out, "Square/arguments2 (int, int):int arguments");
+        const std::string ctor = methodText(out, "app:Square iinit");
+        expectIn(ctor, "constructsuper 1");
+        expectNotIn(ctor, "constructsuper 0");
+        expectIn(methodText(out, "app:Square/get area"), "getsuper area");
+        expectIn(methodText(out, "app:Square/protected(app:Square):grow"), "callsupervoid protected(base:Shape):grow 1");
+        expectIn(methodText(out, "app:Square/protected(app:Square):grow"), "setsuper protected(base:Shape):size");
+        expectIn(methodText(out, "app:Square/stamp"), "callproperty flash.utils:getTimer 0");
+        expectIn(methodText(out, "app:Square/stamp"), "getlex app:Square");
+        expectIn(methodText(out, "app:Square cinit"), "constructprop flash.geom:Point 2");
+        expectIn(out, "const ORIGIN slot 0 : flash.geom:Point");
+        expectIn(out, "getproperty callee");
+        const std::string count = methodText(out, "app:Square/count");
+        expectIn(count, "in");
+        expectIn(count, "deleteproperty");
+        expectIn(count, "increment");
+        // Metadata, on the class and on a field.
+        abc::Output result = abc::compile({{"package { [Embed(source='a.png')] public class M { [Bindable] public var x:int; } }", "M.as"}});
+        if (!result.ok) throw std::runtime_error(result.errorText());
+        abc::AbcFile file;
+        std::string error;
+        abc::read(result.abc, file, error);
+        if (file.metadata.size() != 2) throw std::runtime_error(std::to_string(file.metadata.size()) + " metadata");
+        bool embed = false;
+        for (const abc::MetadataInfo& tag : file.metadata) {
+            embed = embed || (file.pool.strings[tag.name] == "Embed" && tag.items.size() == 1 &&
+                              file.pool.strings[tag.items[0].first] == "source" &&
+                              file.pool.strings[tag.items[0].second] == "a.png");
+        }
+        if (!embed) throw std::runtime_error("no Embed metadata");
+        expectIn(abc::disassemble(file), "class M slot 0 class 0");
+    });
+
+    suite.addTest("Leaving nested tries, switches and labeled blocks", []() {
+        const std::string out = compiled(R"(
+package {
+    public class Flow {
+        public var log:Array = [];
+        public function run(n:int):int {
+            outer: for (var i:int = 0; i < n; i++) {
+                try {
+                    try {
+                        switch (i) {
+                            case 0: continue outer;
+                            case 1: break;
+                            case 2: break outer;
+                            default: throw i;
+                        }
+                    } finally {
+                        log.push("inner");
+                    }
+                } catch (e:*) {
+                    try { return e; } finally { log.push("return"); }
+                } finally {
+                    log.push("outer");
+                }
+            }
+            block: {
+                if (n > 3) break block;
+                log.push("block");
+            }
+            with (log) { push(n); }
+            var k:int = 0;
+            do { if (k == 2) continue; k++; } while (k < 5);
+            return i;
+        }
+    }
+}
+)");
+        const std::string run = methodText(out, "Flow/run");
+        // Each way out runs the finally blocks it leaves: "inner" on the
+        // way out of the switch (three ways and the throw's handler), and
+        // "outer" too.
+        size_t inner = 0;
+        for (size_t at = run.find("\"inner\""); at != std::string::npos; at = run.find("\"inner\"", at + 1)) ++inner;
+        if (inner < 4) throw std::runtime_error("inner finally inlined " + std::to_string(inner) + " times:\n" + run);
+    });
 }
 
 static struct AbcCompilerTestInit {
