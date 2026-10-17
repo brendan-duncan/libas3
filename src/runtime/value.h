@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -210,48 +211,73 @@ private:
 // (VM::throwError) to raise an ActionScript error.
 using NativeMethod = std::function<Val(VM& vm, const Val& self, Args args)>;
 
-// Dynamic properties by name, made on first use.
+// Dynamic properties by name, in the order of their names (as for-in
+// visits them): kept in one array, which an object with a few properties
+// searches quicker than a tree and makes with one allocation. A reference
+// to a value lasts until a property is added or deleted.
 class PropertyMap {
 public:
-    using Map = std::map<std::string, Val>;
+    using Entry = std::pair<std::string, Val>;
+    using Map = std::vector<Entry>;
     using iterator = Map::iterator;
     using const_iterator = Map::const_iterator;
 
-    PropertyMap() = default;
-    PropertyMap(const PropertyMap& other) : _map(other._map ? std::make_unique<Map>(*other._map) : nullptr) {}
-    PropertyMap& operator=(const PropertyMap& other) {
-        _map = other._map ? std::make_unique<Map>(*other._map) : nullptr;
-        return *this;
+    Val& operator[](const std::string& key) {
+        if (_entries.empty()) {
+            _entries.reserve(4);
+        }
+        auto it = lowerBound(key);
+        if (it != _entries.end() && it->first == key) {
+            return it->second;
+        }
+        return _entries.emplace(it, key, Val())->second;
     }
-
-    Val& operator[](const std::string& key) { return map()[key]; }
-    size_t count(const std::string& key) const { return _map ? _map->count(key) : 0; }
-    iterator find(const std::string& key) { return _map ? _map->find(key) : none().end(); }
-    const_iterator find(const std::string& key) const { return _map ? _map->find(key) : none().end(); }
-    iterator begin() { return _map ? _map->begin() : none().begin(); }
-    iterator end() { return _map ? _map->end() : none().end(); }
-    const_iterator begin() const { return _map ? _map->begin() : none().begin(); }
-    const_iterator end() const { return _map ? _map->end() : none().end(); }
-    size_t erase(const std::string& key) { return _map ? _map->erase(key) : 0; }
-    size_t size() const { return _map ? _map->size() : 0; }
-    bool empty() const { return !_map || _map->empty(); }
-    void clear() { _map.reset(); }
+    size_t count(const std::string& key) const { return lookup(key) ? 1 : 0; }
+    iterator find(const std::string& key) {
+        auto it = lowerBound(key);
+        return it != _entries.end() && it->first == key ? it : _entries.end();
+    }
+    const_iterator find(const std::string& key) const {
+        auto it = lowerBound(key);
+        return it != _entries.end() && it->first == key ? it : _entries.end();
+    }
+    iterator begin() { return _entries.begin(); }
+    iterator end() { return _entries.end(); }
+    const_iterator begin() const { return _entries.begin(); }
+    const_iterator end() const { return _entries.end(); }
+    size_t erase(const std::string& key) {
+        auto it = find(key);
+        if (it == _entries.end()) return 0;
+        _entries.erase(it);
+        return 1;
+    }
+    size_t size() const { return _entries.size(); }
+    bool empty() const { return _entries.empty(); }
+    void clear() { Map().swap(_entries); }
     // The value by that name, or nullptr.
     const Val* lookup(const std::string& key) const {
-        if (!_map) return nullptr;
-        auto it = _map->find(key);
-        return it == _map->end() ? nullptr : &it->second;
+        if (_entries.size() <= kScanned) {
+            for (const Entry& entry : _entries) {
+                if (entry.first == key) return &entry.second;
+            }
+            return nullptr;
+        }
+        auto it = lowerBound(key);
+        return it != _entries.end() && it->first == key ? &it->second : nullptr;
     }
 
 private:
-    std::unique_ptr<Map> _map;
-    Map& map() {
-        if (!_map) _map = std::make_unique<Map>();
-        return *_map;
+    // Up to this many, looked through in turn.
+    static constexpr size_t kScanned = 8;
+    Map _entries;
+
+    iterator lowerBound(const std::string& key) {
+        return std::lower_bound(_entries.begin(), _entries.end(), key,
+                                [](const Entry& entry, const std::string& name) { return entry.first < name; });
     }
-    static Map& none() {
-        static Map none;
-        return none;
+    const_iterator lowerBound(const std::string& key) const {
+        return std::lower_bound(_entries.begin(), _entries.end(), key,
+                                [](const Entry& entry, const std::string& name) { return entry.first < name; });
     }
 };
 

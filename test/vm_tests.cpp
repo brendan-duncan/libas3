@@ -422,6 +422,28 @@ static void init_vm_tests() {
         }
     });
 
+    // Dynamic properties: found, replaced and deleted among many, and
+    // visited by for-in in the order of their names.
+    suite.addTest("Many dynamic properties", []() {
+        Parser parser("var o = {};\n"
+                      "var names = ['m', 'b', 'z', 'a', 'q', 'c', 'x', 'd', 'k', 'e', 'y', 'f'];\n"
+                      "for (var i = 0; i < names.length; i++) o[names[i]] = i;\n"
+                      "delete o.q; o.b = 100;\n"
+                      "var keys = []; for (var k in o) keys.push(k);\n"
+                      "var result = keys.join(',') + '|' + o.b + '|' + o.y + '|' + ('q' in o) + '|' + o.m;\n");
+        auto program = parser.parse();
+        Compiler compiler;
+        VM vm;
+        vm.execute(compiler.compile(program.get()));
+        if (vm.hasError()) {
+            throw std::runtime_error("Runtime error: " + vm.getError());
+        }
+        const std::string result = Val(vm.getGlobal("result")).toString();
+        if (result != "a,b,c,d,e,f,k,m,x,y,z|100|10|false|0") {
+            throw std::runtime_error("got " + result);
+        }
+    });
+
     // A global read in a loop sees each new value given it, here or by a
     // parent VM.
     suite.addTest("Globals read after they change", []() {
