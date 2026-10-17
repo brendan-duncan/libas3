@@ -475,4 +475,144 @@ class Holder { public var value:int = 7;
   public function each(list:Array):int { var total:int = 0; list.forEach(function(x:int, i:int, all:Array):void { total += x + value; }); return total; } }
 var h:Holder = new Holder(); trace(h.make()(), h.each([1, 2]));
 )as3"},
+
+    {"Statics: initializers using other classes", R"as3(
+class B { public static var y:int = 5; }
+class A { public static var x:int = B.y + 1; public static function twice():int { return x * 2; } }
+trace(A.x, B.y, A.twice());
+class C { public static const D:String = "d"; public static var e:String = D + "e"; }
+trace(C.e, C.D);
+)as3"},
+
+    {"Statics: this in a static method, closures over statics", R"as3(
+class Registry { private static var items:Object = {};
+  public static function add(name:String, v:int):Function { items[name] = v; return function():int { return items[name] * 10; }; }
+  public static function count():int { var n:int = 0; for (var k:String in items) n++; return n; } }
+var f:Function = Registry.add("a", 1); Registry.add("b", 2); trace(f(), Registry.count());
+)as3"},
+
+    {"Class values: variables, new and Vector of classes", R"as3(
+class Cat { public function speak():String { return "meow"; } }
+class Cow { public function speak():String { return "moo"; } }
+var kinds:Vector.<Class> = new <Class>[Cat, Cow]; var s:String = "";
+for each (var k:Class in kinds) { var a:Object = new k(); s += a.speak() + " "; }
+trace(s);
+var c:Class = Cat; var made:* = new c(); trace(made is Cat, made is Cow, c == Cat);
+)as3"},
+
+    {"Protected and internal members across classes", R"as3(
+package zoo {
+    public class Animal { protected var sound:String = "..."; internal var id:int = 7; protected function speak():String { return sound; }
+        public function describe():String { return speak() + id; } }
+    internal class Helper { public static function idOf(a:Animal):int { return a.id; } }
+    public class Dog extends Animal { public function Dog() { sound = "woof"; }
+        override protected function speak():String { return super.speak() + "!"; }
+        public function helped():int { return Helper.idOf(this); } }
+}
+import zoo.Dog;
+var d:Dog = new Dog(); trace(d.describe(), d.helped());
+)as3"},
+
+    {"Setters chained through super", R"as3(
+class Base { protected var _w:Number = 0; public function get w():Number { return _w; } public function set w(v:Number):void { _w = v; } }
+class Clamped extends Base { override public function set w(v:Number):void { super.w = Math.max(0, Math.min(10, v)); }
+  override public function get w():Number { return super.w; } }
+var c:Clamped = new Clamped(); c.w = 15; trace(c.w); c.w = -3; trace(c.w); c.w += 4; trace(c.w);
+)as3"},
+
+    {"Default values and overriding", R"as3(
+class Shape { public function area(scale:Number = 1):Number { return scale; } }
+class Square extends Shape { public var side:Number = 3; override public function area(scale:Number = 2):Number { return side * side * scale; } }
+var s:Shape = new Square(); trace(s.area(), s.area(1), new Shape().area());
+)as3"},
+
+    {"String escapes and literals", R"as3(
+var s:String = "tab\there \"quoted\" 'single' back\\slash A\x42 line\nnext";
+trace(s, s.length);
+var t:String = 'it\'s'; trace(t, t.length, "a" + 'b' + "c");
+var re:RegExp = /a\/b/; trace(re.test("a/b"), re.source);
+var x:RegExp = /a b c/x; trace(x.test("abc"));
+trace("é".length, "€".length, "日本".length);
+)as3"},
+
+    {"Loops: for-in targets, do-while continue, while with postfix", R"as3(
+var o:Object = {a: 1, b: 2}; var holder:Object = {}; var got:Array = [];
+for (holder.key in o) got.push(holder.key); got.sort(); trace(got, holder.key != null);
+var k:String; var n:int = 0; for (k in o) n++; trace(n, k != null);
+var i:int = 0; var log:String = "";
+do { i++; if (i % 2 == 0) continue; log += i; } while (i < 7); trace(log);
+var j:int = 5; var sum:int = 0; while (j-- > 0) sum += j; trace(sum, j);
+var each:Array = []; for each (var v:* in [3, "x", null]) each.push(v); trace(each.length, each);
+)as3"},
+
+    {"Switch on strings with default in the middle", R"as3(
+function pick(s:String):String { var r:String = ""; switch (s) { case "a": r += "A"; default: r += "D"; case "b": r += "B"; break; case "c": r += "C"; } return r; }
+trace(pick("a"), pick("b"), pick("c"), pick("z"));
+)as3"},
+
+    {"uint and Number division and modulo", R"as3(
+var u:uint = 7; trace(u / 2, u % 4, -u, u - 10);
+var big:uint = 4000000000; trace(big, big + big, big * 2, uint(big * 2));
+var i:int = -7; trace(i % 3, i / 2, i >> 1, i >>> 1);
+var n:Number = 5.5; var t:int = n * 2; trace(t, int(n) * 2, Math.floor(-n), Math.round(-0.5));
+)as3"},
+
+    {"E4X: more queries", R"as3(
+var x:XML = <root><a id="1"><b>x</b></a><a id="2"><b>y</b><b>z</b></a><c id="3"/></root>;
+trace(x..@id.length(), x..b.length(), x.a.(b == "y").@id, x.a.(@id == "1").b, x.missing.length(), x.a[5] == undefined);
+var wanted:String = "2"; trace(x.a.(@id == wanted).b.length());
+trace(x.a[1].b[1], x.*.length(), x.c.@id, x.a.b.(text() == "z").length());
+var names:Array = []; for each (var child:XML in x.children()) names.push(child.name()); trace(names);
+x.a[0].b = "changed"; trace(x.a[0].b);
+var list:XMLList = x.a; list[0].@extra = "e"; trace(x.a[0].@extra);
+)as3"},
+
+    {"Objects: methods and this", R"as3(
+var counter:Object = {n: 0, inc: function():void { this.n++; }, get: function():int { return this.n; }};
+counter.inc(); counter.inc(); trace(counter.get(), counter.n);
+var proto:Object = {}; proto.say = function(word:String):String { return word + "!"; }; trace(proto.say("hi"));
+)as3"},
+
+    {"Arrays: concat, slice and join of mixed values", R"as3(
+var a:Array = [1, "two", null, undefined, [3, 4], {}, true];
+trace(a.length, a.join("|"), a.slice(1, 3), a.concat(5, [6]).length, a.indexOf(null), a.indexOf(true));
+var b:Array = new Array(); b[3] = "x"; trace(b.length, b, b[0]);
+var c:Array = [5, 1, 4]; c.length = 2; trace(c); c.length = 4; trace(c, c.length);
+var nested:Array = [[1, 2], [3]]; trace(nested, nested[0].length, [].concat.apply(null, nested));
+var word:String = "a-b-c"; var split:Function = word.split; trace(split("-"), [3, 1, 2].map(String));
+)as3"},
+
+    {"Number formatting of results", R"as3(
+trace(0.1 + 0.7, 1.1 * 3, 4.35 * 100, 1 / 7, 2e-7, 123e20, -1e-10, 5 / 2, 255 / 255, Math.PI * 2);
+trace((1234.5678).toFixed(2), (0.000123).toExponential(2), (1e21).toString(), Number("1e400"), -Number.MAX_VALUE * 2);
+)as3"},
+
+    {"Closures share the function's variables", R"as3(
+function make():Array { var fs:Array = []; for (var i:int = 0; i < 3; i++) { var copy:int = i; fs.push(function():int { return copy * 10 + i; }); } return fs; }
+var fs:Array = make(); trace(fs[0](), fs[1](), fs[2]());
+function adder(base:int):Function { return function(x:int):int { base += x; return base; }; }
+var add:Function = adder(10); add(1); trace(add(2));
+)as3"},
+
+    {"try and finally with returns and loops", R"as3(
+function f(n:int):String { var log:String = ""; for (var i:int = 0; i < 3; i++) { try { if (i == n) return log + "r" + i; log += i; } finally { log += "f"; } } return log; }
+trace(f(1), f(5));
+function g():int { try { throw new Error("x"); } catch (e:Error) { return 1; } finally { trace("cleanup"); } return 2; }
+trace(g());
+var caught:String = ""; try { try { throw new ArgumentError("bad"); } finally { caught += "inner "; } } catch (e:ArgumentError) { caught += e.name; } trace(caught);
+)as3"},
+
+    {"Interfaces typed values and casts", R"as3(
+interface IThing { function get label():String; }
+class Thing implements IThing { public function get label():String { return "thing"; } }
+var t:IThing = new Thing(); trace(t.label, IThing(t).label, t is IThing);
+var err:String = "none"; try { var bad:IThing = IThing({}); } catch (e:TypeError) { err = "TypeError " + e.errorID; } trace(err);
+var maybe:Thing = Thing(null); trace(maybe);
+)as3"},
+
+    {"getters on objects of unknown type", R"as3(
+class Temp { private var c:Number = 20; public function get f():Number { return c * 9 / 5 + 32; } public function set f(v:Number):void { c = (v - 32) * 5 / 9; } }
+var t:* = new Temp(); trace(t.f); t.f = 212; trace(t.f, t["f"]);
+var o:Object = t; o.f = 32; trace(o.f);
+)as3"},
 };

@@ -412,6 +412,11 @@ as3.bind = function (object, name) {
     if (object === null || object === undefined) {
         throw new as3.TypeError("Error #1009: Cannot access a property or method of a null object reference.", 1009);
     }
+    if (typeof object !== "object" && typeof object !== "function") {
+        // A string's or number's method: bound, each time.
+        const original = object[name];
+        return typeof original === "function" ? original.bind(object) : original;
+    }
     let bound = object[BOUND];
     if (!bound) {
         bound = new Map();

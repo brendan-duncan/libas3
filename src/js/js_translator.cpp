@@ -2874,6 +2874,20 @@ E Translator::member(MemberExpression* e, bool callee) {
     if (object.t.kind == Ty::Instance && object.t.cls && !callee && hasRuntimeBase(object.t.cls)) {
         return make(e->optional ? base + "?." + name : dotted(base, name), P_Primary, playerPropertyType(name));
     }
+    // A builtin's method read as a value: bound, as ActionScript's are.
+    if (!callee && !e->optional && (object.t.isArrayLike() || object.t.kind == Ty::String)) {
+        static const std::set<std::string> arrayMethods = {
+            "concat", "every", "filter", "forEach", "indexOf", "join", "lastIndexOf", "map", "pop", "push",
+            "reverse", "shift", "slice", "some", "sort", "sortOn", "splice", "unshift", "toString",
+        };
+        static const std::set<std::string> stringMethods = {
+            "charAt", "charCodeAt", "concat", "indexOf", "lastIndexOf", "localeCompare", "match", "replace",
+            "search", "slice", "split", "substr", "substring", "toLowerCase", "toUpperCase", "toString",
+        };
+        if ((object.t.kind == Ty::String ? stringMethods : arrayMethods).count(name)) {
+            return make("as3.bind(" + object.s + ", " + quote(name) + ")", P_Call, Ty::of(Ty::Function));
+        }
+    }
     if (object.t.isXml() && !callee && isXmlMethod(name)) {
         return make(base + dot + "child(" + quote(name) + ")", P_Call, Ty::instance("XMLList"));
     }
