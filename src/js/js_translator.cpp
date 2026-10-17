@@ -980,7 +980,53 @@ struct Declaration {
     bool atTop = false;
     bool inLoopHead = false;
     bool isConst = false;
+    // The loop whose head declares it.
+    Statement* loop = nullptr;
 };
+
+// What a statement uses, but for one statement in it.
+void scanExcept(Statement* stmt, Statement* skip, Scan& scan) {
+    if (!stmt || stmt == skip) return;
+    if (auto* block = dynamic_cast<BlockStatement*>(stmt)) {
+        for (auto& s : block->statements) scanExcept(s.get(), skip, scan);
+    } else if (auto* branch = dynamic_cast<IfStatement*>(stmt)) {
+        scanExpression(branch->test.get(), scan);
+        scanExcept(branch->consequent.get(), skip, scan);
+        scanExcept(branch->alternate.get(), skip, scan);
+    } else if (auto* loop = dynamic_cast<WhileStatement*>(stmt)) {
+        scanExpression(loop->test.get(), scan);
+        scanExcept(loop->body.get(), skip, scan);
+    } else if (auto* doLoop = dynamic_cast<DoWhileStatement*>(stmt)) {
+        scanExcept(doLoop->body.get(), skip, scan);
+        scanExpression(doLoop->test.get(), scan);
+    } else if (auto* forLoop = dynamic_cast<ForStatement*>(stmt)) {
+        scanExcept(forLoop->init.get(), skip, scan);
+        scanExpression(forLoop->test.get(), scan);
+        scanExpression(forLoop->update.get(), scan);
+        scanExcept(forLoop->body.get(), skip, scan);
+    } else if (auto* forIn = dynamic_cast<ForInStatement*>(stmt)) {
+        scanExcept(forIn->left.get(), skip, scan);
+        scanExpression(forIn->right.get(), scan);
+        scanExcept(forIn->body.get(), skip, scan);
+    } else if (auto* choice = dynamic_cast<SwitchStatement*>(stmt)) {
+        scanExpression(choice->discriminant.get(), scan);
+        for (auto& clause : choice->cases) {
+            scanExpression(clause->test.get(), scan);
+            for (auto& s : clause->consequent) scanExcept(s.get(), skip, scan);
+        }
+    } else if (auto* labeled = dynamic_cast<LabeledStatement*>(stmt)) {
+        scanExcept(labeled->body.get(), skip, scan);
+    } else if (auto* attempt = dynamic_cast<TryStatement*>(stmt)) {
+        scanExcept(attempt->block.get(), skip, scan);
+        for (auto& clause : attempt->catches) scanExcept(clause.body.get(), skip, scan);
+        scanExcept(attempt->finallyBody.get(), skip, scan);
+    } else if (auto* with = dynamic_cast<WithStatement*>(stmt)) {
+        scanExpression(with->object.get(), scan);
+        scanExcept(with->body.get(), skip, scan);
+    } else {
+        scanStatement(stmt, scan);
+    }
+}
 
 void collectDeclarations(Statement* stmt, size_t top, bool atTop, std::vector<Declaration>& out,
                          std::vector<FunctionDefinition*>& functions) {
@@ -1010,12 +1056,18 @@ void collectDeclarations(Statement* stmt, size_t top, bool atTop, std::vector<De
     } else if (auto* forLoop = dynamic_cast<ForStatement*>(stmt)) {
         const size_t before = out.size();
         collectDeclarations(forLoop->init.get(), top, false, out, functions);
-        for (size_t i = before; i < out.size(); ++i) out[i].inLoopHead = atTop;
+        for (size_t i = before; i < out.size(); ++i) {
+            out[i].inLoopHead = true;
+            out[i].loop = forLoop;
+        }
         collectDeclarations(forLoop->body.get(), top, false, out, functions);
     } else if (auto* forIn = dynamic_cast<ForInStatement*>(stmt)) {
         const size_t before = out.size();
         collectDeclarations(forIn->left.get(), top, false, out, functions);
-        for (size_t i = before; i < out.size(); ++i) out[i].inLoopHead = atTop;
+        for (size_t i = before; i < out.size(); ++i) {
+            out[i].inLoopHead = true;
+            out[i].loop = forIn;
+        }
         collectDeclarations(forIn->body.get(), top, false, out, functions);
     } else if (auto* choice = dynamic_cast<SwitchStatement*>(stmt)) {
         for (auto& clause : choice->cases) {
@@ -1302,8 +1354,14 @@ void Translator::prepareTops(Fn& f, const std::vector<Statement*>& tops) {
         for (size_t i = first.top + 1; i < topRefs.size(); ++i) {
             if (topRefs[i].count(name)) usedAfter = true;
         }
-        if (list.size() == 1 && !usedBefore && !captured.count(name) &&
-            (first.atTop || (first.inLoopHead && !usedAfter))) {
+        // A loop's variable used only in the loop: the loop's own.
+        bool loopOnly = false;
+        if (first.inLoopHead && first.loop && !usedBefore && !usedAfter && first.top < tops.size()) {
+            Scan around;
+            scanExcept(tops[first.top], first.loop, around);
+            loopOnly = !around.refs.count(name) && !around.innerFree.count(name);
+        }
+        if (list.size() == 1 && !usedBefore && !captured.count(name) && (first.atTop || loopOnly)) {
             f.declaration[name] = 'l';
         } else if (first.init || ty.kind == Ty::Any) {
             f.declaration[name] = 'v';
