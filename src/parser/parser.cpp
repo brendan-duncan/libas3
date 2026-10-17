@@ -576,7 +576,35 @@ std::unique_ptr<PackageDefinition> Parser::parsePackage() {
     return package;
 }
 
+namespace {
+
+// Counts a level of nesting while it lasts.
+struct Nesting {
+    int& depth;
+    ~Nesting() { --depth; }
+};
+
+constexpr int kMaxNesting = 400;
+
+} // namespace
+
+bool Parser::enterNesting() {
+    if (++_nesting > kMaxNesting) {
+        if (_nesting == kMaxNesting + 1) {
+            addError("Nested too deeply");
+        }
+        // Skips the rest, so that the error is not made again and again.
+        _position = _tokens.size();
+        return false;
+    }
+    return true;
+}
+
 std::unique_ptr<Statement> Parser::parseStatement() {
+    Nesting nesting{_nesting};
+    if (!enterNesting()) {
+        return nullptr;
+    }
     const int line = static_cast<int>(currentToken().start.line);
     auto statement = parseStatementBody();
     if (statement && statement->line == 0) {
@@ -1346,6 +1374,10 @@ std::unique_ptr<Expression> Parser::parseExpression() {
 }
 
 std::unique_ptr<Expression> Parser::parseAssignmentExpression() {
+    Nesting nesting{_nesting};
+    if (!enterNesting()) {
+        return nullptr;
+    }
     const int line = static_cast<int>(currentToken().start.line);
     auto left = parseConditionalExpression();
     if (!left) {
@@ -1420,103 +1452,90 @@ enum BinaryLevel {
 
 } // namespace
 
-std::unique_ptr<Expression> Parser::parseBinaryExpression(int level) {
-    if (level >= kLevels) {
-        return parseUnaryExpression();
+// A binary operator here, and its level; -1 when there is none.
+int Parser::binaryLevel(OperatorType& op) const {
+    const Token& token = currentToken();
+    switch (token.type) {
+        case TokenType::NullCoalescing: op = OperatorType::NullCoalescing; return kCoalesce;
+        case TokenType::LogicalOr: op = OperatorType::LogicalOr; return kLogicalOr;
+        case TokenType::LogicalXor: op = OperatorType::LogicalXor; return kLogicalXor;
+        case TokenType::LogicalAnd: op = OperatorType::LogicalAnd; return kLogicalAnd;
+        case TokenType::Pipe: op = OperatorType::BitwiseOr; return kBitOr;
+        case TokenType::Caret: op = OperatorType::BitwiseXor; return kBitXor;
+        case TokenType::Ampersand: op = OperatorType::BitwiseAnd; return kBitAnd;
+        case TokenType::Equals:
+        case TokenType::NotEquals:
+        case TokenType::StrictEquals:
+        case TokenType::StrictNotEquals:
+            op = getBinaryOperator(token.type);
+            return kEquality;
+        case TokenType::LessThan:
+        case TokenType::GreaterThan:
+        case TokenType::LessThanOrEqual:
+        case TokenType::GreaterThanOrEqual:
+            op = getBinaryOperator(token.type);
+            return kRelational;
+        case TokenType::LeftShift:
+        case TokenType::RightShift:
+        case TokenType::UnsignedRightShift:
+            op = getBinaryOperator(token.type);
+            return kShift;
+        case TokenType::Plus:
+        case TokenType::Minus:
+            op = getBinaryOperator(token.type);
+            return kAdditive;
+        case TokenType::Multiply:
+        case TokenType::Divide:
+        case TokenType::Remainder:
+            op = getBinaryOperator(token.type);
+            return kMultiplicative;
+        case TokenType::Keyword:
+            switch (token.keyword) {
+                case KeywordType::Instanceof: op = OperatorType::Instanceof; return kRelational;
+                case KeywordType::In:
+                    if (_noIn) return -1;
+                    op = OperatorType::In;
+                    return kRelational;
+                case KeywordType::Is: op = OperatorType::Is; return kRelational;
+                case KeywordType::As: op = OperatorType::As; return kRelational;
+                default: return -1;
+            }
+        default:
+            return -1;
     }
+}
+
+// Binary operators of a level or tighter, by precedence climbing: a chain
+// of one level is read in a loop, and only a tighter right side recurses.
+std::unique_ptr<Expression> Parser::parseBinaryExpression(int minimum) {
     const int line = static_cast<int>(currentToken().start.line);
-    auto left = parseBinaryExpression(level + 1);
+    auto left = parseUnaryExpression();
     if (!left) {
         return nullptr;
     }
     for (;;) {
-        const Token& token = currentToken();
-        bool found = true;
         OperatorType op = OperatorType::Add;
-        switch (level) {
-            case kCoalesce:
-                found = token.type == TokenType::NullCoalescing;
-                op = OperatorType::NullCoalescing;
-                break;
-            case kLogicalOr:
-                found = token.type == TokenType::LogicalOr;
-                op = OperatorType::LogicalOr;
-                break;
-            case kLogicalXor:
-                found = token.type == TokenType::LogicalXor;
-                op = OperatorType::LogicalXor;
-                break;
-            case kLogicalAnd:
-                found = token.type == TokenType::LogicalAnd;
-                op = OperatorType::LogicalAnd;
-                break;
-            case kBitOr:
-                found = token.type == TokenType::Pipe;
-                op = OperatorType::BitwiseOr;
-                break;
-            case kBitXor:
-                found = token.type == TokenType::Caret;
-                op = OperatorType::BitwiseXor;
-                break;
-            case kBitAnd:
-                found = token.type == TokenType::Ampersand;
-                op = OperatorType::BitwiseAnd;
-                break;
-            case kEquality:
-                found = token.type == TokenType::Equals || token.type == TokenType::NotEquals ||
-                        token.type == TokenType::StrictEquals || token.type == TokenType::StrictNotEquals;
-                op = getBinaryOperator(token.type);
-                break;
-            case kRelational:
-                if (token.type == TokenType::LessThan || token.type == TokenType::GreaterThan ||
-                    token.type == TokenType::LessThanOrEqual || token.type == TokenType::GreaterThanOrEqual) {
-                    op = getBinaryOperator(token.type);
-                } else if (token.type == TokenType::Keyword && token.keyword == KeywordType::Instanceof) {
-                    op = OperatorType::Instanceof;
-                } else if (token.type == TokenType::Keyword && token.keyword == KeywordType::In && !_noIn) {
-                    op = OperatorType::In;
-                } else if (token.type == TokenType::Keyword && token.keyword == KeywordType::Is) {
-                    op = OperatorType::Is;
-                } else if (token.type == TokenType::Keyword && token.keyword == KeywordType::As) {
-                    op = OperatorType::As;
-                } else {
-                    found = false;
-                }
-                break;
-            case kShift:
-                found = token.type == TokenType::LeftShift || token.type == TokenType::RightShift ||
-                        token.type == TokenType::UnsignedRightShift;
-                op = getBinaryOperator(token.type);
-                break;
-            case kAdditive:
-                found = token.type == TokenType::Plus || token.type == TokenType::Minus;
-                op = getBinaryOperator(token.type);
-                break;
-            case kMultiplicative:
-                found = token.type == TokenType::Multiply || token.type == TokenType::Divide ||
-                        token.type == TokenType::Remainder;
-                op = getBinaryOperator(token.type);
-                break;
-        }
-        if (!found) {
+        const int level = binaryLevel(op);
+        if (level < 0 || level < minimum) {
             return left;
         }
         advance();
         // ?? groups to the right, as a ?? (b ?? c).
-        auto right = op == OperatorType::NullCoalescing ? parseBinaryExpression(level) : parseBinaryExpression(level + 1);
+        auto right = parseBinaryExpression(op == OperatorType::NullCoalescing ? level : level + 1);
         if (!right) {
             addError("Failed to parse right operand of binary expression");
             return nullptr;
         }
         left = std::make_unique<BinaryExpression>(op, std::move(left), std::move(right));
         left->line = line;
-        if (op == OperatorType::NullCoalescing) {
-            return left;
-        }
     }
 }
 
 std::unique_ptr<Expression> Parser::parseUnaryExpression() {
+    Nesting nesting{_nesting};
+    if (!enterNesting()) {
+        return nullptr;
+    }
     const int line = static_cast<int>(currentToken().start.line);
     // ++x and --x: the lexer makes the same token as for x++.
     if (check(TokenType::Increment) || check(TokenType::Decrement)) {

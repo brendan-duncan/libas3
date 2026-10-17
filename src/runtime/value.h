@@ -382,6 +382,11 @@ struct Trait {
 // A class: its name, its superclass and interfaces, and its members, those
 // of instances (inherited ones included) and its own static ones.
 struct ClassInfo {
+    ClassInfo();
+    // Unique for the life of the program: what inline caches know a class
+    // by (an address may be used again).
+    uint64_t id;
+
     // Qualified ("com.example.Shape", "flash.display.Sprite", "Array"),
     // and its parts.
     std::string name;

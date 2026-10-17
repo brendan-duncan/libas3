@@ -674,9 +674,9 @@ void VM::run(size_t stopDepth) {
                         // A global found before, while the names are as they were.
                         if (cache.version == namesVersion) {
                             const Val& self = frame->scopeSelf();
-                            const ClassInfo* selfClass =
-                                self.tag == Val::Tag::Object ? self.ref->cls.get() : nullptr;
-                            if (selfClass == cache.cls && (self.tag != Val::Tag::Object ||
+                            const uint64_t selfClass =
+                                self.tag == Val::Tag::Object && self.ref->cls ? self.ref->cls->id : 0;
+                            if (selfClass == cache.classId && (self.tag != Val::Tag::Object ||
                                                            (!self.ref->host && self.ref->properties.empty())) &&
                                 (frame->scope.isNullish() || frame->scope.ref == self.ref)) {
                                 *sp++ = cache.value;
@@ -1256,9 +1256,9 @@ void VM::run(size_t stopDepth) {
                         bool cached = false;
                         if (cache.version == namesVersion) {
                             const Val& self = frame->scopeSelf();
-                            const ClassInfo* selfClass =
-                                self.tag == Val::Tag::Object ? self.ref->cls.get() : nullptr;
-                            if (selfClass == cache.cls && (self.tag != Val::Tag::Object ||
+                            const uint64_t selfClass =
+                                self.tag == Val::Tag::Object && self.ref->cls ? self.ref->cls->id : 0;
+                            if (selfClass == cache.classId && (self.tag != Val::Tag::Object ||
                                                            (!self.ref->host && self.ref->properties.empty())) &&
                                 (frame->scope.isNullish() || frame->scope.ref == self.ref)) {
                                 function = cache.value;
@@ -1577,7 +1577,7 @@ void VM::run(size_t stopDepth) {
 int VM::cachedGet(const Val& object, const PropertyCache& cache, Val* out) {
     if (object.tag != Val::Tag::Object) return 0;
     Value* value = object.ref.get();
-    if (value->cls.get() != cache.cls || !cache.cls || cache.onClass || value->type == ValueType::Class) return 0;
+    if (!value->cls || value->cls->id != cache.classId || cache.onClass || value->type == ValueType::Class) return 0;
     const Trait* trait = cache.trait;
     if (trait->kind == TraitKind::Slot) {
         const Val& field = value->slots[trait->slot];
@@ -1611,7 +1611,7 @@ int VM::cachedGet(const Val& object, const PropertyCache& cache, Val* out) {
 int VM::cachedSet(const Val& object, const PropertyCache& cache, Val* value) {
     if (object.tag != Val::Tag::Object) return 0;
     Value* self = object.ref.get();
-    if (self->cls.get() != cache.cls || !cache.cls || cache.onClass || self->type == ValueType::Class) return 0;
+    if (!self->cls || self->cls->id != cache.classId || cache.onClass || self->type == ValueType::Class) return 0;
     const Trait* trait = cache.trait;
     if (trait->kind == TraitKind::Slot) {
         Val& slot = self->slots[trait->slot];
@@ -1648,7 +1648,7 @@ int VM::cachedSet(const Val& object, const PropertyCache& cache, Val* value) {
 int VM::cachedCall(const Val& object, const PropertyCache& cache, Val* args, uint32_t argc, Val* result) {
     if (object.tag != Val::Tag::Object) return 0;
     Value* value = object.ref.get();
-    if (value->cls.get() != cache.cls || !cache.cls || cache.trait->kind != TraitKind::Method ||
+    if (!value->cls || value->cls->id != cache.classId || cache.trait->kind != TraitKind::Method ||
         cache.onClass != (value->type == ValueType::Class)) {
         return 0;
     }

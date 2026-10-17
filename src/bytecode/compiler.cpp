@@ -90,9 +90,14 @@ void scanExpression(Expression* expr, Scan& scan) {
             break;
         }
         case Expression::ExpressionKind::Binary: {
-            auto* binary = static_cast<BinaryExpression*>(expr);
-            scanExpression(binary->left.get(), scan);
-            scanExpression(binary->right.get(), scan);
+            // Down the left of a chain without recursing.
+            Expression* at = expr;
+            while (at && at->kind == Expression::ExpressionKind::Binary) {
+                auto* binary = static_cast<BinaryExpression*>(at);
+                scanExpression(binary->right.get(), scan);
+                at = binary->left.get();
+            }
+            scanExpression(at, scan);
             break;
         }
         case Expression::ExpressionKind::Unary:
@@ -2068,6 +2073,34 @@ void Compiler::compileBinaryExpression(BinaryExpression* expr) {
             emitNumber(value);
             return;
         }
+    }
+    // A chain of plain operators (a + b + c + ...): the left-most first,
+    // then each right and its operator, without recursing down the chain.
+    std::vector<BinaryExpression*> chain{expr};
+    while (true) {
+        Expression* left = chain.back()->left.get();
+        if (!left || left->kind != Expression::ExpressionKind::Binary) break;
+        auto* inner = static_cast<BinaryExpression*>(left);
+        switch (inner->op) {
+            case OperatorType::LogicalAnd: case OperatorType::LogicalOr: case OperatorType::NullCoalescing:
+            case OperatorType::LogicalXor: case OperatorType::Is: case OperatorType::As:
+            case OperatorType::Instanceof:
+                break;
+            default:
+                chain.push_back(inner);
+                continue;
+        }
+        break;
+    }
+    if (chain.size() > 1) {
+        compileExpression(chain.back()->left.get());
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+            compileExpression((*it)->right.get());
+            if (!emitBinaryOperator((*it)->op)) {
+                error("Unsupported binary operator");
+            }
+        }
+        return;
     }
     compileExpression(expr->left.get());
     compileExpression(expr->right.get());

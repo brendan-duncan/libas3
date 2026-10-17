@@ -60,6 +60,36 @@ static void init_error_tests() {
         }
     });
 
+    suite.addTest("Long chains work, deep nesting is an error", []() {
+        // 20,000 terms: no recursion as deep as the chain.
+        std::string sum = "var total = 0";
+        for (int i = 0; i < 20000; ++i) sum += " + 1";
+        sum += ";";
+        VM vm;
+        if (!vm.load(sum, "Sum.as") || Val(vm.getGlobal("total")).toNumber() != 20000) {
+            throw std::runtime_error("long chain: " + vm.getError());
+        }
+        // 150 parentheses deep is fine; 5,000 is an error, not a crash.
+        const auto nested = [](int depth) {
+            return "var x = " + std::string(static_cast<size_t>(depth), '(') + "1" +
+                   std::string(static_cast<size_t>(depth), ')') + ";";
+        };
+        if (!vm.load(nested(150), "Nested.as")) {
+            throw std::runtime_error("150 deep: " + vm.getError());
+        }
+        if (vm.load(nested(5000), "Deep.as") || vm.getError().find("Nested too deeply") == std::string::npos) {
+            throw std::runtime_error("5000 deep: " + vm.getError());
+        }
+        std::string arrays = "var a = " + std::string(5000, '[') + std::string(5000, ']') + ";";
+        if (vm.load(arrays, "Arrays.as")) {
+            throw std::runtime_error("5000 arrays deep parsed");
+        }
+        std::string blocks = std::string(5000, '{') + std::string(5000, '}');
+        if (vm.load(blocks, "Blocks.as")) {
+            throw std::runtime_error("5000 blocks deep parsed");
+        }
+    });
+
     suite.addTest("Runtime errors have ActionScript's messages", []() {
         VM vm;
         vm.load("var o = null;\no.x = 1;\n", "Null.as");

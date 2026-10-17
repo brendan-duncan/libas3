@@ -136,6 +136,14 @@ public:
         , left(std::move(l))
         , right(std::move(r)) {
     }
+    // A long chain (a + b + c + ...) is freed a link at a time, not by
+    // recursion as deep as it is long.
+    ~BinaryExpression() override {
+        while (left && left->kind == ExpressionKind::Binary) {
+            ExpressionPtr next = std::move(static_cast<BinaryExpression*>(left.get())->left);
+            left = std::move(next);
+        }
+    }
     AstNodeType getType() const override { return AstNodeType::Expression; }
 };
 

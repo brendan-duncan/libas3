@@ -64,6 +64,10 @@ private:
     std::map<std::string, std::string> _constants;
     IncludeHandler _includeHandler;
     int _includeDepth = 0;
+    // How deep statements and expressions nest, capped so that a parse
+    // cannot use the whole stack.
+    int _nesting = 0;
+    bool enterNesting();
     // ns::name before a block or a definition: whether that is kept.
     bool atConfigCondition() const;
     bool readConfigCondition();
@@ -135,7 +139,8 @@ private:
     std::unique_ptr<Expression> parseExpression();
     std::unique_ptr<Expression> parseAssignmentExpression();
     std::unique_ptr<Expression> parseConditionalExpression();
-    std::unique_ptr<Expression> parseBinaryExpression(int level);
+    std::unique_ptr<Expression> parseBinaryExpression(int minimum);
+    int binaryLevel(OperatorType& op) const;
     std::unique_ptr<Expression> parseUnaryExpression();
     std::unique_ptr<Expression> parsePostfixExpression();
     std::unique_ptr<Expression> parseCallMemberExpression();

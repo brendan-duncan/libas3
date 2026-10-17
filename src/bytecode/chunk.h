@@ -89,7 +89,8 @@ struct UpvalueSource {
 // An inline cache for a property instruction: the class last seen there
 // and its trait.
 struct PropertyCache {
-    const ClassInfo* cls = nullptr;
+    // The class seen (by its id; 0 none) and its trait.
+    uint64_t classId = 0;
     const Trait* trait = nullptr;
     // A static of the class (the object is the class itself).
     bool onClass = false;

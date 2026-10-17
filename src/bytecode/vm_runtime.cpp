@@ -542,7 +542,7 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
         if (cls) {
             if (const Trait* trait = cls->findStatic(name)) {
                 if (cache) {
-                    cache->cls = cls;
+                    cache->classId = cls->id;
                     cache->trait = trait;
                     cache->onClass = true;
                 }
@@ -563,7 +563,7 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
     if (cls) {
         if (const Trait* trait = cls->findTrait(name)) {
             if (cache && self->cls.get() == cls) {
-                cache->cls = cls;
+                cache->classId = cls->id;
                 cache->trait = trait;
                 cache->onClass = false;
             }
@@ -604,7 +604,7 @@ void VM::setProp(const Val& object, const std::string& name, const Val& value, P
         if (cls) {
             if (const Trait* trait = cls->findStatic(name)) {
                 if (cache) {
-                    cache->cls = cls;
+                    cache->classId = cls->id;
                     cache->trait = trait;
                     cache->onClass = true;
                 }
@@ -619,7 +619,7 @@ void VM::setProp(const Val& object, const std::string& name, const Val& value, P
     if (cls) {
         if (const Trait* trait = cls->findTrait(name)) {
             if (cache && self->cls.get() == cls) {
-                cache->cls = cls;
+                cache->classId = cls->id;
                 cache->trait = trait;
                 cache->onClass = false;
             }
@@ -647,7 +647,7 @@ bool VM::callProp(const Val& object, const std::string& name, Val* args, uint32_
             const Trait* trait = cls ? cls->findStatic(name) : nullptr;
             if (trait && trait->kind == TraitKind::Method) {
                 if (cache) {
-                    cache->cls = cls;
+                    cache->classId = cls->id;
                     cache->trait = trait;
                     cache->onClass = true;
                 }
@@ -660,7 +660,7 @@ bool VM::callProp(const Val& object, const std::string& name, Val* args, uint32_
             const Trait* trait = cls ? cls->findTrait(name) : nullptr;
             if (trait && trait->kind == TraitKind::Method) {
                 if (cache && value->cls.get() == cls) {
-                    cache->cls = cls;
+                    cache->classId = cls->id;
                     cache->trait = trait;
                     cache->onClass = false;
                 }
@@ -982,7 +982,7 @@ bool VM::lookupName(CallFrame& frame, const std::string& name, Val& value, Val* 
     if (receiver) *receiver = Val();
     if (cache) {
         cache->version = namesVersion;
-        cache->cls = self.isObject() ? self->cls.get() : nullptr;
+        cache->classId = self.isObject() && self->cls ? self->cls->id : 0;
         cache->value = value;
     }
     return true;

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <atomic>
 
 namespace as3 {
 
@@ -437,6 +438,11 @@ Val defaultForCoerce(Coerce coerce) {
 }
 
 // ClassInfo
+
+ClassInfo::ClassInfo() {
+    static std::atomic<uint64_t> next{1};
+    id = next++;
+}
 
 bool ClassInfo::isSubclassOf(const ClassInfo* other) const {
     if (!other) {
