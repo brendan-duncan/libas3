@@ -640,6 +640,11 @@ static void init_avm1_run_tests() {
         run.host.traced.clear();
         run.interpreter.callMethod(run.movie.hat, "onEnterFrame", {}, "hat");
         expect(run.host.traced, "entered hat\n");
+        // setInterval on a method, by name, and on a function.
+        expect(run.script("var o = {tick: function () {}};\nvar a = setInterval(o, 'tick', 10);\n"
+                          "var b = setInterval(function () {}, 10);\ntrace(typeof a + ' ' + (b > a));\n"
+                          "clearInterval(a); clearInterval(b); trace(setInterval(undefined, 10));"),
+               "number true\nundefined\n");
     });
 
     suite.addTest("Real movies' actions run without errors", []() {

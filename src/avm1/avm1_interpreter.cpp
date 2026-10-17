@@ -662,10 +662,12 @@ void Machine::setupGlobals() {
     // ...), on the VM's timers.
     for (const bool repeat : {true, false}) {
         const std::string name = repeat ? "setInterval" : "setTimeout";
-        define(name, native(name, [this, repeat](VM& vm, const Val&, Args args) -> Val {
+        // In place of the VM's own, which takes only a function.
+        vm.setGlobal(name, native(name, [this, repeat](VM& vm, const Val&, Args args) -> Val {
             Val function = args[0];
             size_t at = 1;
-            if (!function.isFunction()) {
+            if (!function.isObject()) return Val();
+            if (!function.isFunction() || args[1].isString()) {
                 const Val object = args[0];
                 const std::string method = toString(args[1]);
                 function = native("interval", [this, object, method](VM&, const Val&, Args given) {
