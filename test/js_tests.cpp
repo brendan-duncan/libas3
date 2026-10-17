@@ -496,6 +496,164 @@ package com.example {
         if (std::getenv("AS3_JS_DUMP")) std::cout << text << std::endl;
     });
 
+    suite.addTest("A timeline's frame scripts", []() {
+        js::Timeline timeline;
+        timeline.className = js::timelineClassName("movie");
+        timeline.instances = {{"playButton", "flash.display.SimpleButton"}, {"score", "flash.text.TextField"}};
+        timeline.frames = {
+            {0, "import flash.events.MouseEvent;\n"
+                "var clicks:int = 0;\n"
+                "var label:String;\n"
+                "function onClick(e:MouseEvent):void { clicks++; score.text = 'clicks ' + clicks; }\n"
+                "playButton.addEventListener(MouseEvent.CLICK, onClick);\n"
+                "trace('frame one', clicks, label, playButton.name, getTimer() >= 0);\n"
+                "stop();"},
+            {4, "trace('frame five', clicks); for (var i:int = 0; i < 2; i++) clicks += i; trace(clicks);"},
+        };
+        js::Timeline symbol;
+        symbol.className = "Star";
+        const js::Output out = js::translate({}, {timeline, symbol});
+        expect(out.ok, out.errorText());
+        expect(out.classes == std::vector<std::string>{"movie_fla.MainTimeline", "Star"}, "classes");
+        const std::string& text = out.files.at("movie_fla/MainTimeline.js");
+        expectIn(text, "as3.define(\"movie_fla.MainTimeline\", () => {");
+        expectIn(text, "class MainTimeline extends MovieClip {");
+        expectIn(text, "this.addFrameScript(0, as3.bind(this, \"frame1\"), 4, as3.bind(this, \"frame5\"));");
+        expectIn(text, "this.playButton.addEventListener(MouseEvent.CLICK, as3.bind(this, \"onClick\"));");
+        expectIn(text, "this.stop();");
+        expectIn(out.files.at("Star.js"), "class Star extends MovieClip {");
+        if (!nodeThere()) return;
+        // A MovieClip that places its instances when constructed, as the
+        // runtime does, and plays the frames it is asked to.
+        const std::string runtime = R"js(
+class EventDispatcher {
+    constructor(...args) { if (new.target === EventDispatcher) this.$construct(...args); }
+    $construct() { this.listeners = {}; }
+    addEventListener(type, listener) { (this.listeners[type] = this.listeners[type] || []).push(listener); }
+    dispatchEvent(event) { for (const listener of this.listeners[event.type] || []) listener(event); }
+}
+class DisplayObject extends EventDispatcher {
+    constructor(...args) { super(); if (new.target === DisplayObject) this.$construct(...args); }
+    $construct() { super.$construct(); this.name = null; }
+}
+class SimpleButton extends DisplayObject {
+    constructor(...args) { super(); if (new.target === SimpleButton) this.$construct(...args); }
+}
+class TextField extends DisplayObject {
+    constructor(...args) { super(); if (new.target === TextField) this.$construct(...args); }
+    $construct() { super.$construct(); this.text = ""; }
+}
+class MovieClip extends DisplayObject {
+    constructor(...args) { super(); if (new.target === MovieClip) this.$construct(...args); }
+    $construct() {
+        super.$construct();
+        this.scripts = [];
+        this.playButton = new SimpleButton(); this.playButton.name = "playButton";
+        this.score = new TextField(); this.score.name = "score";
+    }
+    addFrameScript(...pairs) { for (let i = 0; i < pairs.length; i += 2) this.scripts[pairs[i]] = pairs[i + 1]; }
+    stop() { as3.trace("stopped"); }
+    playFrame(n) { if (this.scripts[n]) this.scripts[n](); }
+}
+class MouseEvent { constructor(type) { this.type = type; } }
+MouseEvent.CLICK = "click";
+as3.register("flash.events.EventDispatcher", EventDispatcher);
+as3.register("flash.display.DisplayObject", DisplayObject);
+as3.register("flash.display.SimpleButton", SimpleButton);
+as3.register("flash.text.TextField", TextField);
+as3.register("flash.display.MovieClip", MovieClip);
+as3.register("flash.events.MouseEvent", MouseEvent);
+)js";
+        const std::string play =
+            "const Main = as3.getDefinitionByName(\"movie_fla.MainTimeline\");\n"
+            "const clip = new Main();\n"
+            "clip.playFrame(0);\n"
+            "clip.playButton.dispatchEvent(new (as3.use(\"flash.events.MouseEvent\"))(\"click\"));\n"
+            "clip.playButton.dispatchEvent(new (as3.use(\"flash.events.MouseEvent\"))(\"click\"));\n"
+            "as3.trace(clip.score.text);\n"
+            "clip.playFrame(4);\n"
+            "const star = new (as3.use(\"Star\"))();\n"
+            "as3.trace(as3.getQualifiedClassName(clip), as3.getQualifiedClassName(star), star instanceof as3.use(\"flash.display.MovieClip\"));\n";
+        const std::vector<std::string> got = runInNode({out.bundle + play}, runtime);
+        expect(got[0] == "frame one 0 null playButton true\nstopped\nclicks 2\nframe five 2\n3\n"
+                         "movie_fla::MainTimeline Star true\n",
+               "got:\n" + got[0]);
+    });
+
+    suite.addTest("Timers run as the VM runs them", []() {
+        const std::string program =
+            "import flash.utils.*;\n"
+            "var log:Array = [];\n"
+            "var id:uint = setInterval(function(tag:String):void { log.push(tag + getTimer()); if (log.length == 3) clearInterval(id); }, 100, 'i');\n"
+            "setTimeout(function():void { log.push('t'); trace(log); }, 450);\n"
+            "var never:uint = setTimeout(function():void { log.push('never'); }, 200); clearTimeout(never);\n";
+        VM vm;
+        std::string wanted;
+        vm.defineFunction("trace", [&wanted](VM& vm, const Val&, Args args) {
+            for (size_t i = 0; i < args.size(); ++i) wanted += (i ? " " : "") + vm.toString(args[i]);
+            wanted += "\n";
+            return Val();
+        });
+        double now = 0;
+        vm.setClock([&now]() { return now; });
+        if (!vm.load(program, "timers.as")) throw std::runtime_error(vm.getError());
+        for (now = 0; now <= 1000; now += 50) vm.runTimers(now);
+        const js::Output out = translated(program);
+        expect(out.ok, out.errorText());
+        if (!nodeThere()) return;
+        const std::vector<std::string> got = runInNode(
+            {out.bundle + "for (let now = 0; now <= 1000; now += 50) { clock = now; as3.runTimers(now); }\n"},
+            "var clock = 0; as3.clock = () => clock;\n");
+        expect(got[0] == wanted && !wanted.empty(), "VM:\n" + wanted + "JavaScript:\n" + got[0]);
+    });
+
+    suite.addTest("Source maps lead back to the lines of the source", []() {
+        const js::Output out = translated("package p {\n"
+                                          "    public class A {\n"
+                                          "        public function f():Number {\n"
+                                          "            var x:int = 1;\n"
+                                          "            return x + 1;\n"
+                                          "        }\n"
+                                          "    }\n"
+                                          "}\n"
+                                          "trace(new p.A().f());\n");
+        expect(out.ok, out.errorText());
+        expect(out.sourceMaps.count("p/A.js.map") == 1 && out.sourceMaps.count("bundle.js.map") == 1, "no maps");
+        const std::string& map = out.sourceMaps.at("p/A.js.map");
+        expectIn(map, "\"version\":3");
+        expectIn(map, "\"sources\":[\"main.as\"]");
+        expectIn(out.files.at("p/A.js"), "//# sourceMappingURL=A.js.map");
+        if (!nodeThere()) return;
+        // Decoded: the generated line of "let x = 1;" maps to line 4, and
+        // "return x + 1;" to line 5.
+        const std::string check = std::string(R"js(
+const map = JSON.parse(MAP);
+const lines = FILE.split("\n");
+const digits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function decode(text) {
+    const out = []; let value = 0, shift = 0;
+    for (const c of text) {
+        let digit = digits.indexOf(c);
+        value += (digit & 31) << shift;
+        if (digit & 32) { shift += 5; continue; }
+        out.push(value & 1 ? -(value >> 1) : value >> 1); value = 0; shift = 0;
+    }
+    return out;
+}
+let source = 0, line = 0; const found = {};
+map.mappings.split(";").forEach((segment, i) => {
+    if (!segment) return;
+    const fields = decode(segment.split(",")[0]);
+    source += fields[1]; line += fields[2];
+    found[lines[i].trim()] = line + 1;
+});
+as3.trace(found["let x = 1;"], found["return x + 1;"], found["class A {"]);
+)js");
+        const std::string script = "const MAP = " + js::quote(map) + ";\nconst FILE = " + js::quote(out.files.at("p/A.js")) + ";\n" + check;
+        const std::vector<std::string> got = runInNode({script});
+        expect(got[0] == "4 5 2\n", "got " + got[0]);
+    });
+
     suite.addTest("Programs trace the same in the VM and in JavaScript", []() {
         if (!nodeThere()) {
             std::cout << "    (node not found; skipped)" << std::endl;
