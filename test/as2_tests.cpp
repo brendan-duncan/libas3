@@ -184,6 +184,24 @@ static void init_as2_tests() {
         expect(run(vm, "trace(count + 1, this == undefined);", rootValue), "3 false\n");
     });
 
+    suite.addTest("On a timeline, a global wins over the timeline's own", []() {
+        VM vm;
+        auto root = std::make_shared<Clip>();
+        ValuePtr rootValue = Value::makeHostObject(root);
+        // The clip has its own gotoAndStop; the host's global one (which
+        // knows scenes) is the one a frame script calls.
+        std::string called;
+        vm.registerBuiltin("gotoAndStop", [&called](const std::vector<ValuePtr>& args) {
+            called = "global " + args[0]->toString();
+            return Value::makeUndefined();
+        });
+        run(vm, "gotoAndStop('ending');\n_x = 7;\n", rootValue);
+        expect(called, "global ending");
+        if (root->frame != 1 || root->x != 7) {
+            throw std::runtime_error("the clip's own was called, or _x not set on it");
+        }
+    });
+
     suite.addTest("getProperty and setProperty name the property", []() {
         VM vm;
         std::string seen;
