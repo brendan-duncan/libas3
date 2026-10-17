@@ -616,4 +616,17 @@ class Temp { private var c:Number = 20; public function get f():Number { return 
 var t:* = new Temp(); trace(t.f); t.f = 212; trace(t.f, t["f"]);
 var o:Object = t; o.f = 32; trace(o.f);
 )as3"},
+
+    {"E4X: building and changing XML", R"as3(
+var x:XML = <r/>;
+x.a = "one"; x.b.c = "deep"; x.@id = 7; x.list.item[0] = "first";
+trace(x.toXMLString());
+x.a = <a kind="new">two</a>; delete x.@id; trace(x.a.@kind, x.@id.length(), x.toXMLString());
+x.appendChild(<z/>); x.prependChild(<first/>); trace(x.children()[0].name(), x.children().length());
+var items:XML = <items/>; for (var i:int = 0; i < 3; i++) items.appendChild(<item n={i}>{i * 2}</item>);
+trace(items.item.length(), items.item[2], items.item.(@n == 1).toXMLString(), items.item.@n);
+items.item[1] = "changed"; trace(items.item[1], items.item[1].@n);
+var text:XML = <p>Hello <b>bold</b> world</p>; trace(text.text(), text.b, text.children().length(), text.toString());
+XML.prettyPrinting = false; trace(items.toXMLString()); XML.prettyPrinting = true;
+)as3"},
 };
