@@ -195,8 +195,12 @@ std::string VM::typeOf(const Val& value) {
         case Val::Tag::Boolean: return "boolean";
         case Val::Tag::Number: return "number";
         case Val::Tag::String: return "string";
-        default:
-            return value->isFunction() ? "function" : "object";
+        default: {
+            if (value->isFunction()) return "function";
+            const ClassInfo* cls = value->cls.get();
+            if (cls && value->type == ValueType::Object && (cls->name == "XML" || cls->name == "XMLList")) return "xml";
+            return "object";
+        }
     }
 }
 
@@ -289,7 +293,10 @@ std::string VM::toString(const Val& value) {
     if (object->isFunction()) {
         return "function Function() {}";
     }
-    Val method = getProp(value, "toString", nullptr);
+    // Its class's method first (XML's own names are its children).
+    const ClassInfo* cls = classOf(value);
+    const Trait* trait = cls ? cls->findTrait("toString") : nullptr;
+    Val method = trait && trait->kind == TraitKind::Method ? trait->method : getProp(value, "toString", nullptr);
     if (method.isFunction()) {
         Val result = callFunction(method, value, Args());
         return result.isObject() ? result->toString() : result.toString();
@@ -329,6 +336,25 @@ bool VM::lessThan(const Val& a, const Val& b, bool& undefinedResult) {
         return false;
     }
     return m < n;
+}
+
+bool VM::equalsLoosely(const Val& a, const Val& b) {
+    // An object and a primitive: the object's primitive value, by its
+    // valueOf or toString (String(xml) == "text").
+    if (a.isObject() != b.isObject() && !a.isNullish() && !b.isNullish()) {
+        const Val& object = a.isObject() ? a : b;
+        const Val& other = a.isObject() ? b : a;
+        if (object->type == ValueType::Class || object->isFunction()) {
+            return false;
+        }
+        return looselyEqual(toPrimitive(object, false), other);
+    }
+    if (a.isObject() && b.isObject() && a.ref != b.ref && a->cls && a->cls->hostFirst && b->cls &&
+        b->cls->hostFirst) {
+        // Two XML values: the same markup.
+        return toString(a) == toString(b);
+    }
+    return looselyEqual(a, b);
 }
 
 // Traits
@@ -571,6 +597,11 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
         return Val();
     }
     const ClassInfo* cls = classOf(object);
+    if (cls && cls->hostFirst && self->host) {
+        if (ValuePtr found = self->host->get(name)) {
+            return Val(found);
+        }
+    }
     if (cls) {
         if (const Trait* trait = cls->findTrait(name)) {
             if (cache && self->cls.get() == cls) {
@@ -634,6 +665,9 @@ void VM::setProp(const Val& object, const std::string& name, const Val& value, P
         return;
     }
     const ClassInfo* cls = classOf(object);
+    if (cls && cls->hostFirst && self->host && self->host->set(name, value)) {
+        return;
+    }
     if (cls) {
         if (const Trait* trait = cls->findTrait(name)) {
             if (cache && self->cls.get() == cls) {
@@ -697,6 +731,11 @@ bool VM::callProp(const Val& object, const std::string& name, Val* args, uint32_
         function = trait && trait->kind == TraitKind::Method ? trait->method : getProp(self, name, nullptr);
     }
     if (!function.isFunction() && !function.isClass()) {
+        if (self.isObject() && self->cls && self->cls->hostFirst && self->type == ValueType::Object) {
+            // A method XML does not have: its text's (xml.@a.charAt(0)).
+            const Val text = Val::string(toString(self));
+            return callProp(text, name, args, argc, result, nullptr);
+        }
         throwError("TypeError", "Error #1006: " + name + " is not a function.", 1006);
     }
     return invoke(function, self, args, argc, result);
@@ -827,7 +866,9 @@ bool VM::hasKey(const Val& object, const Val& key) {
     if (cls && cls->findTrait(name)) {
         return true;
     }
-    if (self->host && self->host->get(name)) {
+    // (A host that answers every name, as XML does, says what it has by
+    // hasIndex.)
+    if (self->host && !(cls && cls->hostFirst) && self->host->get(name)) {
         return true;
     }
     for (const ClassInfo* at = cls; at; at = at->base.get()) {
@@ -1326,6 +1367,7 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
                 trait.declaredBy = cls.get();
                 trait.typeName = member.typeName;
                 trait.metadata = metadata;
+                trait.isPublic = member.isPublic;
                 const Val initial = member.hasLiteral ? member.literal : defaultForCoerce(coerce);
                 if (member.isStatic) {
                     trait.slot = static_cast<uint32_t>(cls->staticSlots.size());
@@ -1348,6 +1390,7 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
                 trait.isFinal = member.isFinal;
                 trait.declaredBy = cls.get();
                 trait.metadata = metadata;
+                trait.isPublic = member.isPublic;
                 trait.method = makeClosure(member.function, cls);
                 table[member.name] = trait;
                 if (member.isPrivate) table[privateKey(member)] = trait;
@@ -1370,6 +1413,7 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
                 trait.declaredBy = cls.get();
                 trait.coerce = coerce;
                 trait.typeName = member.typeName;
+                trait.isPublic = member.isPublic;
                 if (metadata) trait.metadata = metadata;
                 Val function = makeClosure(member.function, cls);
                 if (member.kind == MemberTemplate::Kind::Getter) {

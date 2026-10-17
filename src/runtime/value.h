@@ -367,6 +367,8 @@ struct Trait {
     TraitKind kind = TraitKind::Slot;
     bool isConst = false;
     bool isFinal = false;
+    // Declared public (describeType and JSON list only those).
+    bool isPublic = true;
     Coerce coerce = Coerce::None;
     uint32_t slot = 0;
     // A method's function (unbound), or an accessor's getter and setter.
@@ -399,6 +401,9 @@ struct ClassInfo {
     bool isDynamic = false;
     bool isFinal = false;
     bool isNative = false;
+    // Its host answers for names before its members do (XML: x.name is
+    // the children called name; a method is found when called).
+    bool hostFirst = false;
     // What new makes: an Object, or for Array, Vector and their subclasses
     // an Array.
     ValueType instanceType = ValueType::Object;

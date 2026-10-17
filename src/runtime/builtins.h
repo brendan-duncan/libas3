@@ -15,6 +15,7 @@ void defineStringBuiltins(VM& vm);
 void defineDateBuiltins(VM& vm);
 void defineJsonBuiltins(VM& vm);
 void defineUtilsBuiltins(VM& vm);
+void defineXmlBuiltins(VM& vm);
 
 // Strings are kept as UTF-8; ActionScript counts in UTF-16 units.
 std::u16string toUtf16(const std::string& text);

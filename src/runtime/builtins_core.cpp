@@ -723,6 +723,7 @@ void VM::setupBuiltins() {
     defineDateBuiltins(*this);
     defineJsonBuiltins(*this);
     defineUtilsBuiltins(*this);
+    defineXmlBuiltins(*this);
 }
 
 } // namespace as3

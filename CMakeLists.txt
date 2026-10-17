@@ -29,6 +29,7 @@ add_library(as3_parser
     src/runtime/builtins_date.cpp
     src/runtime/builtins_json.cpp
     src/runtime/builtins_utils.cpp
+    src/runtime/builtins_xml.cpp
 )
 
 target_include_directories(as3_parser PUBLIC
@@ -57,6 +58,7 @@ add_executable(as3_tests
     test/native_class_tests.cpp
     test/library_tests.cpp
     test/error_tests.cpp
+    test/xml_tests.cpp
 )
 
 target_include_directories(as3_tests PRIVATE

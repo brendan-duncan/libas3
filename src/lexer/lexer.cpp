@@ -312,6 +312,10 @@ void Lexer::scanToken() {
             addToken(t);
             advanceChar();
         }
+    } else if (c == '<' && xmlAllowed() &&
+               (isAlpha(peekChar(1)) || peekChar(1) == '>' || peekChar(1) == '{' || peekChar(1) == '!' ||
+                peekChar(1) == '?')) {
+        scanXml();
     } else if (c == '<') {
         if (peekChar(1) == '=') {
             Token t = makeToken(TokenType::LessThanOrEqual);
@@ -789,6 +793,7 @@ bool Lexer::regexAllowed() const {
         case TokenType::Boolean:
         case TokenType::Null:
         case TokenType::RegularExpression:
+        case TokenType::XmlLiteral:
         case TokenType::RParen:
         case TokenType::RBracket:
         case TokenType::RBrace:
@@ -800,6 +805,117 @@ bool Lexer::regexAllowed() const {
         default:
             return true;
     }
+}
+
+bool Lexer::xmlAllowed() const {
+    if (!regexAllowed()) {
+        return false;
+    }
+    if (_tokens.empty()) {
+        return true;
+    }
+    const Token& last = _tokens.back();
+    if (last.type == TokenType::Dot) {
+        return false;
+    }
+    return !(last.type == TokenType::Keyword && last.keyword == KeywordType::New);
+}
+
+// An XML literal, to its end: its tags balanced, with what is in braces
+// (code), quotes, comments and CDATA read past.
+void Lexer::scanXml() {
+    SourceLocation start = makeLocation();
+    const size_t from = _position;
+    int depth = 0;
+    const auto startsWith = [this](const char* text) {
+        return _source.compare(_position, std::char_traits<char>::length(text), text) == 0;
+    };
+    const auto skipTo = [this](const char* end) {
+        const size_t found = _source.find(end, _position);
+        const size_t stop = found == std::string::npos ? _source.size() : found + std::char_traits<char>::length(end);
+        while (_position < stop) advanceChar();
+    };
+    // Code in braces, its strings and nested braces read past.
+    const auto skipBraces = [this]() {
+        int braces = 0;
+        while (hasMore()) {
+            const char c = advanceChar();
+            if (c == '{') {
+                ++braces;
+            } else if (c == '}') {
+                if (--braces == 0) return;
+            } else if (c == '"' || c == '\'') {
+                while (hasMore() && peekChar() != c) {
+                    if (peekChar() == '\\') advanceChar();
+                    advanceChar();
+                }
+                if (hasMore()) advanceChar();
+            }
+        }
+    };
+    bool ended = false;
+    while (hasMore() && !ended) {
+        if (peekChar() == '{') {
+            skipBraces();
+            continue;
+        }
+        if (peekChar() != '<') {
+            advanceChar();
+            continue;
+        }
+        if (startsWith("<!--")) {
+            skipTo("-->");
+        } else if (startsWith("<![CDATA[")) {
+            skipTo("]]>");
+        } else if (startsWith("<?")) {
+            skipTo("?>");
+        } else if (startsWith("</")) {
+            // A closing tag (or </> closing a list).
+            while (hasMore() && peekChar() != '>') {
+                if (peekChar() == '{') {
+                    skipBraces();
+                } else {
+                    advanceChar();
+                }
+            }
+            if (hasMore()) advanceChar();
+            if (--depth <= 0) ended = true;
+        } else {
+            // An opening tag: to its >, past quoted values and braces.
+            advanceChar();
+            bool selfClosing = false;
+            while (hasMore() && peekChar() != '>') {
+                const char c = peekChar();
+                if (c == '{') {
+                    skipBraces();
+                    continue;
+                }
+                if (c == '"' || c == '\'') {
+                    advanceChar();
+                    while (hasMore() && peekChar() != c) advanceChar();
+                    if (hasMore()) advanceChar();
+                    continue;
+                }
+                selfClosing = c == '/';
+                advanceChar();
+            }
+            if (hasMore()) advanceChar();
+            if (selfClosing) {
+                if (depth == 0) ended = true;
+            } else {
+                ++depth;
+            }
+        }
+    }
+    if (!ended) {
+        addToken(makeError("Unterminated XML literal"));
+        return;
+    }
+    Token t = makeToken(TokenType::XmlLiteral);
+    t.text = _source.substr(from, _position - from);
+    t.start = start;
+    t.end = makeLocation();
+    addToken(t);
 }
 
 void Lexer::scanRegExp() {

@@ -49,6 +49,10 @@ private:
     void scanNumber();
     void scanRegExp();
     bool regexAllowed() const;
+    // Where < starts an XML literal: where a value is expected, but not
+    // after new (new <int>[]) or a dot (Vector.<int>).
+    bool xmlAllowed() const;
+    void scanXml();
     void skipWhiteSpace();
     void skipComment();
 

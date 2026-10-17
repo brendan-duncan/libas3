@@ -14,6 +14,8 @@ enum class TokenType {
     Boolean,
     Null,
     RegularExpression,
+    // An XML literal, as written: <a b="1">{x}</a> or <>...</>.
+    XmlLiteral,
     LBrace,
     RBrace,
     LParen,

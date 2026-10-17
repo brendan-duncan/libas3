@@ -323,7 +323,10 @@ private:
         const ClassInfo* cls = value->cls.get();
         if (cls && cls != _vm.builtins().object.get()) {
             for (const auto& trait : cls->traits) {
-                if (trait.first.empty() || trait.first[0] == '$' || trait.first.find("::") != std::string::npos) continue;
+                if (trait.first.empty() || trait.first[0] == '$' || trait.first.find("::") != std::string::npos ||
+                    !trait.second.isPublic) {
+                    continue;
+                }
                 if (trait.second.kind == TraitKind::Slot ||
                     (trait.second.kind == TraitKind::Accessor && trait.second.getter.isObject())) {
                     keys.push_back(trait.first);

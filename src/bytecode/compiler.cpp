@@ -957,6 +957,7 @@ void Compiler::compileClass(ClassDefinition* definition, const std::shared_ptr<C
             made.isOverride = hasAttribute(function->attributes, AttributeType::Override);
             made.isFinal = hasAttribute(function->attributes, AttributeType::Final);
             made.isPrivate = hasAttribute(function->attributes, AttributeType::Private);
+            made.isPublic = hasAttribute(function->attributes, AttributeType::Public);
             made.kind = function->isGetter ? MemberTemplate::Kind::Getter
                         : function->isSetter ? MemberTemplate::Kind::Setter
                                              : MemberTemplate::Kind::Method;
@@ -980,6 +981,7 @@ void Compiler::compileClass(ClassDefinition* definition, const std::shared_ptr<C
                 made.kind = variables->isConst ? MemberTemplate::Kind::Const : MemberTemplate::Kind::Var;
                 made.isStatic = isStatic;
                 made.isPrivate = hasAttribute(variables->attributes, AttributeType::Private);
+                made.isPublic = hasAttribute(variables->attributes, AttributeType::Public);
                 made.typeName = decl->type ? decl->type->name : std::string();
                 made.metadata = variables->metadata;
                 made.hasLiteral = literalValue(decl->init.get(), made.literal);

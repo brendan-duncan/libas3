@@ -1047,7 +1047,7 @@ void VM::run(size_t stopDepth) {
                         if (a.tag == Val::Tag::Number && b.tag == Val::Tag::Number) {
                             equal = a.num == b.num;
                         } else {
-                            equal = looselyEqual(a, b);
+                            equal = equalsLoosely(a, b);
                         }
                         a = Val::boolean(op == OpCode::OP_EQUAL ? equal : !equal);
                         *--sp = Val();

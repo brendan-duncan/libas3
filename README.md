@@ -21,11 +21,13 @@ This project is being developed for my own learning and experimentation. There a
 - ActionScript 1 and 2: statements may end at a line break, `on (release) { }` and `onClipEvent (...) { }` blocks, `tellTarget`, `ifFrameLoaded`, scripts that run on a timeline
 
 ### The library
-`Object`, `Array` (with `sort`'s options and `sortOn`), `Vector.<T>`, `String` (counting in UTF-16 units, with regular expressions in `split`, `replace`, `match` and `search`), `Number` (`toFixed`, `toPrecision`, `toString(radix)`), `int`, `uint`, `Boolean`, `Math`, `Date`, `RegExp`, `JSON`, `Error` and its subclasses (`getStackTrace`), `Function`, `flash.utils.Dictionary`, `getDefinitionByName`, `getQualifiedClassName`, `getQualifiedSuperclassName`, `getTimer`, `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`, and the top-level functions (`trace`, `isNaN`, `isFinite`, `parseInt`, `parseFloat`, `escape`, `unescape`, `encodeURI(Component)`, `decodeURI(Component)`).
+`Object`, `Array` (with `sort`'s options and `sortOn`), `Vector.<T>`, `String` (counting in UTF-16 units, with regular expressions in `split`, `replace`, `match` and `search`), `Number` (`toFixed`, `toPrecision`, `toString(radix)`), `int`, `uint`, `Boolean`, `Math`, `Date`, `RegExp`, `JSON`, `Error` and its subclasses (`getStackTrace`), `Function`, `flash.utils.Dictionary`, `getDefinitionByName`, `getQualifiedClassName`, `getQualifiedSuperclassName`, `describeType`, `getTimer`, `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval`, and the top-level functions (`trace`, `isNaN`, `isFinite`, `parseInt`, `parseFloat`, `escape`, `unescape`, `encodeURI(Component)`, `decodeURI(Component)`).
 
 Also `with` (names in its body found on its object first) and `include "file.as"` (read through the host, `VM::setIncludeResolver` or `Parser::setIncludeHandler`).
 
-Not supported: E4X (XML literals and expressions), and namespaces beyond accepting their syntax (`mx_internal function f()` is a plain method).
+E4X: XML literals (`<item id={n}>{text}</item>`, `<>...</>`), `XML` and `XMLList`, `x.child`, `x.@attribute`, `x..descendant`, `x.*`, `x.@*`, filters (`x.item.(@price > 4)`), assignment and `delete` on them, `for each` over lists, and their methods (`children`, `attribute`, `descendants`, `elements`, `text`, `appendChild`, `toXMLString`...). Namespaces in XML are not.
+
+Not supported: namespaces beyond accepting their syntax (`mx_internal function f()` is a plain method).
 
 ## Project Structure
 
@@ -254,7 +256,7 @@ parser.defineConstant("CONFIG::debug", "true");   // CONFIG::debug { ... } is ke
 ./build/Release/as3_tests.exe nativeclasses  # one
 ```
 
-Suites: Parser, Bytecode, VM, AS2 (ActionScript 1 and 2), Language (classes, packages, statements, types), Library (the built-in classes), NativeClasses (the host's classes, a JPEG encoder run on a native BitmapData), BunnyPaint (a 6,000-line paint program and as3corelib's JPEG encoder compiled and loaded through the class resolver, skipped where its sources are not), Errors, and Benchmark.
+Suites: Parser, Bytecode, VM, AS2 (ActionScript 1 and 2), Language (classes, packages, statements, types), Library (the built-in classes), XML (E4X, and as3corelib's JSON encoder, which uses it), NativeClasses (the host's classes, a JPEG encoder run on a native BitmapData), BunnyPaint (a 6,000-line paint program and as3corelib's JPEG encoder compiled and loaded through the class resolver, skipped where its sources are not), Errors, and Benchmark.
 
 ## Performance
 

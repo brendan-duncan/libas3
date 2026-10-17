@@ -146,6 +146,11 @@ private:
     std::unique_ptr<Expression> parseCallMemberExpression();
     std::unique_ptr<Expression> parseNewExpression();
     std::unique_ptr<Expression> parsePrimaryExpression();
+    // An XML literal: XML("...") of its text, what is in braces evaluated
+    // and put in.
+    std::unique_ptr<Expression> xmlLiteral(const std::string& text, int line);
+    // E4X after a dot: .@name, ..name, .*, .(filter); nullptr when not.
+    std::unique_ptr<Expression> parseXmlMember(std::unique_ptr<Expression>& object, int line);
     ExpressionList parseArguments();
     std::vector<std::string> parseTypeArguments();
 

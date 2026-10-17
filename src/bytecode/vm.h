@@ -393,6 +393,9 @@ public:
     double toNumber(const Val& value);
     bool lessThan(const Val& a, const Val& b, bool& undefinedResult);
     Val add(const Val& a, const Val& b);
+    // == as scripts have it: looselyEqual, with an object's primitive value
+    // found by running its valueOf or toString.
+    bool equalsLoosely(const Val& a, const Val& b);
     std::string typeOf(const Val& value);
     Val defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass);
     Val resolveTypeName(const std::string& name, const CompileUnit* unit);

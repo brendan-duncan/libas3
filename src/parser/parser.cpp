@@ -1664,13 +1664,18 @@ std::unique_ptr<Expression> Parser::parseCallMemberExpression() {
             auto applied = std::make_unique<TypeApplication>(std::move(expr), parseTypeArguments());
             applied->line = line;
             expr = std::move(applied);
+        } else if (check(TokenType::Dot) &&
+                   (peek(1).type == TokenType::At || peek(1).type == TokenType::Dot ||
+                    peek(1).type == TokenType::Multiply || peek(1).type == TokenType::LParen ||
+                    peek(1).type == TokenType::DotDotDot)) {
+            auto xml = parseXmlMember(expr, line);
+            if (!xml) {
+                return nullptr;
+            }
+            expr = std::move(xml);
         } else if (check(TokenType::Dot) || check(TokenType::QuestionDot)) {
             const bool optional = check(TokenType::QuestionDot);
             advance();
-            if (check(TokenType::At) || check(TokenType::Dot)) {
-                addError("E4X (XML) expressions are not supported");
-                return nullptr;
-            }
             if (!isPropertyNameToken(currentToken())) {
                 addError("Expected a property name after '.'");
                 return nullptr;
@@ -1961,14 +1966,240 @@ std::unique_ptr<Expression> Parser::parsePrimaryExpression() {
         return expr;
     }
 
-    if (check(TokenType::LessThan) || check(TokenType::At)) {
-        addError("E4X (XML) expressions are not supported");
+    if (check(TokenType::XmlLiteral)) {
+        const std::string text = currentToken().text;
         advance();
+        return xmlLiteral(text, line);
+    }
+
+    // @name, @*, @[expr]: an attribute, as a filter's names find them.
+    if (check(TokenType::At)) {
+        advance();
+        if (match(TokenType::Multiply)) {
+            auto id = std::make_unique<Identifier>("@*");
+            id->line = line;
+            return id;
+        }
+        if (isPropertyNameToken(currentToken())) {
+            auto id = std::make_unique<Identifier>("@" + tokenWord(currentToken()));
+            id->line = line;
+            advance();
+            return id;
+        }
+        addError("Expected an attribute name after '@'");
         return nullptr;
     }
 
     addError("Unexpected token in expression");
     advance();
+    return nullptr;
+}
+
+namespace {
+
+LiteralPtr stringLiteralOf(const std::string& text) {
+    auto literal = std::make_unique<Literal>(Literal::LiteralKind::String);
+    literal->valueType = Literal::LiteralValueType::String;
+    literal->stringValue = text;
+    return literal;
+}
+
+ExpressionPtr callOf(const std::string& function, ExpressionList args) {
+    return std::make_unique<CallExpression>(std::make_unique<Identifier>(function), std::move(args));
+}
+
+} // namespace
+
+std::unique_ptr<Expression> Parser::xmlLiteral(const std::string& text, int line) {
+    // The literal's text in parts, what is in braces made into expressions:
+    // a tag's or attribute's name as it is, an attribute's value quoted,
+    // text escaped.
+    ExpressionPtr result;
+    std::string pending;
+    bool inTag = false;
+    bool afterEquals = false;
+    const auto append = [&result](ExpressionPtr part) {
+        if (!result) {
+            result = std::move(part);
+        } else {
+            result = std::make_unique<BinaryExpression>(OperatorType::Add, std::move(result), std::move(part));
+        }
+    };
+    const auto flush = [&]() {
+        if (!pending.empty() || !result) {
+            append(stringLiteralOf(pending));
+            pending.clear();
+        }
+    };
+    for (size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        if (text.compare(i, 4, "<!--") == 0 || text.compare(i, 9, "<![CDATA[") == 0 || text.compare(i, 2, "<?") == 0) {
+            const char* end = text.compare(i, 4, "<!--") == 0 ? "-->" : (text[i + 1] == '!' ? "]]>" : "?>");
+            const size_t stop = text.find(end, i);
+            const size_t to = stop == std::string::npos ? text.size() : stop + std::char_traits<char>::length(end);
+            pending += text.substr(i, to - i);
+            i = to - 1;
+            continue;
+        }
+        if (c == '{') {
+            // The code to the matching brace.
+            int braces = 0;
+            size_t j = i;
+            for (; j < text.size(); ++j) {
+                if (text[j] == '{') ++braces;
+                else if (text[j] == '}' && --braces == 0) break;
+                else if (text[j] == '"' || text[j] == '\'') {
+                    const char quote = text[j];
+                    for (++j; j < text.size() && text[j] != quote; ++j) {
+                        if (text[j] == '\\') ++j;
+                    }
+                }
+            }
+            const std::string code = text.substr(i + 1, j - i - 1);
+            Parser inner(code, _fileName);
+            auto expr = inner.parseExpression();
+            if (inner.hasErrors() || !expr || !inner.check(TokenType::EndOfFile)) {
+                addError("Invalid expression in XML literal: {" + code + "}");
+                return nullptr;
+            }
+            const int kind = !inTag ? 1 : (afterEquals ? 2 : 0);
+            flush();
+            ExpressionList args;
+            args.push_back(std::move(expr));
+            auto number = std::make_unique<Literal>(Literal::LiteralKind::Numeric);
+            number->valueType = Literal::LiteralValueType::Number;
+            number->numberValue = kind;
+            args.push_back(std::move(number));
+            append(callOf("$xmlPart", std::move(args)));
+            afterEquals = false;
+            i = j;
+            continue;
+        }
+        if (c == '<') {
+            inTag = true;
+        } else if (c == '>') {
+            inTag = false;
+        }
+        if (inTag && (c == '"' || c == '\'')) {
+            // A quoted value, as it is.
+            const size_t close = text.find(c, i + 1);
+            const size_t to = close == std::string::npos ? text.size() : close + 1;
+            pending += text.substr(i, to - i);
+            i = to - 1;
+            afterEquals = false;
+            continue;
+        }
+        if (inTag && c == '=') {
+            afterEquals = true;
+        } else if (inTag && c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+            afterEquals = false;
+        }
+        pending += c;
+    }
+    flush();
+    const bool isList = text.compare(0, 2, "<>") == 0;
+    ExpressionList args;
+    args.push_back(std::move(result));
+    auto made = callOf(isList ? "XMLList" : "XML", std::move(args));
+    made->line = line;
+    return made;
+}
+
+std::unique_ptr<Expression> Parser::parseXmlMember(std::unique_ptr<Expression>& object, int line) {
+    // At a dot.
+    advance();
+    const auto attributeName = [this]() -> std::string {
+        // After @.
+        if (match(TokenType::Multiply)) return "@*";
+        if (isPropertyNameToken(currentToken())) {
+            const std::string name = "@" + tokenWord(currentToken());
+            advance();
+            return name;
+        }
+        addError("Expected an attribute name after '@'");
+        return std::string();
+    };
+    if (check(TokenType::At)) {
+        advance();
+        if (match(TokenType::LBracket)) {
+            // .@[expr]: the attribute named by the value.
+            auto key = parseExpression();
+            expectToken(TokenType::RBracket, "Expected ']'");
+            if (!key) return nullptr;
+            auto name = std::make_unique<BinaryExpression>(OperatorType::Add, stringLiteralOf("@"), std::move(key));
+            auto member = std::make_unique<MemberExpression>(std::move(object), std::move(name), false);
+            member->line = line;
+            return member;
+        }
+        const std::string name = attributeName();
+        if (name.empty()) return nullptr;
+        auto member = std::make_unique<MemberExpression>(std::move(object), std::make_unique<Identifier>(name), false, false);
+        member->line = line;
+        return member;
+    }
+    if (match(TokenType::Multiply)) {
+        auto member = std::make_unique<MemberExpression>(std::move(object), std::make_unique<Identifier>("*"), false, false);
+        member->line = line;
+        return member;
+    }
+    if (check(TokenType::Dot) || check(TokenType::DotDotDot)) {
+        // ..name, ..@name, ..*: descendants. (A ... here is .. and a dot
+        // too many.)
+        if (check(TokenType::DotDotDot)) {
+            addError("Expected a name after '..'");
+            return nullptr;
+        }
+        advance();
+        std::string name;
+        if (match(TokenType::At)) {
+            name = attributeName();
+        } else if (match(TokenType::Multiply)) {
+            name = "*";
+        } else if (isPropertyNameToken(currentToken())) {
+            name = tokenWord(currentToken());
+            advance();
+        }
+        if (name.empty()) {
+            addError("Expected a name after '..'");
+            return nullptr;
+        }
+        auto callee = std::make_unique<MemberExpression>(std::move(object), std::make_unique<Identifier>("descendants"),
+                                                         false, false);
+        ExpressionList args;
+        args.push_back(stringLiteralOf(name));
+        auto call = std::make_unique<CallExpression>(std::move(callee), std::move(args));
+        call->line = line;
+        return call;
+    }
+    if (match(TokenType::LParen)) {
+        // .(predicate): the items it is true of, its names found on each
+        // item first: $xmlFilter(list, function($item) { with ($item)
+        // return predicate; }).
+        const bool savedNoIn = _noIn;
+        _noIn = false;
+        auto predicate = parseExpression();
+        _noIn = savedNoIn;
+        expectToken(TokenType::RParen, "Expected ')' after the filter");
+        if (!predicate) return nullptr;
+        auto result = std::make_unique<ReturnStatement>(std::move(predicate));
+        result->line = line;
+        auto with = std::make_unique<WithStatement>(std::make_unique<Identifier>("$item"), std::move(result));
+        with->line = line;
+        std::vector<StatementPtr> statements;
+        statements.push_back(std::move(with));
+        auto body = std::make_unique<BlockStatement>(std::move(statements));
+        std::vector<std::unique_ptr<Parameter>> params;
+        params.push_back(std::make_unique<Parameter>(std::make_unique<Identifier>("$item")));
+        auto function = std::make_unique<FunctionExpression>(nullptr, std::move(params), nullptr, std::move(body));
+        function->line = line;
+        ExpressionList args;
+        args.push_back(std::move(object));
+        args.push_back(std::move(function));
+        auto call = callOf("$xmlFilter", std::move(args));
+        call->line = line;
+        return call;
+    }
+    addError("Expected a name after '.'");
     return nullptr;
 }
 
