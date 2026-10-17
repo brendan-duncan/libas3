@@ -264,7 +264,7 @@ A stack-based interpreter with values that hold numbers in place, inline caches 
 
 - 1,000,000 iterations of arithmetic, a method call and a property read and write: about 100 ms
 - 320 by 320 pixels with ten native calls each (1,000,000 calls to a host's `getPixel32` and `setPixel32`): about 65 ms
-- Making a VM with its built-in library: about 0.2 ms
+- Making a VM with its built-in library: about 0.25 ms
 
 ## Bytecode Design
 
