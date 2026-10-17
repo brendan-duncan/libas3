@@ -43,6 +43,7 @@ add_library(as3_parser
     src/js/js_writer.cpp
     src/js/js_translator.cpp
     src/js/js_runtime.cpp
+    src/js/as2_translator.cpp
 )
 
 # as3.js, the runtime translated JavaScript needs, embedded for js::runtime().
@@ -54,7 +55,16 @@ add_custom_command(
             -P ${CMAKE_CURRENT_SOURCE_DIR}/src/js/embed.cmake
     DEPENDS ${AS3_JS_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/src/js/embed.cmake
     COMMENT "Embedding as3.js")
-target_sources(as3_parser PRIVATE ${AS3_JS_EMBEDDED})
+# avm1.js, the helpers ActionScript 1 and 2 translated to JavaScript needs.
+set(AVM1_JS_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/src/js/avm1.js)
+set(AVM1_JS_EMBEDDED ${CMAKE_CURRENT_BINARY_DIR}/generated/avm1_js.inc)
+add_custom_command(
+    OUTPUT ${AVM1_JS_EMBEDDED}
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${AVM1_JS_SOURCE} -DOUTPUT=${AVM1_JS_EMBEDDED}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/src/js/embed.cmake
+    DEPENDS ${AVM1_JS_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/src/js/embed.cmake
+    COMMENT "Embedding avm1.js")
+target_sources(as3_parser PRIVATE ${AS3_JS_EMBEDDED} ${AVM1_JS_EMBEDDED})
 target_include_directories(as3_parser PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 target_include_directories(as3_parser PUBLIC
@@ -91,6 +101,7 @@ add_executable(as3_tests
     test/avm1_tests.cpp
     test/abc_domain_tests.cpp
     test/js_tests.cpp
+    test/js_as2_tests.cpp
 )
 
 target_include_directories(as3_tests PRIVATE
