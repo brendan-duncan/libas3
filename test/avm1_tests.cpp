@@ -288,6 +288,33 @@ static void init_avm1_tests() {
                "error typed\n");
     });
 
+    suite.addTest("finally runs when break, continue or return leaves the try", []() {
+        // Out of a loop.
+        expect(traces("for (var i = 0; i < 3; i++) {\n  try {\n    if (i == 1) continue;\n"
+                      "    if (i == 2) break;\n    trace('body ' + i);\n  } finally {\n    trace('finally ' + i);\n"
+                      "  }\n}\ntrace('after ' + i);"),
+               "body 0\nfinally 0\nfinally 1\nfinally 2\nafter 2\n");
+        // Out of a function, its value kept while the finally block runs.
+        expect(traces("function f(n) {\n  try {\n    if (n > 0) return 'big';\n    trace('small');\n"
+                      "  } finally {\n    trace('cleanup ' + n);\n  }\n  return 'end';\n}\n"
+                      "trace(f(1));\ntrace(f(0));"),
+               "cleanup 1\nbig\nsmall\ncleanup 0\nend\n");
+        // From a catch block, and through two finally blocks to a label.
+        expect(traces("function g() {\n  try {\n    throw 'x';\n  } catch (e) {\n    return 'caught ' + e;\n"
+                      "  } finally {\n    trace('g finally');\n  }\n}\ntrace(g());\n"
+                      "outer: for (var k = 0; k < 2; k++) {\n  try {\n    try {\n      break outer;\n"
+                      "    } finally {\n      trace('inner');\n    }\n  } finally {\n    trace('outer');\n  }\n}\n"
+                      "trace('k ' + k);"),
+               "g finally\ncaught x\ninner\nouter\nk 0\n");
+        // A for-in loop in the try block left by return, a return at the
+        // top level, and a try with no way out runs as before.
+        expect(traces("function h(o) {\n  try {\n    for (var p in o) return p;\n  } finally {\n"
+                      "    trace('h finally');\n  }\n}\ntrace(h({only: 1}));\n"
+                      "try { trace('plain'); } finally { trace('plain finally'); }\n"
+                      "try { return; } finally { trace('top finally'); }\ntrace('not here');"),
+               "h finally\nonly\nplain\nplain finally\ntop finally\n");
+    });
+
     suite.addTest("with runs on its object", []() {
         expect(traces("var hat = {size: 1};\nwith (hat) {\n  size = 4;\n  trace(size);\n}\ntrace(hat.size);"),
                "4\n4\n");

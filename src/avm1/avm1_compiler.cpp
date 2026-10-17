@@ -257,8 +257,18 @@ int propertyIndex(const std::string& name) {
     return -1;
 }
 
+// A way out of a try block with a finally block: a break, a continue or a
+// return, taken once the finally block has run.
+struct TryExit {
+    enum Kind { Break, Continue, Return } kind = Break;
+    std::string label;
+    int line = 0;
+};
+
 // What a break or continue may leave: a loop, a switch, or a labeled
-// statement; a for-in loop has its names on the stack until it ends.
+// statement; a for-in loop has its names on the stack until it ends. A try
+// block with a finally block (or its catch block) is left by running to its
+// end, the way out kept in a register, so the finally block runs first.
 struct Breakable {
     std::vector<std::string> labels;
     Label* breakTo = nullptr;
@@ -266,6 +276,11 @@ struct Breakable {
     bool forIn = false;
     bool loop = false;
     bool isSwitch = false;
+    bool finally = false;
+    Label* blockEnd = nullptr;
+    uint8_t exitRegister = 0;
+    uint8_t valueRegister = 0;
+    std::vector<TryExit>* exits = nullptr;
 };
 
 // The function being compiled, or the script's top level.
@@ -416,6 +431,47 @@ void namesIn(AstNode* node, std::set<std::string>& names) {
         }
         namesIn(fd->body.get(), names);
     }
+}
+
+// Whether statement \a node has a break, continue or return in it (not in
+// the functions it defines): what may jump out of a try block.
+bool jumpsIn(AstNode* node) {
+    if (!node) return false;
+    if (dynamic_cast<BreakStatement*>(node) || dynamic_cast<ContinueStatement*>(node) ||
+        dynamic_cast<ReturnStatement*>(node)) {
+        return true;
+    }
+    if (auto* block = dynamic_cast<BlockStatement*>(node)) {
+        for (auto& s : block->statements) {
+            if (jumpsIn(s.get())) return true;
+        }
+    } else if (auto* is = dynamic_cast<IfStatement*>(node)) {
+        return jumpsIn(is->consequent.get()) || jumpsIn(is->alternate.get());
+    } else if (auto* ws = dynamic_cast<WhileStatement*>(node)) {
+        return jumpsIn(ws->body.get());
+    } else if (auto* ds = dynamic_cast<DoWhileStatement*>(node)) {
+        return jumpsIn(ds->body.get());
+    } else if (auto* fs = dynamic_cast<ForStatement*>(node)) {
+        return jumpsIn(fs->body.get());
+    } else if (auto* fi = dynamic_cast<ForInStatement*>(node)) {
+        return jumpsIn(fi->body.get());
+    } else if (auto* sw = dynamic_cast<SwitchStatement*>(node)) {
+        for (auto& c : sw->cases) {
+            for (auto& s : c->consequent) {
+                if (jumpsIn(s.get())) return true;
+            }
+        }
+    } else if (auto* tr = dynamic_cast<TryStatement*>(node)) {
+        if (jumpsIn(tr->block.get()) || jumpsIn(tr->finallyBody.get())) return true;
+        for (auto& c : tr->catches) {
+            if (jumpsIn(c.body.get())) return true;
+        }
+    } else if (auto* w = dynamic_cast<WithStatement*>(node)) {
+        return jumpsIn(w->body.get());
+    } else if (auto* ls = dynamic_cast<LabeledStatement*>(node)) {
+        return jumpsIn(ls->body.get());
+    }
+    return false;
 }
 
 // What a function's own code (not the functions in it) uses.
@@ -1215,8 +1271,13 @@ private:
                 fail(line, "continue needs a loop");
             }
             // The for-in loops left on the way have their names popped; a
-            // for-in's own break goes to where it pops them.
+            // for-in's own break goes to where it pops them. A finally block
+            // on the way runs first.
             for (size_t k = stack.size(); k-- > i + 1;) {
+                if (stack[k].finally) {
+                    leaveTry(stack[k], {isContinue ? TryExit::Continue : TryExit::Break, label, line});
+                    return;
+                }
                 if (stack[k].forIn) popEnumeration();
             }
             code().jump(Action::Jump, isContinue ? *entry.continueTo : *entry.breakTo);
@@ -1225,16 +1286,33 @@ private:
         fail(line, isContinue ? "continue needs a loop" : "break needs a loop or a switch");
     }
 
+    // Leaves the try block (or catch block) of \a entry for \a exit: the
+    // way out noted, and on to the block's end, where the finally block
+    // runs and then takes it (see compileTry).
+    void leaveTry(Breakable& entry, const TryExit& exit) {
+        std::vector<TryExit>& exits = *entry.exits;
+        size_t index = 0;
+        while (index < exits.size() && !(exits[index].kind == exit.kind && exits[index].label == exit.label)) ++index;
+        if (index == exits.size()) exits.push_back(exit);
+        code().pushNumber(static_cast<double>(index + 1));
+        code().storeRegister(entry.exitRegister);
+        code().action(Action::Pop);
+        code().jump(Action::Jump, *entry.blockEnd);
+    }
+
+    // The innermost try block with a finally block the code is in, or -1.
+    int innermostFinally() const {
+        for (size_t k = _scope->breakables.size(); k-- > 0;) {
+            if (_scope->breakables[k].finally) return static_cast<int>(k);
+        }
+        return -1;
+    }
+
     void compileReturn(ReturnStatement* rs) {
-        const bool inForIn = std::any_of(_scope->breakables.begin(), _scope->breakables.end(),
-                                         [](const Breakable& entry) { return entry.forIn; });
         if (!_scope->function) {
             // At the top level, the rest of the script is passed over.
             if (rs->argument) compileDiscarded(rs->argument.get());
-            for (size_t k = _scope->breakables.size(); k-- > 0;) {
-                if (_scope->breakables[k].forIn) popEnumeration();
-            }
-            code().jump(Action::Jump, *_scope->exit);
+            returnFromScript(rs->line);
             return;
         }
         if (rs->argument) {
@@ -1242,6 +1320,39 @@ private:
         } else {
             code().push(Value::undefined());
         }
+        returnValue(rs->line);
+    }
+
+    // A top-level return: past the rest of the script, after the finally
+    // blocks it is in.
+    void returnFromScript(int line) {
+        std::vector<Breakable>& stack = _scope->breakables;
+        for (size_t k = stack.size(); k-- > 0;) {
+            if (stack[k].finally) {
+                leaveTry(stack[k], {TryExit::Return, std::string(), line});
+                return;
+            }
+            if (stack[k].forIn) popEnumeration();
+        }
+        code().jump(Action::Jump, *_scope->exit);
+    }
+
+    // Returns the value on the stack, after the finally blocks it is in:
+    // kept in a register while one runs.
+    void returnValue(int line) {
+        const int f = innermostFinally();
+        if (f >= 0) {
+            Breakable& entry = _scope->breakables[static_cast<size_t>(f)];
+            code().storeRegister(entry.valueRegister);
+            code().action(Action::Pop);
+            for (size_t k = _scope->breakables.size(); k-- > static_cast<size_t>(f) + 1;) {
+                if (_scope->breakables[k].forIn) popEnumeration();
+            }
+            leaveTry(entry, {TryExit::Return, std::string(), line});
+            return;
+        }
+        const bool inForIn = std::any_of(_scope->breakables.begin(), _scope->breakables.end(),
+                                         [](const Breakable& entry) { return entry.forIn; });
         if (inForIn) {
             code().storeRegister(0);
             code().action(Action::Pop);
@@ -1280,13 +1391,42 @@ private:
         } else {
             appendString(payload, hasCatch && tr->catches[0].variable ? tr->catches[0].variable->name : std::string());
         }
+        // A break, continue or return out of the try or catch block goes
+        // to the block's end, so the finally block runs, and is taken after
+        // it: which, in a register (0 for none); a return's value in another.
+        std::vector<TryExit> exits;
+        Label tryEnd, catchEnd;
+        Breakable leaving;
+        const bool routed = hasFinally &&
+            (jumpsIn(tr->block.get()) ||
+             std::any_of(tr->catches.begin(), tr->catches.end(),
+                         [](const CatchClause& clause) { return jumpsIn(clause.body.get()); }));
+        if (routed) {
+            leaving.finally = true;
+            leaving.exits = &exits;
+            leaving.exitRegister = allocTemp(tr->line);
+            if (_scope->function) leaving.valueRegister = allocTemp(tr->line);
+            code().pushNumber(0);
+            code().storeRegister(leaving.exitRegister);
+            code().action(Action::Pop);
+        }
         const size_t at = code().record(Action::Try, payload);
         // The player passes over the catch block when nothing is thrown.
         const size_t tryStart = code().size();
+        if (routed) {
+            leaving.blockEnd = &tryEnd;
+            _scope->breakables.push_back(leaving);
+        }
         compileStatement(tr->block.get());
+        if (routed) _scope->breakables.pop_back();
         code().closePush();
+        code().bind(tryEnd);
         const size_t trySize = code().size() - tryStart;
         const size_t catchStart = code().size();
+        if (routed && hasCatch) {
+            leaving.blockEnd = &catchEnd;
+            _scope->breakables.push_back(leaving);
+        }
         if (hasCatch) {
             if (!typed) {
                 compileStatement(tr->catches[0].body.get());
@@ -1324,7 +1464,9 @@ private:
                 code().bind(done);
             }
         }
+        if (routed && hasCatch) _scope->breakables.pop_back();
         code().closePush();
+        code().bind(catchEnd);
         const size_t catchSize = code().size() - catchStart;
         const size_t finallyStart = code().size();
         if (hasFinally) {
@@ -1336,6 +1478,32 @@ private:
         code().put16(at + 3, catchSize);
         code().put16(at + 5, finallySize);
         if (typed) freeTemp(caught);
+        // The ways out taken once the finally block has run, through the
+        // finally blocks further out.
+        for (size_t i = 0; i < exits.size(); ++i) {
+            Label next;
+            code().pushRegister(leaving.exitRegister);
+            code().pushNumber(static_cast<double>(i + 1));
+            code().action(Action::Equals2);
+            code().action(Action::Not);
+            code().jump(Action::If, next);
+            const TryExit& exit = exits[i];
+            if (exit.kind == TryExit::Return) {
+                if (_scope->function) {
+                    code().pushRegister(leaving.valueRegister);
+                    returnValue(exit.line);
+                } else {
+                    returnFromScript(exit.line);
+                }
+            } else {
+                compileBreak(exit.label, exit.kind == TryExit::Continue, exit.line);
+            }
+            code().bind(next);
+        }
+        if (routed) {
+            if (leaving.valueRegister) freeTemp(leaving.valueRegister);
+            freeTemp(leaving.exitRegister);
+        }
     }
 
     // ---- Functions
