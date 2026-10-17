@@ -37,7 +37,22 @@ add_library(as3_parser
     src/abc/abc_player.cpp
     src/abc/abc_model.cpp
     src/abc/abc_compiler.cpp
+    src/js/js_writer.cpp
+    src/js/js_translator.cpp
+    src/js/js_runtime.cpp
 )
+
+# as3.js, the runtime translated JavaScript needs, embedded for js::runtime().
+set(AS3_JS_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/src/js/as3.js)
+set(AS3_JS_EMBEDDED ${CMAKE_CURRENT_BINARY_DIR}/generated/as3_js.inc)
+add_custom_command(
+    OUTPUT ${AS3_JS_EMBEDDED}
+    COMMAND ${CMAKE_COMMAND} -DINPUT=${AS3_JS_SOURCE} -DOUTPUT=${AS3_JS_EMBEDDED}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/src/js/embed.cmake
+    DEPENDS ${AS3_JS_SOURCE} ${CMAKE_CURRENT_SOURCE_DIR}/src/js/embed.cmake
+    COMMENT "Embedding as3.js")
+target_sources(as3_parser PRIVATE ${AS3_JS_EMBEDDED})
+target_include_directories(as3_parser PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 target_include_directories(as3_parser PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -47,6 +62,7 @@ target_include_directories(as3_parser PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/runtime
     ${CMAKE_CURRENT_SOURCE_DIR}/src/bytecode
     ${CMAKE_CURRENT_SOURCE_DIR}/src/abc
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/js
 )
 
 if(NOT AS3_TOP_LEVEL)
@@ -69,6 +85,7 @@ add_executable(as3_tests
     test/xml_tests.cpp
     test/abc_tests.cpp
     test/abc_compiler_tests.cpp
+    test/js_tests.cpp
 )
 
 target_include_directories(as3_tests PRIVATE
@@ -91,6 +108,7 @@ file(MAKE_DIRECTORY ${PACKAGE_DIR}/include/libas3/parser)
 file(MAKE_DIRECTORY ${PACKAGE_DIR}/include/libas3/runtime)
 file(MAKE_DIRECTORY ${PACKAGE_DIR}/include/libas3/bytecode)
 file(MAKE_DIRECTORY ${PACKAGE_DIR}/include/libas3/abc)
+file(MAKE_DIRECTORY ${PACKAGE_DIR}/include/libas3/js)
 file(MAKE_DIRECTORY ${PACKAGE_DIR}/lib)
 
 # Copy header files
