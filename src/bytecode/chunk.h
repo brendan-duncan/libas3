@@ -163,6 +163,9 @@ struct MemberTemplate {
     bool isStatic = false;
     bool isOverride = false;
     bool isFinal = false;
+    // Private: also known by "pkg.Class::name", what the class's own code
+    // uses, so that a subclass's member of the same name is another one.
+    bool isPrivate = false;
     std::string typeName;
     std::shared_ptr<BytecodeFunction> function;
     // A literal initializer's value, for a var or const (the constructor

@@ -130,6 +130,9 @@ private:
     void emitJumpTo(OpCode op, size_t target);
     size_t here() const;
     uint16_t allocTemp();
+    // The key a property is named by in the code being compiled: a
+    // private member's "pkg.Class::name" in its class's code.
+    std::string propertyKey(const std::string& name) const;
     void emitGetProp(const std::string& name);
     void emitSetProp(const std::string& name);
     void emitCallProp(const std::string& name, int argc);

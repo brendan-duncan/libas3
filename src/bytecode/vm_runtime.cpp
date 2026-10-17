@@ -514,6 +514,13 @@ bool VM::setOnObject(const Val& object, const std::string& name, const Val& valu
     return false;
 }
 
+// A private member's key ("pkg.Class::name") on an object not of that
+// class: the name alone.
+static const char* plainName(const std::string& name) {
+    const size_t colons = name.rfind("::");
+    return colons == std::string::npos ? nullptr : name.c_str() + colons + 2;
+}
+
 Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache) {
     switch (object.tag) {
         case Val::Tag::Undefined:
@@ -532,6 +539,9 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
             }
             if (name == "constructor") {
                 return classValue(cls);
+            }
+            if (const char* plain = plainName(name)) {
+                return getProp(object, plain, nullptr);
             }
             return Val();
         }
@@ -556,6 +566,9 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
             if (const Trait* trait = at->findTrait(name)) return readTrait(object, *trait, false);
             auto found = at->prototype.find(name);
             if (found != at->prototype.end()) return found->second;
+        }
+        if (const char* plain = plainName(name)) {
+            return getProp(object, plain, nullptr);
         }
         return Val();
     }
@@ -585,6 +598,9 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
     if (name == "constructor") {
         return classValue(cls);
     }
+    if (const char* plain = plainName(name)) {
+        return getProp(object, plain, nullptr);
+    }
     return Val();
 }
 
@@ -612,6 +628,10 @@ void VM::setProp(const Val& object, const std::string& name, const Val& value, P
                 return;
             }
         }
+        if (const char* plain = plainName(name)) {
+            setProp(object, plain, value, nullptr);
+            return;
+        }
         self->properties[name] = value;
         return;
     }
@@ -626,6 +646,10 @@ void VM::setProp(const Val& object, const std::string& name, const Val& value, P
             writeTrait(object, *trait, value, name, false);
             return;
         }
+    }
+    if (const char* plain = plainName(name)) {
+        setProp(object, plain, value, nullptr);
+        return;
     }
     if (self->host && self->host->set(name, value)) {
         return;
@@ -1290,6 +1314,9 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
     track(object);
     Val classVal(object);
 
+    const auto privateKey = [&klass](const MemberTemplate& member) {
+        return klass->qualifiedName + "::" + member.name;
+    };
     for (const MemberTemplate& member : klass->members) {
         const Coerce coerce = coerceForType(member.typeName);
         std::unordered_map<std::string, Trait>& table = member.isStatic ? cls->statics : cls->traits;
@@ -1317,6 +1344,7 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
                     object->properties[member.name] = initial;
                 }
                 table[member.name] = trait;
+                if (member.isPrivate) table[privateKey(member)] = trait;
                 break;
             }
             case MemberTemplate::Kind::Method: {
@@ -1330,6 +1358,7 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
                 trait.metadata = metadata;
                 trait.method = makeClosure(member.function, cls);
                 table[member.name] = trait;
+                if (member.isPrivate) table[privateKey(member)] = trait;
                 if (!member.isStatic) {
                     object->properties[member.name] = trait.method;
                 }
@@ -1357,6 +1386,7 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
                     trait.setter = function;
                 }
                 table[member.name] = trait;
+                if (member.isPrivate) table[privateKey(member)] = trait;
                 break;
             }
         }

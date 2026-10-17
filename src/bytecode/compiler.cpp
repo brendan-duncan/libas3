@@ -18,8 +18,11 @@ struct Compiler::VarInfo {
 // The class whose members are being compiled: what its names are.
 struct Compiler::ClassContext {
     std::string name;
+    std::string qualifiedName;
     std::map<std::string, Coerce> instanceMembers;
     std::map<std::string, Coerce> staticMembers;
+    // Its private members, which its code names by "pkg.Class::name".
+    std::set<std::string> privateMembers;
 };
 
 // A statement break, continue or return can leave: a loop, a switch, a
@@ -443,21 +446,28 @@ uint16_t Compiler::allocTemp() {
     return slot;
 }
 
+std::string Compiler::propertyKey(const std::string& name) const {
+    if (fs && fs->cls && fs->cls->privateMembers.count(name)) {
+        return fs->cls->qualifiedName + "::" + name;
+    }
+    return name;
+}
+
 void Compiler::emitGetProp(const std::string& name) {
     emitOp(OpCode::OP_GET_PROP);
-    emitU16(nameIndex(name));
+    emitU16(nameIndex(propertyKey(name)));
     emitU16(newCache());
 }
 
 void Compiler::emitSetProp(const std::string& name) {
     emitOp(OpCode::OP_SET_PROP);
-    emitU16(nameIndex(name));
+    emitU16(nameIndex(propertyKey(name)));
     emitU16(newCache());
 }
 
 void Compiler::emitCallProp(const std::string& name, int argc) {
     emitOp(OpCode::OP_CALL_PROP);
-    emitU16(nameIndex(name));
+    emitU16(nameIndex(propertyKey(name)));
     emitU8(static_cast<uint8_t>(argc));
     emitU16(newCache());
     adjust(-argc);
@@ -465,14 +475,14 @@ void Compiler::emitCallProp(const std::string& name, int argc) {
 
 void Compiler::emitThisProp(OpCode op, const std::string& name) {
     emitOp(op);
-    emitU16(nameIndex(name));
+    emitU16(nameIndex(propertyKey(name)));
     emitU16(newCache());
 }
 
 void Compiler::emitLocalProp(OpCode op, uint16_t slot, const std::string& name) {
     emitOp(op);
     emitU16(slot);
-    emitU16(nameIndex(name));
+    emitU16(nameIndex(propertyKey(name)));
     emitU16(newCache());
 }
 
@@ -481,7 +491,7 @@ void Compiler::emitFusedCall(OpCode op, uint16_t slot, const std::string& name, 
     if (op == OpCode::OP_CALL_LOCAL_PROP) {
         emitU16(slot);
     }
-    emitU16(nameIndex(name));
+    emitU16(nameIndex(propertyKey(name)));
     emitU8(static_cast<uint8_t>(argc));
     emitU16(newCache());
     adjust(-argc);
@@ -905,6 +915,7 @@ void Compiler::compileClass(ClassDefinition* definition, const std::shared_ptr<C
 
     ClassContext context;
     context.name = klass->name;
+    context.qualifiedName = klass->qualifiedName;
     FunctionDefinition* constructorDefinition = nullptr;
     for (auto& member : definition->members) {
         if (auto* function = dynamic_cast<FunctionDefinition*>(member.get())) {
@@ -918,11 +929,17 @@ void Compiler::compileClass(ClassDefinition* definition, const std::shared_ptr<C
                 coerce = coerceForType(function->returnType->name);
             }
             (isStatic ? context.staticMembers : context.instanceMembers)[function->name->name] = coerce;
+            if (hasAttribute(function->attributes, AttributeType::Private)) {
+                context.privateMembers.insert(function->name->name);
+            }
         } else if (auto* variables = dynamic_cast<VariableDefinition*>(member.get())) {
             const bool isStatic = hasAttribute(variables->attributes, AttributeType::Static);
             for (auto& decl : variables->declarations) {
                 (isStatic ? context.staticMembers : context.instanceMembers)[decl->id->name] =
                     coerceForType(decl->type ? decl->type->name : std::string());
+                if (hasAttribute(variables->attributes, AttributeType::Private)) {
+                    context.privateMembers.insert(decl->id->name);
+                }
             }
         }
     }
@@ -939,6 +956,7 @@ void Compiler::compileClass(ClassDefinition* definition, const std::shared_ptr<C
             made.isStatic = hasAttribute(function->attributes, AttributeType::Static);
             made.isOverride = hasAttribute(function->attributes, AttributeType::Override);
             made.isFinal = hasAttribute(function->attributes, AttributeType::Final);
+            made.isPrivate = hasAttribute(function->attributes, AttributeType::Private);
             made.kind = function->isGetter ? MemberTemplate::Kind::Getter
                         : function->isSetter ? MemberTemplate::Kind::Setter
                                              : MemberTemplate::Kind::Method;
@@ -961,6 +979,7 @@ void Compiler::compileClass(ClassDefinition* definition, const std::shared_ptr<C
                 made.name = decl->id->name;
                 made.kind = variables->isConst ? MemberTemplate::Kind::Const : MemberTemplate::Kind::Var;
                 made.isStatic = isStatic;
+                made.isPrivate = hasAttribute(variables->attributes, AttributeType::Private);
                 made.typeName = decl->type ? decl->type->name : std::string();
                 made.metadata = variables->metadata;
                 made.hasLiteral = literalValue(decl->init.get(), made.literal);

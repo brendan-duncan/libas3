@@ -120,6 +120,22 @@ static void init_language_tests() {
                "3 true true\n");
     });
 
+    suite.addTest("Private members belong to their class", []() {
+        expect(run("class Base { private var tag:String = 'base'; public var log:String = '';\n"
+                   "  public function Base() { init(); }\n"
+                   "  private function init():void { log += 'Base.init(' + tag + ') '; }\n"
+                   "  public function baseTag():String { return tag; }\n"
+                   "  public function same(other:Base):String { return other.tag; }\n"
+                   "}\n"
+                   "class Sub extends Base { private var tag:String = 'sub';\n"
+                   "  public function Sub() { super(); init(); }\n"
+                   "  private function init():void { log += 'Sub.init(' + tag + ') '; }\n"
+                   "  public function subTag():String { return tag; }\n"
+                   "}\n"
+                   "var s = new Sub(); trace(s.log, s.baseTag(), s.subTag(), s.same(new Base()));"),
+               "Base.init(base) Sub.init(sub)  base sub base\n");
+    });
+
     suite.addTest("Interfaces: is and as", []() {
         expect(run("interface IShape { function area():Number; }\n"
                    "interface ISolid extends IShape { function volume():Number; }\n"
