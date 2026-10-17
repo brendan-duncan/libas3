@@ -467,7 +467,7 @@ bool Parser::atAttribute() const {
         return next.type == TokenType::Keyword || next.type == TokenType::Identifier;
     }
     // A namespace as an attribute: mx_internal function f().
-    if (check(TokenType::Identifier) && !currentToken().newLineBefore) {
+    if (check(TokenType::Identifier)) {
         const Token& next = peek(1);
         if (next.type == TokenType::Keyword && !next.newLineBefore &&
             (next.keyword == KeywordType::Function || next.keyword == KeywordType::Var ||

@@ -295,6 +295,9 @@ void Lexer::scanToken() {
             addToken(t);
             advanceChar();
         }
+    } else if (c == '.' && isDigit(peekChar(1))) {
+        // .5
+        scanNumber();
     } else if (c == '.') {
         if (peekChar(1) == '.' && peekChar(2) == '.') {
             Token t = makeToken(TokenType::DotDotDot);

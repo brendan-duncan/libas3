@@ -434,6 +434,69 @@ static void init_parser_tests() {
             throw std::runtime_error("Parse failed");
         }
     });
+
+    // What ActionScript 3 programs are written with.
+    const auto accepts = [](const char* code) {
+        Parser p(code);
+        p.parse();
+        if (p.hasErrors()) {
+            throw std::runtime_error(std::string(code) + "\n" + p.getErrors());
+        }
+        if (!p.getWarnings().empty()) {
+            throw std::runtime_error(std::string(code) + "\n" + p.getWarnings());
+        }
+    };
+
+    suite.addTest("Words that are keywords only in places", [accepts]() {
+        accepts("var get = 1; var set = 2; var each = 3; var namespace = 4; var dynamic = 5; var of = 6;");
+        accepts("class A { public function get(i:int):int { return i; } public function set(i:int):void {} }");
+        accepts("var o = {default: 1, class: 2, function: 3}; o.default = o['class'] + o.function; o.delete = 1;");
+        accepts("class B { public function get each():int { return 1; } static function static():void {} }");
+    });
+
+    suite.addTest("Type annotations", [accepts]() {
+        accepts("var a:*; var b:Vector.<int>; var c:Vector.<Vector.<Number>> = new Vector.<Vector.<Number>>(); "
+                "var d:flash.display.Sprite; function f(x:*, ...rest):void {} var e:Vector.<Vector.<Vector.<int>>>;");
+        accepts("var v = new <int>[1, 2, 3]; var w:Vector.<String> = Vector.<String>(['a']); if (v is Vector.<int>) {}");
+    });
+
+    suite.addTest("Regular expressions and division", [accepts]() {
+        accepts("var r = /a\\/b[/]c/gi; var d = 4 / 2 / 1; var e = (d) / 2; x = a[1] / 2; y = s.replace(/x/g, '');");
+        accepts("if (/^\\d+$/.test(s)) {} var q = r ? /a/ : /b/; z /= 2; f(/=/);");
+    });
+
+    suite.addTest("Metadata, attributes and namespaces", [accepts]() {
+        accepts("package p {\n[SWF(width=\"320\", height=\"240\")]\n[Event(name=\"change\", type=\"flash.events.Event\")]\n"
+                "public dynamic class C {\n  [Embed(source=\"a.png\")] public static var A:Class;\n  [Bindable]\n"
+                "  public var b:int;\n  mx_internal function hidden():void {}\n  mx_internal\n  override protected function f():void {}\n"
+                "  use namespace mx_internal;\n}\n}");
+        accepts("interface I extends J, K { function f(a:int):void; function get g():int; function set g(v:int):void }");
+    });
+
+    suite.addTest("Statements", [accepts]() {
+        accepts("outer: for (var i:int = 0, n:int = 2; i < n; i++, n--) { inner: while (true) { continue outer; } }");
+        accepts("for each (var x:Object in list) {} for (var k:String in o) {} for (k in o) {} for each (x in o) {}");
+        accepts("switch (x) { case 1: case 'a': break; default: }  try {} catch (e:TypeError) {} catch (e) {} finally {}");
+        accepts("do x++; while (x < 5) var y = 1");
+        accepts("var a = b, c = (d, e); a = (b ? c : d) ? e : f; delete o.x; delete o[k]; void 0; typeof x;");
+        accepts("super(1); super.f(); super.x = 2; x = super.y;");
+    });
+
+    suite.addTest("Expressions read in order", []() {
+        // a - b - c, a ? b : c ? d : e, ++ after a line break.
+        Parser p("x = a - b - c;\ny = a ? b : c ? d : e;\nz = a\n++b");
+        auto prog = p.parse();
+        if (p.hasErrors() || prog->statements.size() != 4) {
+            throw std::runtime_error("statements: " + std::to_string(prog->statements.size()) + "\n" + p.getErrors());
+        }
+    });
+
+    suite.addTest("Numbers and strings", [accepts]() {
+        Parser p("var a = 0xFF000000; var b = 1e3; var c = .5; var d = 'a\\u00e9\\x41\\n'; var e = 1.5e-3;");
+        auto prog = p.parse();
+        if (p.hasErrors()) throw std::runtime_error(p.getErrors());
+        accepts("\xEF\xBB\xBFvar withByteOrderMark = 1;");
+    });
 }
 
 // Auto-initialize tests
