@@ -2787,6 +2787,10 @@ E Translator::member(MemberExpression* e, bool callee) {
         return make(base + (e->optional ? "?.[" : "[") + key.s + "]", P_Call, type);
     }
     const std::string& name = e->property->name;
+    if (name == "callee" && e->object->kind == EK::Identifier &&
+        static_cast<Identifier*>(e->object.get())->name == "arguments") {
+        unsupported("arguments.callee", e->line);
+    }
     if (e->object->kind == EK::Super) {
         ClassModel* cls = contextClass();
         ClassModel* owner = nullptr;

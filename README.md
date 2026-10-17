@@ -45,14 +45,21 @@ src/
 │   ├── compiler.h/cpp      # AST → Bytecode
 │   ├── vm.h/cpp            # The interpreter loop, calls, exceptions
 │   └── vm_runtime.cpp      # Properties, names, classes, native classes
-└── abc/              # ActionScript 3 → ABC (AVM2 bytecode), for players
-    ├── abc.h               # compile(): sources and timelines to an abcFile
-    ├── abc_file.h/cpp      # The abcFile as data; read() and write()
-    ├── abc_opcodes.h/cpp   # AVM2's instructions, decoding, stack effects
-    ├── abc_verifier.h/cpp  # verify(), disassemble()
-    ├── abc_builder.h/cpp   # Constant pools and method code as they are made
-    ├── abc_player.h/cpp    # The player's classes, by package
-    └── abc_compiler.cpp    # AST → ABC
+├── abc/              # ActionScript 3 → ABC (AVM2 bytecode), for players
+│   ├── abc.h               # compile(): sources and timelines to an abcFile
+│   ├── abc_model.h/cpp     # The front end the compilers share: definitions, classes, timelines
+│   ├── abc_file.h/cpp      # The abcFile as data; read() and write()
+│   ├── abc_opcodes.h/cpp   # AVM2's instructions, decoding, stack effects
+│   ├── abc_verifier.h/cpp  # verify(), disassemble()
+│   ├── abc_builder.h/cpp   # Constant pools and method code as they are made
+│   ├── abc_player.h/cpp    # The player's classes, by package
+│   └── abc_compiler.cpp    # AST → ABC
+└── js/               # ActionScript 3 → JavaScript, for HTML5 pages
+    ├── js.h                # translate(): sources and timelines to JavaScript
+    ├── js_translator.cpp   # AST → JavaScript
+    ├── js_writer.h/cpp     # Lines, source maps, JavaScript literals
+    ├── as3.js              # The runtime translated code needs (js::runtime())
+    └── js_runtime.cpp      # as3.js, embedded
 
 test/                 # One executable, a suite per file
 ```
@@ -308,6 +315,119 @@ std::string text = as3::abc::disassemble(file);
 
 `read` takes every abcFile (46.16) a compiler makes: all multiname kinds, metadata, optional parameters, every opcode including the debug ones and `lookupswitch`; it reads, and writes back byte for byte, the 249 KB ABC of a movie Flash CS5 published with the fl components in it. `verify` checks what a player's verifier checks of the structure (not the types): pool indexes, one body for each method that runs and none for an interface's, instructions that decode, branches onto instructions (a backward one onto a `label`), and along every path an operand stack never below empty or above `max_stack` and a scope stack within `max_scope_depth - init_scope_depth`, the same wherever paths meet, with exception handlers starting from one value and no scopes.
 
+## Translating to JavaScript
+
+For movies published to HTML5, `as3::js::translate` makes readable JavaScript (ES2020 classes, no transpiler needed) from the same sources and timelines as the ABC compiler, which it shares its front end with (`abc_model.h`: the files parsed, their packages' definitions, the classes with their members, superclasses and interfaces resolved, the timelines' classes made from their frame scripts). The JavaScript runs on `as3.js` (`as3::js::runtime()`, the source in `src/js/as3.js`) and a JavaScript implementation of the flash.* classes, the runtime below.
+
+```cpp
+#include "js/js.h"
+
+as3::js::Timeline main;                        // as for ABC: a frame script, the stage's instances
+main.className = as3::js::timelineClassName("game");
+main.instances = {{"ball", "com.example.Ball"}};
+main.frames = {{0, "ball.speed = 2;\nstop();"}};
+
+as3::js::Output out = as3::js::translate({{readFile("com/example/Ball.as"), "Ball.as"}}, {main});
+if (!out.ok) std::cerr << out.errorText();    // "Ball.as:12: error: cannot translate ... to JavaScript"
+// out.files: "com/example/Ball.js", "game_fla/MainTimeline.js", each with a sourceMappingURL
+// out.bundle: every file in order, then as3.runScripts(); out.sourceMaps: each file's and "bundle.js.map"
+// out.classes: "com.example.Ball", ..., "game_fla.MainTimeline"
+```
+
+A page loads `as3.js`, the flash.* runtime, then the bundle (or the files), and makes the document's class: `new (as3.getDefinitionByName("game_fla.MainTimeline"))()`.
+
+`Options`: conditional compilation `constants`, an `includeHandler`, `sourceMaps` (on), `comments` (on: the sources' comments on lines of their own are kept with the code they are by), and `coerceAllParameters` (typed `int` and `uint` parameters are converted on entry always, `x |= 0`; with this, `Number`, `String` and `Boolean` ones too).
+
+### What is made
+
+A class is a definition, made when it is first used:
+
+```javascript
+// Ball.as, translated to JavaScript by libas3.
+"use strict";
+as3.define("com.example.Ball", () => {
+    const Sprite = as3.use("flash.display.Sprite");
+    let Event;
+
+    class Ball extends Sprite {
+        constructor(...args) {
+            super();
+            this.speed = NaN;
+            this.hits = 0;
+            if (new.target === Ball) this.$construct(...args);
+        }
+
+        $construct(speed = 2) {
+            super.$construct();
+            this.speed = speed;
+            this.addEventListener(Event.ENTER_FRAME, as3.bind(this, "move$Ball"));
+        }
+
+        // Each frame, a step to the right.
+        move$Ball(e) {
+            this.x += this.speed;
+            if (this.x > 400) {
+                this.hits = (this.hits + 1) | 0;
+            }
+        }
+
+        get bounces() {
+            return this.hits;
+        }
+    }
+    Ball.RADIUS = 10;
+    return {
+        class: Ball,
+        fields: { speed: "Number", hits: "private int" },
+        init() {
+            Event = as3.use("flash.events.Event");
+        },
+    };
+});
+```
+
+- Packages are nested objects (`com.example.Ball`, `flash.display.MovieClip`). `as3.define(name, factory)` puts a getter there; the first use (`as3.use`, the getter, `getDefinitionByName`) runs the factory, which makes the class with its superclass (`const`, needed now) and gives the descriptor; the class is then registered, so that classes may use each other in any order, and `init` binds the rest of what the class uses (the `let` names: imports, its package's classes, the player's) and runs its static initializers and code in the order written. A class's constants of literal values are set when it is made.
+- Fields are the object's own properties. Each takes its constant value (or its type's default: `int` and `uint` 0, `Number` NaN, `Boolean` false, others null, untyped undefined) in the JavaScript constructor, before any ActionScript constructor runs, as a player has them when the object is made; one with a value to compute takes it in `$construct`, the ActionScript constructor, before the constructor's code, so before `super()` as ActionScript has it. `super(...)` is `super.$construct(...)`, put first when the constructor does not call it.
+- Methods, getters, setters and statics are the class's; an accessor overriding only its getter (or setter) gets the other half from its superclass. A private member whose name a superclass or subclass has (or the player's class it extends, as a `MovieClip` subclass's private `name`) takes its class's name (`move$Ball`), so that two classes' privates do not clash; others keep their names. A method read as a value is bound to its object, the same function each time (`as3.bind`), so `removeEventListener` finds what `addEventListener` was given; so is an untyped object's member passed as an argument when some class has a method of that name.
+- Interfaces are values (`as3.define("a.IShape", () => ({ interface: true, extends: [...] }))`) that `is`, `as` and `instanceof` check a class's `interfaces` against.
+- Local variables are `let` (or `const`) where the function's scoping and JavaScript's agree (declared once, not used before or captured by nested functions, or a loop's variable used only in the loop), `var` otherwise, and a typed variable declared without a value in a block is declared at the function's start with its default, as ActionScript has function-scoped variables. Nested functions are arrow functions (so `this` and the class's members are the method's), or plain functions when they use `this` or `arguments` (the method's `this` is then `$this`).
+- A file's code outside its packages runs with `as3.runScripts()`; its classes and functions outside the packages are the file's own (`as3.file(name)`), its variables those of the file's scope.
+- A timeline is a class extending its base (`flash.display.MovieClip`) whose `$construct` calls `this.addFrameScript(0, as3.bind(this, "frame1"), ...)`; its frames' variables and stage instances are fields, its frames' functions methods, `frame1` and the rest its frames' code; names not otherwise known are the clip's (`stop()` is `this.stop()`), and the flash.* packages are imported, as for ABC.
+- Names are resolved as the ABC compiler resolves them: locals, the class's members (`this.x`), statics (`Ball.RADIUS`), imported and same-package definitions, the top level; in a class extending one of the player's, a name not known is the object's (`this.stage`). Each output line maps back to its .as line in the source maps.
+
+The language's semantics JavaScript lacks:
+
+- `int` and `uint`: a value stored in an `int` or `uint` (variable, field, parameter, return value, element of a typed Vector) is converted, `(a / b) | 0` and `x >>> 0`, so division, overflow and `0xFF000000` are as ActionScript has them; `int(x)` is `x | 0`. Stored to `Number`, `String` or `Boolean` a value of another type is converted too (`+x`, `as3.str(x)`, which keeps null, and `!!x`). Literals are written as in the source (`0xFF336699` stays hexadecimal).
+- `is`, `as`, `typeof` (`"xml"`, and `"object"` for a class), a class called as a cast (`Sprite(x)` is `as3.cast(x, Sprite)`, a TypeError when it is not one), `trace` (`as3.trace`, writing `[class Ball]`, `null` and the rest as a player does, to `as3.output`), `String(x)`, `parseInt` (a leading 0 is octal), `getQualifiedClassName` (`"com.example::Ball"`), `getQualifiedSuperclassName`, `getDefinitionByName`, `describeType` (a minimal one: the class, its bases, interfaces, public variables, constants, accessors and methods).
+- `for (k in o)` and `for each (v in o)` are `for (... of as3.keys(o))` and `as3.values(o)`: over objects, arrays, a Dictionary's keys (objects too), XMLList's items, a dynamic class's own properties but not a class's fields; null gives none.
+- `Vector.<T>` (`as3.Vector(as3.int)`, `new Vector.<int>(n, fixed)` is `as3.vector(as3.int, n, fixed)`): an Array of its elements' type, filled with its defaults, converting what `push`, `unshift` and `splice` add, `fixed`, its methods giving vectors.
+- `Array`'s `sort` and `sortOn` with their options (`Array.NUMERIC`, `CASEINSENSITIVE`, `DESCENDING`, `UNIQUESORT`, `RETURNINDEXEDARRAY`), `insertAt`, `removeAt`: `a.sort(...)` is `as3.sort(a, ...)` where `a` may be an array.
+- `flash.utils.Dictionary`: objects as keys; `d[k]` of a typed Dictionary is `as3.getItem(d, k)` (and `setItem`, `hasItem`, `deleteItem`), and of a string key on any object `d[k]`, which a Dictionary also answers.
+- `arguments`, `...rest`, default values, `with` (each name looked for on the object first, as the VM has it: `as3.has(o, "x") ? o.x : x`), labels, `switch`, `try` with `catch` clauses by type: a JavaScript error caught becomes the player's (`TypeError: Error #1009: Cannot access a property or method of a null object reference.`, `#1006`, `#1065`, `#1023`...), and `Error`, its subclasses and `flash.errors.*` are as3's (`errorID`, `getStackTrace()`), to extend and throw.
+- E4X: XML literals (`<item id={n}>{text}</item>`) are `as3.toXML(...)`; `x.child`, `x["@id"]`, `x.children()`, `x.attributes()`, `x.descendants("name")`, filters (`as3.xmlFilter(list, ($item) => ...)`), assignment and `delete` work on XML and XMLList objects (proxies over a tree), with their methods and `toXMLString()` as the VM writes it. A child named as a method (`name`, `length`, `text`...) of an object typed `XML` or `XMLList` is read with `child("name")`.
+- Date's properties (`fullYear`, `month`, `time`...), and its strings as a player writes them where the type is known (`as3.dateText(d, "toUTCString")`); regular expressions with named groups (`(?P<word>...)`) give the groups on the match.
+- `setTimeout`, `setInterval`, `clearTimeout`, `clearInterval` and `getTimer` (from `as3.clock`); with `as3.manualTimers` the host runs what is due with `as3.runTimers(now)`, as the VM's `runTimers`.
+
+What cannot be translated is an error naming it (`cannot translate arguments.callee to JavaScript`): `arguments.callee`, `super` in a nested function that has its own `this`, a type applied to anything but `Vector`. What the parser does not keep (namespaces beyond the access ones, `ns::name`, E4X namespaces) is not translated either, nor AVM1. Known differences from the VM: a function's `length` counts the parameters before the first with a default; writing past a Vector's end extends it rather than throwing RangeError #1125; `JSON.stringify` of a class instance gives its fields in their order; `describeType` gives no metadata; `++` and `--` on an `int` inside an expression or a `for` loop's update do not wrap at 2147483647; a value of unknown type stored in an object-typed variable stays undefined (rather than null) when it is undefined.
+
+### The runtime it targets
+
+The flash.* runtime (Phoenix's, in its `resources/html5`) and translated code meet in a few places, all in `as3.js` and easily adjusted there:
+
+- Definitions: `as3.define(name, factory)` (translated code), `as3.register(name, value)` (the runtime's classes and functions, defined at once; classes get their metadata), `as3.use(name)`, `as3.isDefined(name)`, `as3.getDefinitionByName(name)` (`"a.b::C"` or `"a.b.C"`). A name not defined through as3 is looked for in the package tree (a runtime that puts `flash.display.Sprite` on `globalThis.flash` itself needs no registering) and then by each of `as3.resolvers`, functions `(name) => value` the runtime adds.
+- Classes: a class the translated code extends follows its construction protocol. The JavaScript constructor only makes the object (its own state at defaults) and, for the class actually made, runs the ActionScript constructor, `$construct(...args)`; a subclass's `$construct` calls `super.$construct(...)` with the arguments ActionScript's `super(...)` gives:
+  ```javascript
+  class Sprite extends DisplayObjectContainer {
+      constructor(...args) { super(); if (new.target === Sprite) this.$construct(...args); }
+      $construct() { super.$construct(); /* what new Sprite() does */ }
+  }
+  as3.register("flash.display.Sprite", Sprite);
+  ```
+  The root class (`EventDispatcher`'s base, or `EventDispatcher` itself) has a `$construct` that does not call a super one. Translated classes extending `Object` have neither `super()` nor `super.$construct()`.
+- Library symbols and stage instances: the runtime makes a symbol's instance with `new Cls()` (its class from `as3.getDefinitionByName(linkageName)`, a translated class, or a timeline's); the state that ties the object to its symbol is set in the runtime's JavaScript constructor (from a symbol the runtime notes before `new`), and stage instances are placed and set as `this[instanceName]` during `MovieClip.prototype.$construct` (the subclass's `super()`) or later, not in the JavaScript constructor, since a translated class sets its fields (stage instances among them, null) in its own. Frame scripts come by `addFrameScript(frame, method, ...)`, the methods bound.
+- `trace` writes to `as3.output(text)` (console.log until the runtime sets its own); `as3.clock()` gives the milliseconds since the movie started, which `getTimer` and the timers count; `as3.manualTimers` and `as3.runTimers(now)` let the runtime drive the timers from its frames.
+- as3.js defines `flash.utils`' functions and `Dictionary`, and `flash.errors`' classes; the runtime may replace any of them with `as3.register`.
+
 ## Running Tests
 
 ```bash
@@ -315,7 +435,7 @@ std::string text = as3::abc::disassemble(file);
 ./build/Release/as3_tests.exe nativeclasses  # one
 ```
 
-Suites: Parser, Bytecode, VM, AS2 (ActionScript 1 and 2), Language (classes, packages, statements, types), Library (the built-in classes), XML (E4X, and as3corelib's JSON encoder, which uses it), NativeClasses (the host's classes, a JPEG encoder run on a native BitmapData), BunnyPaint (a 6,000-line paint program and as3corelib's JPEG encoder compiled and loaded through the class resolver, skipped where its sources are not), Errors, Abc (reading, writing and verifying ABC, Flash CS5's own among it), AbcCompiler (ActionScript compiled to ABC and verified, bunnyPaint and its main timeline among it), and Benchmark.
+Suites: Parser, Bytecode, VM, AS2 (ActionScript 1 and 2), Language (classes, packages, statements, types), Library (the built-in classes), XML (E4X, and as3corelib's JSON encoder, which uses it), NativeClasses (the host's classes, a JPEG encoder run on a native BitmapData), BunnyPaint (a 6,000-line paint program and as3corelib's JPEG encoder compiled and loaded through the class resolver, skipped where its sources are not), Errors, Abc (reading, writing and verifying ABC, Flash CS5's own among it), AbcCompiler (ActionScript compiled to ABC and verified, bunnyPaint and its main timeline among it), JavaScript (ActionScript translated to JavaScript; where Node is installed, the programs of the Language, Library, XML and VM suites and of its own run both in the VM and translated in Node, tracing the same, as3corelib's JPEG encoder makes the same bytes, and bunnyPaint with its main timeline translates and loads against stand-ins for the flash.* classes), and Benchmark.
 
 ## Performance
 
