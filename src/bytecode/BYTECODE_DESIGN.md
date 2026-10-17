@@ -87,7 +87,7 @@ function loop():void {
 
 ```
 == step ==
-0000    1 GET_THIS_PROP             'x'
+0000    3 GET_THIS_PROP             'x'
 0005    | GET_LOCAL                 0
 0008    | ADD
 0009    | SET_THIS_PROP             'x'
@@ -95,23 +95,26 @@ function loop():void {
 0015    | GET_THIS_PROP             'x'
 0020    | COERCE                    3
 0022    | RETURN
+0023    | RETURN_UNDEFINED
 == loop ==
-0000    1 GET_NAME                  'Particle'
+0000    6 GET_NAME                  'Particle'
 0005    | NEW                       0
 0007    | COERCE                    6
 0009    | PUT_LOCAL                 0
-0012    | ZERO
+0012    7 ZERO
 0013    | COERCE                    1
 0015    | PUT_LOCAL                 1
-0018    | JUMP                      -> 39
+0018    | JUMP                      -> 41
 0023    | UNDEFINED
 0024    | CONSTANT                  0 '0.25'
 0027    | CALL_LOCAL_PROP           local 0 'step'
 0035    | POP
-0034    | INC_LOCAL                 1
-0039    | GET_LOCAL                 1
-0042    | CONSTANT                  1 '1000'
-0045    | LESS
-0046    | JUMP_IF_TRUE              -> 23
-0051    | RETURN_UNDEFINED
+0036    | INC_LOCAL                 1
+0041    | GET_LOCAL                 1
+0044    | CONSTANT                  1 '1000'
+0047    | LESS
+0048    | JUMP_IF_TRUE              -> 23
+0053    | RETURN_UNDEFINED
 ```
+
+The `UNDEFINED` before the argument is the place `CALL_LOCAL_PROP`'s result goes (the object stays in its local). The loop's test is at its bottom, after a jump to it the first time.
