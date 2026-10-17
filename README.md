@@ -45,8 +45,9 @@ src/
 │   ├── compiler.h/cpp      # AST → Bytecode
 │   ├── vm.h/cpp            # The interpreter loop, calls, exceptions
 │   └── vm_runtime.cpp      # Properties, names, classes, native classes
-└── abc/              # ActionScript 3 → ABC (AVM2 bytecode), for players
+└── abc/              # ActionScript 3 → ABC (AVM2 bytecode), and running ABC
     ├── abc.h               # compile(): sources and timelines to an abcFile
+    ├── abc_domain.h/cpp    # Domain: an abcFile's classes and code run on the VM
     ├── abc_file.h/cpp      # The abcFile as data; read() and write()
     ├── abc_opcodes.h/cpp   # AVM2's instructions, decoding, stack effects
     ├── abc_verifier.h/cpp  # verify(), disassemble()
@@ -308,6 +309,26 @@ std::string text = as3::abc::disassemble(file);
 
 `read` takes every abcFile (46.16) a compiler makes: all multiname kinds, metadata, optional parameters, every opcode including the debug ones and `lookupswitch`; it reads, and writes back byte for byte, the 249 KB ABC of a movie Flash CS5 published with the fl components in it. `verify` checks what a player's verifier checks of the structure (not the types): pool indexes, one body for each method that runs and none for an interface's, instructions that decode, branches onto instructions (a backward one onto a `label`), and along every path an operand stack never below empty or above `max_stack` and a scope stack within `max_scope_depth - init_scope_depth`, the same wherever paths meet, with exception handlers starting from one value and no scopes.
 
+## Running ABC
+
+`as3::abc::Domain` runs ABC (a published movie's DoABC tags) on the VM, so that a movie's compiled classes work as classes compiled from source do:
+
+```cpp
+#include "abc/abc_domain.h"
+
+as3::VM vm;                                    // the host's classes defined on it as usual
+as3::abc::Domain domain(vm);                   // lives as long as code of it may run
+std::string error;
+if (!domain.load(abcBytes, error)) { /* not an abcFile */ }
+as3::Val main = vm.findDefinition("game_fla.MainTimeline");   // its script runs now
+as3::Val clip = vm.construct(main);
+```
+
+- A class defined in ABC is a `ClassInfo` like any other: the VM finds it by qualified name (`findDefinition`, `findClass`, `getDefinitionByName`, and the names scripts compiled from source use) before asking the class resolver, it extends native classes (its instance initializer runs as a native constructor does, and `super()` runs the native one), classes from source extend it, and methods are called and overridden either way: native code calling `vm.callMethod(self, "draw")` reaches an ABC subclass's `draw`.
+- A script's initializer runs the first time one of its definitions is needed (a DoABC tag's lazy flag); `runEntry()` runs the last script of the last file, for code outside classes.
+- Its methods are interpreted as they are: instructions decoded once per body, branches resolved to instructions, the operand stack, registers and scope stack of each call in a pool of values. Each method is a native function of the VM (so the VM's calls, bound methods, `call` and `apply` reach it), and names are found as AVM2 finds them: on the scope stack (with `with` objects), the scopes the method was made in, then the domain's scripts and the VM's definitions. Private members are kept by their class (`pkg.Class::name`), so a subclass's private member does not hide its superclass's; members in other namespaces by their names. `trace(domain.takeErrorStack())` gives the methods an error came out of, with the instruction's offset (or line, with debug info).
+- Not run: the domain memory instructions (`li8`, `si32`...), `callmethod`, and XML namespaces; argument counts are not checked (a missing argument is `undefined`).
+
 ## Running Tests
 
 ```bash
@@ -315,7 +336,7 @@ std::string text = as3::abc::disassemble(file);
 ./build/Release/as3_tests.exe nativeclasses  # one
 ```
 
-Suites: Parser, Bytecode, VM, AS2 (ActionScript 1 and 2), Language (classes, packages, statements, types), Library (the built-in classes), XML (E4X, and as3corelib's JSON encoder, which uses it), NativeClasses (the host's classes, a JPEG encoder run on a native BitmapData), BunnyPaint (a 6,000-line paint program and as3corelib's JPEG encoder compiled and loaded through the class resolver, skipped where its sources are not), Errors, Abc (reading, writing and verifying ABC, Flash CS5's own among it), AbcCompiler (ActionScript compiled to ABC and verified, bunnyPaint and its main timeline among it), and Benchmark.
+Suites: Parser, Bytecode, VM, AS2 (ActionScript 1 and 2), Language (classes, packages, statements, types), Library (the built-in classes), XML (E4X, and as3corelib's JSON encoder, which uses it), NativeClasses (the host's classes, a JPEG encoder run on a native BitmapData), BunnyPaint (a 6,000-line paint program and as3corelib's JPEG encoder compiled and loaded through the class resolver, skipped where its sources are not), Errors, Abc (reading, writing and verifying ABC, Flash CS5's own among it), AbcCompiler (ActionScript compiled to ABC and verified, bunnyPaint and its main timeline among it), AbcDomain (programs compiled to ABC and run by a Domain, against the same source run directly; ABC classes over native ones and under source ones; a published movie's ABC making its classes), and Benchmark.
 
 ## Performance
 
