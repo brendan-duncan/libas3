@@ -482,6 +482,38 @@ static void init_vm_tests() {
         }
     });
 
+    // Strings' members found through the caches (a string value's units
+    // kept with it), at a site that sees strings and arrays in turn;
+    // whole numbers printed; a numeric sort.
+    suite.addTest("String members through the caches", []() {
+        Parser parser("function f():String {\n"
+                      "  var s:String = 'h\\u00e9llo w\\u00f6rld';\n"
+                      "  var out:String = '';\n"
+                      "  for (var i:int = 0; i < s.length; i++) out += s.charAt(i) + ':' + s.charCodeAt(i) + ',';\n"
+                      "  var things:Array = ['abc', [1, 2, 3, 4], 'd\\u00e9f'];\n"
+                      "  var lens:String = '';\n"
+                      "  for (var k:int = 0; k < things.length; k++) lens += things[k].length + ';';\n"
+                      "  var n:Number = 12; var b:Boolean = true;\n"
+                      "  return out + '|' + lens + '|' + n.toString() + b.toString() + (12345).toString() +\n"
+                      "    (-7).toString() + (9007199254740991).toString() + '|' + 'xyz'.charAt(1) +\n"
+                      "    [3, 1, 2].sort(Array.NUMERIC).join('') + [3, 1, 2].sort(Array.DESCENDING | Array.NUMERIC).join('');\n"
+                      "}\n"
+                      "var result = f();\n");
+        auto program = parser.parse();
+        Compiler compiler;
+        VM vm;
+        vm.execute(compiler.compile(program.get()));
+        if (vm.hasError()) {
+            throw std::runtime_error("Runtime error: " + vm.getError());
+        }
+        const std::string result = Val(vm.getGlobal("result")).toString();
+        const std::string expected = "h:104,\xc3\xa9:233,l:108,l:108,o:111, :32,w:119,\xc3\xb6:246,r:114,l:108,d:100,"
+                                     "|3;4;3;|12true12345-79007199254740991|y123321";
+        if (result != expected) {
+            throw std::runtime_error("got " + result);
+        }
+    });
+
     // A global read in a loop sees each new value given it, here or by a
     // parent VM.
     suite.addTest("Globals read after they change", []() {

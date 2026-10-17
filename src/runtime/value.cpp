@@ -371,9 +371,17 @@ std::string numberToString(double value) {
     // Whole numbers that fit print as they are.
     if (value == std::trunc(value) && std::fabs(value) < 1e21) {
         if (std::fabs(value) < 9007199254740992.0) {
-            char text[32];
-            std::snprintf(text, sizeof(text), "%lld", static_cast<long long>(value));
-            return text;
+            char text[24];
+            char* end = text + sizeof(text);
+            char* p = end;
+            const long long n = static_cast<long long>(value);
+            unsigned long long u = n < 0 ? 0 - static_cast<unsigned long long>(n) : static_cast<unsigned long long>(n);
+            do {
+                *--p = static_cast<char>('0' + u % 10);
+                u /= 10;
+            } while (u);
+            if (n < 0) *--p = '-';
+            return std::string(p, static_cast<size_t>(end - p));
         }
     }
     const bool negative = value < 0;

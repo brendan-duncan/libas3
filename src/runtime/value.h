@@ -370,6 +370,11 @@ public:
     Value* trackPrev = nullptr;
     Value* trackNext = nullptr;
 
+    // For a string: whether its text is ASCII (-1 not known yet), and its
+    // UTF-16 units when it is not, found once (the text does not change).
+    int8_t textAscii = -1;
+    std::unique_ptr<std::u16string> textUnits;
+
     Value()
         : type(ValueType::Undefined)
         , boolValue(false)

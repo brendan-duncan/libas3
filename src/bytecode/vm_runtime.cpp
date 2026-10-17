@@ -556,6 +556,11 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
         default: {
             const ClassInfo* cls = classOf(object);
             if (const Trait* trait = cls->findTrait(name)) {
+                if (cache) {
+                    cache->classId = cls->id;
+                    cache->trait = trait;
+                    cache->onClass = false;
+                }
                 return readTrait(object, *trait, false);
             }
             for (const ClassInfo* at = cls; at; at = at->base.get()) {
@@ -740,7 +745,16 @@ bool VM::callProp(const Val& object, const std::string& name, Val* args, uint32_
     } else {
         const ClassInfo* cls = classOf(self);
         const Trait* trait = cls ? cls->findTrait(name) : nullptr;
-        function = trait && trait->kind == TraitKind::Method ? trait->method : getProp(self, name, nullptr);
+        if (trait && trait->kind == TraitKind::Method) {
+            if (cache) {
+                cache->classId = cls->id;
+                cache->trait = trait;
+                cache->onClass = false;
+            }
+            function = trait->method;
+        } else {
+            function = getProp(self, name, nullptr);
+        }
     }
     if (!function.isFunction() && !function.isClass()) {
         if (self.isObject() && self->cls && self->cls->hostFirst && self->type == ValueType::Object) {

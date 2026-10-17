@@ -109,14 +109,22 @@ std::u16string fromWide(const std::wstring& text) {
     return std::u16string(text.begin(), text.end());
 }
 
-// A string's text and its UTF-16 units, made once.
+// A string's text and its UTF-16 units. A string value's are its own,
+// whether it is ASCII (and its units if not) found the first time and
+// kept with the value; any other text is converted here.
 struct Text {
-    std::string utf8;
+    std::string owned;
+    std::u16string ownedUnits;
+    const std::string& utf8;
+    const std::u16string& units;
     bool ascii;
-    std::u16string units;
-    explicit Text(std::string text) : utf8(std::move(text)), ascii(isAscii(utf8)) {
-        if (!ascii) units = toUtf16(utf8);
+    explicit Text(Value* string)
+        : utf8(string->stringValue), units(unitsOf(string)), ascii(string->textAscii == 1) {}
+    explicit Text(std::string text) : owned(std::move(text)), utf8(owned), units(ownedUnits), ascii(isAscii(owned)) {
+        if (!ascii) ownedUnits = toUtf16(utf8);
     }
+    Text(const Text&) = delete;
+    Text& operator=(const Text&) = delete;
     size_t length() const { return ascii ? utf8.size() : units.size(); }
     std::string sub(size_t start, size_t end) const {
         if (end <= start) return std::string();
@@ -125,10 +133,26 @@ struct Text {
     }
     char16_t at(size_t i) const { return ascii ? static_cast<char16_t>(utf8[i]) : units[i]; }
     std::u16string all16() const { return ascii ? std::u16string(utf8.begin(), utf8.end()) : units; }
+
+private:
+    static const std::u16string& unitsOf(Value* string) {
+        if (string->textAscii < 0) {
+            string->textAscii = isAscii(string->stringValue) ? 1 : 0;
+        }
+        if (string->textAscii) {
+            static const std::u16string none;
+            return none;
+        }
+        if (!string->textUnits) {
+            string->textUnits = std::make_unique<std::u16string>(toUtf16(string->stringValue));
+        }
+        return *string->textUnits;
+    }
 };
 
 Text textOf(VM& vm, const Val& self) {
-    return Text(self.isString() ? self.str() : vm.toString(self));
+    if (self.isString()) return Text(self.ref.get());
+    return Text(vm.toString(self));
 }
 
 // A position argument as an integer (NaN 0, infinities kept large).

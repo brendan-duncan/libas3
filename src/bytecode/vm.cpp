@@ -1234,21 +1234,45 @@ void VM::run(size_t stopDepth) {
                     case OpCode::OP_COERCE_PUT_LOCAL: {
                         const Coerce coerce = static_cast<Coerce>(READ_U8());
                         Val& a = sp[-1];
-                        if (coerce == Coerce::Number && a.tag == Val::Tag::Number) {
-                            // A number already.
-                        } else if (coerce == Coerce::Int && a.tag == Val::Tag::Number) {
-                            if (!isInt32(a.num)) a.num = toInt32(a.num);
-                        } else if (coerce == Coerce::Uint && a.tag == Val::Tag::Number) {
-                            if (!isUint32(a.num)) a.num = toUint32(a.num);
-                        } else if (coerce == Coerce::String && a.isObject()) {
-                            frame->ip = ip;
-                            a = Val::string(toString(a));
-                        } else if ((coerce == Coerce::Number || coerce == Coerce::Int || coerce == Coerce::Uint) &&
-                                   a.isObject()) {
-                            frame->ip = ip;
-                            a = coerceValue(Val::number(toNumber(a)), coerce);
-                        } else {
-                            a = coerceValue(a, coerce);
+                        switch (coerce) {
+                            case Coerce::Number:
+                                if (a.tag != Val::Tag::Number) {
+                                    frame->ip = ip;
+                                    a = Val::number(toNumber(a));
+                                }
+                                break;
+                            case Coerce::Int:
+                                if (a.tag == Val::Tag::Number) {
+                                    if (!isInt32(a.num)) a.num = toInt32(a.num);
+                                } else {
+                                    frame->ip = ip;
+                                    a = Val::number(toInt32(toNumber(a)));
+                                }
+                                break;
+                            case Coerce::Uint:
+                                if (a.tag == Val::Tag::Number) {
+                                    if (!isUint32(a.num)) a.num = toUint32(a.num);
+                                } else {
+                                    frame->ip = ip;
+                                    a = Val::number(toUint32(toNumber(a)));
+                                }
+                                break;
+                            case Coerce::String:
+                                if (a.tag == Val::Tag::Undefined) {
+                                    a = Val::null();
+                                } else if (a.tag != Val::Tag::String && a.tag != Val::Tag::Null) {
+                                    frame->ip = ip;
+                                    a = Val::string(toString(a));
+                                }
+                                break;
+                            case Coerce::Boolean:
+                                if (a.tag != Val::Tag::Boolean) a = Val::boolean(a.toBoolean());
+                                break;
+                            case Coerce::Nullable:
+                                if (a.tag == Val::Tag::Undefined) a = Val::null();
+                                break;
+                            default:
+                                break;
                         }
                         if (op == OpCode::OP_COERCE_PUT_LOCAL) {
                             ++ip;
@@ -1549,7 +1573,11 @@ void VM::run(size_t stopDepth) {
                         Val* first = sp - 2 * pairs;
                         Val object = newObject();
                         for (Val* p = first; p < sp; p += 2) {
-                            object->properties[p[0].toString()] = p[1];
+                            if (p[0].tag == Val::Tag::String) {
+                                object->properties[p[0].str()] = p[1];
+                            } else {
+                                object->properties[p[0].toString()] = p[1];
+                            }
                         }
                         for (Val* p = first; p < sp; ++p) *p = Val();
                         sp = first;
@@ -1803,7 +1831,22 @@ bool VM::compareForJump(OpCode op, const Val& a, const Val& b) {
 // Inline caches
 
 int VM::cachedGet(const Val& object, const PropertyCache& cache, Val* out) {
-    if (object.tag != Val::Tag::Object) return 0;
+    if (object.tag != Val::Tag::Object) {
+        // A string's, a number's or a boolean's: a native getter of its class.
+        if (object.tag <= Val::Tag::Null || !cache.trait || cache.onClass) return 0;
+        const ClassInfo* cls = classOf(object);
+        if (!cls || cls->id != cache.classId) return 0;
+        const Trait* trait = cache.trait;
+        if (trait->kind == TraitKind::Accessor && trait->getter.isObject()) {
+            const FunctionInfo& info = *trait->getter.ref->function;
+            if (info.native && !info.code) {
+                Val result = info.native(*this, object, Args());
+                *out = std::move(result);
+                return 1;
+            }
+        }
+        return 0;
+    }
     Value* value = object.ref.get();
     if (!value->cls || value->cls->id != cache.classId || !cache.trait || cache.onClass ||
         value->type == ValueType::Class) {
@@ -1882,7 +1925,28 @@ int VM::cachedSet(const Val& object, const PropertyCache& cache, Val* value) {
 }
 
 int VM::cachedCall(const Val& object, const PropertyCache& cache, Val* args, uint32_t argc, Val* result) {
-    if (object.tag != Val::Tag::Object) return 0;
+    if (object.tag != Val::Tag::Object) {
+        // A string's, a number's or a boolean's: a method of its class.
+        if (object.tag <= Val::Tag::Null || !cache.trait || cache.onClass || cache.trait->kind != TraitKind::Method) {
+            return 0;
+        }
+        const ClassInfo* cls = classOf(object);
+        if (!cls || cls->id != cache.classId) return 0;
+        const Val& method = cache.trait->method;
+        FunctionInfo& info = *method.ref->function;
+        if (info.code) {
+            pushFrame(method, info, object, args, argc, result, kModeNormal, Val(), true);
+            return 2;
+        }
+        if (info.native) {
+            Val made = info.native(*this, object, Args(args, argc));
+            for (Val* p = result; p < sp; ++p) *p = Val();
+            *result = std::move(made);
+            sp = result + 1;
+            return 1;
+        }
+        return 0;
+    }
     Value* value = object.ref.get();
     if (!value->cls || value->cls->id != cache.classId || !cache.trait || cache.trait->kind != TraitKind::Method ||
         cache.onClass != (value->type == ValueType::Class)) {

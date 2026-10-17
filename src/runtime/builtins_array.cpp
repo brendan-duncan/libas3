@@ -70,29 +70,32 @@ std::string joinElements(VM& vm, const std::vector<Val>& elements, const std::st
 }
 
 // A merge sort: stable, and safe with a comparison that is not consistent.
-void mergeSort(std::vector<Val>& items, const std::function<int(const Val&, const Val&)>& compare) {
+template <class Compare>
+void mergeRange(std::vector<Val>& items, std::vector<Val>& scratch, size_t begin, size_t end, Compare& compare) {
+    if (end - begin < 2) return;
+    const size_t middle = begin + (end - begin) / 2;
+    mergeRange(items, scratch, begin, middle, compare);
+    mergeRange(items, scratch, middle, end, compare);
+    size_t left = begin;
+    size_t right = middle;
+    size_t out = begin;
+    while (left < middle && right < end) {
+        if (compare(items[right], items[left]) < 0) {
+            scratch[out++] = items[right++];
+        } else {
+            scratch[out++] = items[left++];
+        }
+    }
+    while (left < middle) scratch[out++] = items[left++];
+    while (right < end) scratch[out++] = items[right++];
+    for (size_t i = begin; i < end; ++i) items[i] = std::move(scratch[i]);
+}
+
+template <class Compare>
+void mergeSort(std::vector<Val>& items, Compare&& compare) {
     if (items.size() < 2) return;
     std::vector<Val> scratch(items.size());
-    std::function<void(size_t, size_t)> sortRange = [&](size_t begin, size_t end) {
-        if (end - begin < 2) return;
-        const size_t middle = begin + (end - begin) / 2;
-        sortRange(begin, middle);
-        sortRange(middle, end);
-        size_t left = begin;
-        size_t right = middle;
-        size_t out = begin;
-        while (left < middle && right < end) {
-            if (compare(items[right], items[left]) < 0) {
-                scratch[out++] = items[right++];
-            } else {
-                scratch[out++] = items[left++];
-            }
-        }
-        while (left < middle) scratch[out++] = items[left++];
-        while (right < end) scratch[out++] = items[right++];
-        for (size_t i = begin; i < end; ++i) items[i] = std::move(scratch[i]);
-    };
-    sortRange(0, items.size());
+    mergeRange(items, scratch, 0, items.size(), compare);
 }
 
 std::string lowered(const std::string& text) {
@@ -126,7 +129,8 @@ int compareValues(VM& vm, const Val& a, const Val& b, int options) {
 
 // Sorts items by a comparison; with the options' UNIQUESORT and
 // RETURNINDEXEDARRAY. What sort returns.
-Val sortWith(VM& vm, const Val& self, const std::function<int(const Val&, const Val&)>& compare, int options) {
+template <class Compare>
+Val sortWith(VM& vm, const Val& self, Compare&& compare, int options) {
     std::vector<Val>& elements = self->elements;
     if (options & (ArraySort::UNIQUESORT | ArraySort::RETURNINDEXEDARRAY)) {
         // Sorted indices.
