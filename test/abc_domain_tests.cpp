@@ -339,6 +339,67 @@ trace(level, double(level));
 )");
     });
 
+    suite.addTest("Methods: closures over this, statics of superclasses, overridden accessors", []() {
+        same(R"(
+package zoo {
+    public class Animal {
+        protected static var count:int = 0;
+        public static const LEGS:int = 4;
+        private var _sound:String;
+        public function Animal(sound:String) { _sound = sound; count++; }
+        public function get sound():String { return _sound; }
+        public function speaker():Function { return function(times:int):String { var s:String = ""; for (var i:int = 0; i < times; i++) s += sound; return s; }; }
+        public function later(list:Array):void { list.forEach(function(item:*, i:int, a:Array):void { a[i] = sound + item; }); }
+    }
+}
+package zoo {
+    public class Dog extends Animal {
+        public function Dog() { super("woof"); }
+        override public function get sound():String { return super.sound.toUpperCase(); }
+        public function census():String { return count + " animals, " + LEGS + " legs"; }
+    }
+}
+import zoo.*;
+var d:Dog = new Dog();
+new Animal("moo");
+var list:Array = [1, 2];
+d.later(list);
+trace(d.speaker()(2), list.join(), d.census(), d.sound);
+)");
+    });
+
+    suite.addTest("Loops with finally, strings, regular expressions and dictionaries", []() {
+        same(R"(
+function find(items:Array, wanted:*):int {
+    for (var i:int = 0; i < items.length; i++) {
+        try {
+            if (items[i] == wanted) return i;
+        } finally {
+            trace("looked at", i);
+        }
+    }
+    return -1;
+}
+trace(find(["a", "b", "c"], "b"));
+var text:String = "The quick brown fox";
+trace(text.replace(/quick/, "slow"), text.match(/o\w/g).join("|"), text.search(/brown/), /^the/i.test(text));
+trace(text.charCodeAt(0), String.fromCharCode(72, 105), text.lastIndexOf("o"), text.slice(-3), text.split(" ").length);
+var words:Object = {};
+for each (var w:String in text.toLowerCase().split(" ")) words[w.charAt(0)] = (words[w.charAt(0)] || 0) + 1;
+var letters:Array = [];
+for (var k:String in words) letters.push(k + words[k]);
+letters.sort();
+trace(letters.join(","));
+var n:Number = 1234.5678;
+trace(n.toFixed(2), int(n), Math.round(n * 10) / 10, (255).toString(16), parseFloat("3.25e2"));
+var u:uint = 0xFFFFFFFF;
+trace(u, u + 1, int(u), u >> 4, u >>> 4);
+var count:int = 0;
+while (true) { if (++count > 4) break; }
+trace(count, count is int, 2.5 is int, null is Object);
+)");
+    });
+
     // --- Mixing with the VM's own classes ---
 
     suite.addTest("An ABC class extends a native one and overrides it", []() {
