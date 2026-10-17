@@ -603,7 +603,7 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
             return Val(found);
         }
     }
-    if (cls) {
+    if (cls && !(cache && cache->classId == cls->id && !cache->trait)) {
         if (const Trait* trait = cls->findTrait(name)) {
             if (cache && self->cls.get() == cls) {
                 cache->classId = cls->id;
@@ -611,6 +611,12 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
                 cache->onClass = false;
             }
             return readTrait(object, *trait, false);
+        }
+        if (cache && self->cls.get() == cls) {
+            // No trait by the name: next time, straight to the properties.
+            cache->classId = cls->id;
+            cache->trait = nullptr;
+            cache->onClass = false;
         }
     }
     if (self->host) {
@@ -669,7 +675,7 @@ void VM::setProp(const Val& object, const std::string& name, const Val& value, P
     if (cls && cls->hostFirst && self->host && self->host->set(name, value)) {
         return;
     }
-    if (cls) {
+    if (cls && !(cache && cache->classId == cls->id && !cache->trait)) {
         if (const Trait* trait = cls->findTrait(name)) {
             if (cache && self->cls.get() == cls) {
                 cache->classId = cls->id;
@@ -678,6 +684,11 @@ void VM::setProp(const Val& object, const std::string& name, const Val& value, P
             }
             writeTrait(object, *trait, value, name, false);
             return;
+        }
+        if (cache && self->cls.get() == cls) {
+            cache->classId = cls->id;
+            cache->trait = nullptr;
+            cache->onClass = false;
         }
     }
     if (const char* plain = plainName(name)) {

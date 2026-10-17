@@ -118,24 +118,32 @@ double VM::now() {
 }
 
 void VM::track(const ValuePtr& value) {
-    made.push_back(value);
-    if (made.size() >= madeCheck) {
-        made.erase(std::remove_if(made.begin(), made.end(), [](const std::weak_ptr<Value>& v) { return v.expired(); }),
-                   made.end());
-        madeCheck = std::max<size_t>(1024, made.size() * 2);
-    }
+    Value* made_ = value.get();
+    if (made_->trackList) return;
+    made_->trackList = &made;
+    made_->trackPrev = nullptr;
+    made_->trackNext = made.head;
+    if (made.head) made.head->trackPrev = made_;
+    made.head = made_;
 }
 
 void VM::releaseObjects() {
     AS3_ZONE("AS3 release objects");
+    // Held while they are emptied (emptying one may let go of others, or
+    // of itself), and off the list first: what outlives the VM has no
+    // list to leave.
     std::vector<ValuePtr> alive;
-    alive.reserve(made.size());
-    for (auto& weak : made) {
-        if (ValuePtr value = weak.lock()) {
-            alive.push_back(std::move(value));
-        }
+    for (Value* value = made.head; value; value = value->trackNext) {
+        alive.push_back(value->shared_from_this());
     }
-    made.clear();
+    for (Value* value = made.head; value;) {
+        Value* next = value->trackNext;
+        value->trackList = nullptr;
+        value->trackPrev = nullptr;
+        value->trackNext = nullptr;
+        value = next;
+    }
+    made.head = nullptr;
     for (const ValuePtr& value : alive) {
         value->properties.clear();
         value->elements.clear();
@@ -453,7 +461,8 @@ void VM::pushFrame(const Val& function, FunctionInfo& info, const Val& thisValue
     frame.result = result;
     frame.argc = argc;
     frame.mode = mode;
-    frame.saved = saved;
+    // Undefined already (pop_back), unless there is something to save.
+    if (saved.tag != Val::Tag::Undefined) frame.saved = saved;
     if (info.bound) {
         frame.thisVal = info.boundThis;
     } else {
@@ -473,8 +482,13 @@ void VM::pushFrame(const Val& function, FunctionInfo& info, const Val& thisValue
     for (uint32_t i = argc; i < arity; ++i) {
         args[i] = Val();
     }
+    const Val* defaults = code->localDefaults.data();
     for (uint32_t i = arity; i < numLocals; ++i) {
-        args[i] = defaultForCoerce(code->localInit[i]);
+        // A number, a boolean, null or undefined: nothing to hold.
+        Val& local = args[i];
+        if (local.ref) local.ref.reset();
+        local.tag = defaults[i].tag;
+        local.num = defaults[i].num;
     }
     for (uint32_t i = numLocals; i < argc; ++i) {
         args[i] = Val();
@@ -1649,6 +1663,34 @@ void VM::run(size_t stopDepth) {
                         sp += 2;
                         break;
                     }
+                    case OpCode::OP_LOCAL_CONSTANT_COMPARE_JUMP:
+                    case OpCode::OP_LOCAL_LOCAL_COMPARE_JUMP: {
+                        // The operands stay where they are: nothing is pushed.
+                        const Val& a = base[READ_U16()];
+                        ++ip;
+                        const Val& b =
+                            op == OpCode::OP_LOCAL_CONSTANT_COMPARE_JUMP ? constants[READ_U16()] : base[READ_U16()];
+                        const OpCode compare = static_cast<OpCode>(*ip++);
+                        bool result;
+                        if (a.tag == Val::Tag::Number && b.tag == Val::Tag::Number) {
+                            // Which of less, equal, greater and unordered holds,
+                            // against what the comparison accepts.
+                            static constexpr uint8_t kAccepts[8] = {1, 4, 3, 6, 2, 13, 2, 13};
+                            const double x = a.num;
+                            const double y = b.num;
+                            unsigned bits = (x < y ? 1u : 0u) | (x == y ? 2u : 0u) | (x > y ? 4u : 0u);
+                            if (bits == 0) bits = 8;
+                            result = (bits & kAccepts[static_cast<int>(compare) - static_cast<int>(OpCode::OP_LESS_JUMP)]) != 0;
+                        } else {
+                            frame->ip = ip;
+                            result = compareForJump(compare, a, b);
+                        }
+                        const bool whenTrue = static_cast<OpCode>(*ip) == OpCode::OP_JUMP_IF_TRUE;
+                        ++ip;
+                        const int32_t offset = READ_S32();
+                        if (result == whenTrue) ip += offset;
+                        break;
+                    }
 #define COMPARE_JUMP(NUMBERS)                                                         \
     {                                                                                 \
         Val& a = sp[-2];                                                              \
@@ -1763,7 +1805,10 @@ bool VM::compareForJump(OpCode op, const Val& a, const Val& b) {
 int VM::cachedGet(const Val& object, const PropertyCache& cache, Val* out) {
     if (object.tag != Val::Tag::Object) return 0;
     Value* value = object.ref.get();
-    if (!value->cls || value->cls->id != cache.classId || cache.onClass || value->type == ValueType::Class) return 0;
+    if (!value->cls || value->cls->id != cache.classId || !cache.trait || cache.onClass ||
+        value->type == ValueType::Class) {
+        return 0;
+    }
     const Trait* trait = cache.trait;
     if (trait->kind == TraitKind::Slot) {
         const Val& field = value->slots[trait->slot];
@@ -1797,7 +1842,10 @@ int VM::cachedGet(const Val& object, const PropertyCache& cache, Val* out) {
 int VM::cachedSet(const Val& object, const PropertyCache& cache, Val* value) {
     if (object.tag != Val::Tag::Object) return 0;
     Value* self = object.ref.get();
-    if (!self->cls || self->cls->id != cache.classId || cache.onClass || self->type == ValueType::Class) return 0;
+    if (!self->cls || self->cls->id != cache.classId || !cache.trait || cache.onClass ||
+        self->type == ValueType::Class) {
+        return 0;
+    }
     const Trait* trait = cache.trait;
     if (trait->kind == TraitKind::Slot) {
         Val& slot = self->slots[trait->slot];
@@ -1836,7 +1884,7 @@ int VM::cachedSet(const Val& object, const PropertyCache& cache, Val* value) {
 int VM::cachedCall(const Val& object, const PropertyCache& cache, Val* args, uint32_t argc, Val* result) {
     if (object.tag != Val::Tag::Object) return 0;
     Value* value = object.ref.get();
-    if (!value->cls || value->cls->id != cache.classId || cache.trait->kind != TraitKind::Method ||
+    if (!value->cls || value->cls->id != cache.classId || !cache.trait || cache.trait->kind != TraitKind::Method ||
         cache.onClass != (value->type == ValueType::Class)) {
         return 0;
     }

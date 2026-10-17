@@ -298,7 +298,7 @@ struct Cell {
     Val value;
 };
 
-class Value {
+class Value : public std::enable_shared_from_this<Value> {
 public:
     ValueType type;
 
@@ -334,11 +334,23 @@ public:
     uint32_t valCount = 0;
     ValuePtr heldByVals;
 
+    // The list of what a VM made (VM::track), which it empties when it
+    // ends; a Value leaves the list when it dies.
+    struct TrackList {
+        Value* head = nullptr;
+    };
+    TrackList* trackList = nullptr;
+    Value* trackPrev = nullptr;
+    Value* trackNext = nullptr;
+
     Value()
         : type(ValueType::Undefined)
         , boolValue(false)
         , numberValue(0) {
     }
+    Value(const Value&) = delete;
+    Value& operator=(const Value&) = delete;
+    ~Value();
 
     static ValuePtr makeUndefined();
     static ValuePtr makeNull();
@@ -499,8 +511,10 @@ T* Val::host() const {
     if (!object) {
         return nullptr;
     }
-    // The exact type is the usual case, and quicker than a dynamic_cast.
-    if (typeid(*object) == typeid(T)) {
+    // The exact type is the usual case, and quicker than a dynamic_cast;
+    // its type_info is usually the one, and compared by address first.
+    const std::type_info& have = typeid(*object);
+    if (&have == &typeid(T) || have == typeid(T)) {
         return static_cast<T*>(object);
     }
     return dynamic_cast<T*>(object);

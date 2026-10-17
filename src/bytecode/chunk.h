@@ -96,7 +96,9 @@ struct UpvalueSource {
 // An inline cache for a property instruction: the class last seen there
 // and its trait.
 struct PropertyCache {
-    // The class seen (by its id; 0 none) and its trait.
+    // The class seen (by its id; 0 none) and its trait: none when the
+    // class has no trait by the name (a dynamic property, looked for
+    // without the lookup among the traits).
     uint64_t classId = 0;
     const Trait* trait = nullptr;
     // A static of the class (the object is the class itself).
@@ -127,6 +129,8 @@ public:
     std::vector<Coerce> paramCoerce;
     // What each local starts as, for a typed var: 0, NaN, false or null.
     std::vector<Coerce> localInit;
+    // The same as values (finish()).
+    std::vector<Val> localDefaults;
     std::vector<int32_t> cellInit;  // a cell's starting value, as a Coerce (-1: undefined)
     // The rest parameter's local (-1: none), and the local or cell
     // 'arguments' is kept in (-1: not used).
@@ -162,6 +166,9 @@ public:
         : name(n)
         , arity(a) {
     }
+
+    // Once the code is complete: fused instructions, locals' defaults.
+    void finish();
 };
 
 // A class member as compiled.

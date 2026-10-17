@@ -124,6 +124,9 @@ const char* getOpCodeName(OpCode op) {
         case OpCode::OP_NOT_EQUAL_JUMP: return "NOT_EQUAL_JUMP";
         case OpCode::OP_STRICT_EQUAL_JUMP: return "STRICT_EQUAL_JUMP";
         case OpCode::OP_STRICT_NOT_EQUAL_JUMP: return "STRICT_NOT_EQUAL_JUMP";
+        case OpCode::OP_LOCAL_CONSTANT_COMPARE_JUMP: return "LOCAL_CONSTANT_COMPARE_JUMP";
+        case OpCode::OP_LOCAL_LOCAL_COMPARE_JUMP: return "LOCAL_LOCAL_COMPARE_JUMP";
+        case OpCode::OP_COUNT: break;
     }
     return "UNKNOWN";
 }
@@ -134,6 +137,8 @@ int getOpCodeOperandCount(OpCode op) {
         case OpCode::OP_GET_LOCAL:
         case OpCode::OP_GET_LOCAL_CONSTANT:
         case OpCode::OP_GET_LOCAL_LOCAL:
+        case OpCode::OP_LOCAL_CONSTANT_COMPARE_JUMP:
+        case OpCode::OP_LOCAL_LOCAL_COMPARE_JUMP:
         case OpCode::OP_SET_LOCAL:
         case OpCode::OP_PUT_LOCAL:
         case OpCode::OP_GET_CELL:

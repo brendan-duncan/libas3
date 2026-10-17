@@ -630,7 +630,7 @@ std::shared_ptr<BytecodeFunction> Compiler::compile(Program* program) {
         }
         throw CompileError("Compilation failed: " + all, fileName, 0);
     }
-    script->chunk.fuse();
+    script->finish();
     return script;
 }
 
@@ -891,7 +891,7 @@ std::shared_ptr<BytecodeFunction> Compiler::compileFunction(
     proto->maxStack = static_cast<uint16_t>(std::min(state.maxDepth + 8, 65535));
     fs = saved;
     currentLine = savedLine;
-    proto->chunk.fuse();
+    proto->finish();
     return proto;
 }
 

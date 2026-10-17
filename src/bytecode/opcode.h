@@ -164,6 +164,11 @@ enum class OpCode : uint8_t {
     OP_NOT_EQUAL_JUMP,
     OP_STRICT_EQUAL_JUMP,
     OP_STRICT_NOT_EQUAL_JUMP,
+    // GET_LOCAL, then CONSTANT or GET_LOCAL, then a comparison and its
+    // jump (a loop's test): the comparison's fused opcode is read from
+    // the third instruction.
+    OP_LOCAL_CONSTANT_COMPARE_JUMP,
+    OP_LOCAL_LOCAL_COMPARE_JUMP,
 
     // Not an instruction: how many there are.
     OP_COUNT,

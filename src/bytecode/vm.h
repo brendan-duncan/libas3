@@ -378,8 +378,7 @@ private:
     const char* stackEntry = nullptr;
     size_t nativeStackLimit = 512 * 1024;
     bool overflowing = false;
-    std::vector<std::weak_ptr<Value>> made;
-    size_t madeCheck = 1024;
+    Value::TrackList made;
     std::vector<TimerEntry> timers;
     int nextTimer = 1;
     double started = 0;

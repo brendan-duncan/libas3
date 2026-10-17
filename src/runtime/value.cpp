@@ -47,6 +47,17 @@ const ValuePtr& sharedBoolean(bool flag) {
 
 } // namespace
 
+Value::~Value() {
+    if (trackList) {
+        if (trackPrev) {
+            trackPrev->trackNext = trackNext;
+        } else {
+            trackList->head = trackNext;
+        }
+        if (trackNext) trackNext->trackPrev = trackPrev;
+    }
+}
+
 void releaseValue(Value* value) noexcept {
     // Moved out first: letting go of it may destroy the Value.
     ValuePtr last = std::move(value->heldByVals);

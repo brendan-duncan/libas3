@@ -104,6 +104,26 @@ size_t Chunk::instructionLength(size_t offset) const {
     return 1 + static_cast<size_t>(getOpCodeOperandCount(op));
 }
 
+namespace {
+
+bool isComparison(OpCode op) {
+    switch (op) {
+        case OpCode::OP_LESS:
+        case OpCode::OP_GREATER:
+        case OpCode::OP_LESS_EQUAL:
+        case OpCode::OP_GREATER_EQUAL:
+        case OpCode::OP_EQUAL:
+        case OpCode::OP_NOT_EQUAL:
+        case OpCode::OP_STRICT_EQUAL:
+        case OpCode::OP_STRICT_NOT_EQUAL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+} // namespace
+
 void Chunk::fuse() {
     for (size_t at = 0; at < code.size();) {
         // The VM dispatches on the opcode without a range check: every
@@ -120,10 +140,20 @@ void Chunk::fuse() {
         const bool jumps = then == OpCode::OP_JUMP_IF_TRUE || then == OpCode::OP_JUMP_IF_FALSE;
         OpCode fused = op;
         switch (op) {
-            case OpCode::OP_GET_LOCAL:
+            case OpCode::OP_GET_LOCAL: {
                 if (then == OpCode::OP_CONSTANT) fused = OpCode::OP_GET_LOCAL_CONSTANT;
                 if (then == OpCode::OP_GET_LOCAL) fused = OpCode::OP_GET_LOCAL_LOCAL;
+                // A comparison and its jump after them: a loop's test. The
+                // comparison is fused with its jump when this walk reaches it.
+                const size_t third = next + instructionLength(next);
+                if (fused != op && third + 1 < code.size() && isComparison(static_cast<OpCode>(code[third])) &&
+                    (code[third + 1] == static_cast<uint8_t>(OpCode::OP_JUMP_IF_TRUE) ||
+                     code[third + 1] == static_cast<uint8_t>(OpCode::OP_JUMP_IF_FALSE))) {
+                    fused = then == OpCode::OP_CONSTANT ? OpCode::OP_LOCAL_CONSTANT_COMPARE_JUMP
+                                                        : OpCode::OP_LOCAL_LOCAL_COMPARE_JUMP;
+                }
                 break;
+            }
             case OpCode::OP_COERCE:
                 if (then == OpCode::OP_PUT_LOCAL) fused = OpCode::OP_COERCE_PUT_LOCAL;
                 break;
@@ -165,6 +195,14 @@ void Chunk::fuse() {
     }
 }
 
+void BytecodeFunction::finish() {
+    chunk.fuse();
+    localDefaults.clear();
+    for (const Coerce coerce : localInit) {
+        localDefaults.push_back(defaultForCoerce(coerce));
+    }
+}
+
 void Chunk::disassemble(const std::string& title) const {
     std::cout << "== " << title << " ==" << std::endl;
     for (size_t offset = 0; offset < code.size();) {
@@ -180,7 +218,7 @@ size_t Chunk::disassembleInstruction(size_t offset) const {
         std::cout << std::setw(4) << getLine(offset) << " ";
     }
     const OpCode op = static_cast<OpCode>(code[offset]);
-    std::cout << std::left << std::setw(26) << getOpCodeName(op) << std::right;
+    std::cout << std::left << std::setw(28) << getOpCodeName(op) << std::right;
     int operands = getOpCodeOperandCount(op);
     if (op == OpCode::OP_WITH_GET || op == OpCode::OP_WITH_SET || op == OpCode::OP_WITH_FIND) {
         // A name, the locals of the with objects, and a jump.
