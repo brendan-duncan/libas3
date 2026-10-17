@@ -397,10 +397,10 @@ public:
     Val defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass);
     Val resolveTypeName(const std::string& name, const CompileUnit* unit);
     Val lookupQualified(const std::string& qualifiedName, bool askResolver);
-    void registerDefinition(const std::string& qualifiedName, const Val& value, bool isScriptClass);
+    void registerDefinition(const std::string& qualifiedName, const Val& value);
     Val readTrait(const Val& object, const Trait& trait, bool isStatic);
     void writeTrait(const Val& object, const Trait& trait, const Val& value, const std::string& name, bool isStatic);
-    Val boundMethod(const Val& object, const Trait& trait, const std::string& name);
+    Val boundMethod(const Val& object, const Trait& trait);
     Val applyType(const Val& base, const std::vector<Val>& types);
     std::shared_ptr<ClassInfo> vectorClass(const Val& elementType);
     Val makeIterator(const Val& object, bool each);

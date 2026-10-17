@@ -132,8 +132,7 @@ void VM::throwError(const std::string& className, const std::string& message, in
     throw exception;
 }
 
-void VM::nullError(const Val& object, const std::string& name) {
-    (void)name;
+void VM::nullError(const Val& object, const std::string&) {
     if (object.isNull()) {
         throwError("TypeError", "Error #1009: Cannot access a property or method of a null object reference.", 1009);
     }
@@ -334,8 +333,7 @@ bool VM::lessThan(const Val& a, const Val& b, bool& undefinedResult) {
 
 // Traits
 
-Val VM::boundMethod(const Val& object, const Trait& trait, const std::string& name) {
-    (void)name;
+Val VM::boundMethod(const Val& object, const Trait& trait) {
     if (!trait.method.isObject()) {
         return Val();
     }
@@ -381,7 +379,7 @@ Val VM::readTrait(const Val& object, const Trait& trait, bool isStatic) {
             return Val();
         }
         case TraitKind::Method:
-            return boundMethod(object, trait, std::string());
+            return boundMethod(object, trait);
         case TraitKind::Accessor:
             if (trait.getter.isObject()) {
                 const FunctionInfo& info = *trait.getter->function;
@@ -699,11 +697,6 @@ bool VM::callProp(const Val& object, const std::string& name, Val* args, uint32_
         function = trait && trait->kind == TraitKind::Method ? trait->method : getProp(self, name, nullptr);
     }
     if (!function.isFunction() && !function.isClass()) {
-        if (function.isUndefined() && self.isObject() && self->cls && !self->cls->isDynamic && !self->host &&
-            self->type == ValueType::Object && !self->cls->isNative) {
-            throwError("TypeError",
-                       "Error #1006: " + name + " is not a function.", 1006);
-        }
         throwError("TypeError", "Error #1006: " + name + " is not a function.", 1006);
     }
     return invoke(function, self, args, argc, result);
@@ -1051,7 +1044,7 @@ void VM::assignName(CallFrame& frame, const std::string& name, const Val& value)
 void VM::defineVar(CallFrame& frame, const std::string& name, const Val& value, bool onlyIfMissing) {
     if (name.find('.') != std::string::npos) {
         if (!onlyIfMissing || !definitions.count(name)) {
-            registerDefinition(name, value, false);
+            registerDefinition(name, value);
         }
         return;
     }
@@ -1118,7 +1111,7 @@ Val VM::packageObject(const std::string& name) {
     return Val();
 }
 
-void VM::registerDefinition(const std::string& qualifiedName, const Val& value, bool isScriptClass) {
+void VM::registerDefinition(const std::string& qualifiedName, const Val& value) {
     const std::string name = normalizeName(qualifiedName);
     definitions[name] = value;
     const size_t dot = name.find_last_of('.');
@@ -1129,7 +1122,6 @@ void VM::registerDefinition(const std::string& qualifiedName, const Val& value, 
         // the host find classes so).
         globals[name.substr(dot + 1)] = value;
     }
-    (void)isScriptClass;
     missing.erase(name);
     ++namesVersion;
 }
@@ -1216,11 +1208,11 @@ std::shared_ptr<ClassInfo> VM::findClass(const std::string& qualifiedName) {
 }
 
 void VM::defineFunction(const std::string& qualifiedName, NativeMethod function, int length) {
-    registerDefinition(qualifiedName, makeFunction(shortNameOf(qualifiedName), std::move(function), length), false);
+    registerDefinition(qualifiedName, makeFunction(shortNameOf(qualifiedName), std::move(function), length));
 }
 
 void VM::defineValue(const std::string& qualifiedName, const Val& value) {
-    registerDefinition(qualifiedName, value, false);
+    registerDefinition(qualifiedName, value);
 }
 
 Val VM::resolveTypeName(const std::string& typeName, const CompileUnit* unit) {
@@ -1396,7 +1388,7 @@ Val VM::defineClassFromTemplate(const std::shared_ptr<ClassTemplate>& klass) {
         object->properties[klass->name] = cls->constructor;
     }
 
-    registerDefinition(klass->qualifiedName, classVal, true);
+    registerDefinition(klass->qualifiedName, classVal);
     if (klass->packageName.empty()) {
         globals[klass->name] = classVal;
     }
@@ -1681,7 +1673,7 @@ Val NativeClassBuilder::define() {
     object->cls = _info;
     cls.classObject = object;
     Val classVal(object);
-    _vm.registerDefinition(cls.name, classVal, false);
+    _vm.registerDefinition(cls.name, classVal);
     return classVal;
 }
 

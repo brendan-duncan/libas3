@@ -213,7 +213,7 @@ Val sortOnMethod(VM& vm, const Val& self, Args args) {
 }
 
 // The methods arrays and vectors share.
-void collectionMethods(NativeClassBuilder& builder, bool vector) {
+void collectionMethods(NativeClassBuilder& builder) {
     builder
         .property("length",
                   [](VM& vm, const Val& self, Args) {
@@ -428,7 +428,6 @@ void collectionMethods(NativeClassBuilder& builder, bool vector) {
                 1)
         .method("sort", sortMethod, 1)
         .method("sortOn", sortOnMethod, 2);
-    (void)vector;
 }
 
 } // namespace
@@ -465,7 +464,7 @@ void defineArrayBuiltins(VM& vm) {
             makeArray(vm, made, args);
             return made;
         });
-    collectionMethods(array, false);
+    collectionMethods(array);
     core.array = array.define().ref->cls;
 
     NativeClassBuilder vector = vm.defineNativeClass("__AS3__.vec.Vector");
@@ -500,7 +499,7 @@ void defineArrayBuiltins(VM& vm) {
                       self->boolValue = args[0].toBoolean();
                       return Val();
                   });
-    collectionMethods(vector, true);
+    collectionMethods(vector);
     Val vectorClass = vector.define();
     core.vector = vectorClass->cls;
     // "Vector" is the generic one, Vector.<T> made from it.

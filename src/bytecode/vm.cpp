@@ -1837,7 +1837,7 @@ void VM::defineExternClass(const std::string& className, const std::map<std::str
         classValue->properties[pair.first] = method;
         classValue->cls->prototype[pair.first] = method;
     }
-    registerDefinition(className, Val(classValue), true);
+    registerDefinition(className, Val(classValue));
 }
 
 void VM::registerObject(const std::string& name, const std::string& classType) {
