@@ -39,6 +39,7 @@ add_library(as3_parser
     src/abc/abc_compiler.cpp
     src/avm1/avm1_compiler.cpp
     src/avm1/avm1_disassembler.cpp
+    src/avm1/avm1_interpreter.cpp
     src/abc/abc_domain.cpp
     src/js/js_writer.cpp
     src/js/js_translator.cpp
@@ -99,6 +100,7 @@ add_executable(as3_tests
     test/abc_tests.cpp
     test/abc_compiler_tests.cpp
     test/avm1_tests.cpp
+    test/avm1_run_tests.cpp
     test/abc_domain_tests.cpp
     test/js_tests.cpp
     test/js_as2_tests.cpp
