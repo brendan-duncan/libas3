@@ -203,11 +203,131 @@ bool isXmlMethod(const std::string& name) {
     return names.count(name) > 0;
 }
 
+// The types of the player's display and event properties, for objects of
+// its classes (and of classes extending them).
+Ty playerPropertyType(const std::string& name) {
+    static const std::map<std::string, Ty::Kind> types = {
+        {"x", Ty::Number}, {"y", Ty::Number}, {"z", Ty::Number}, {"width", Ty::Number}, {"height", Ty::Number},
+        {"scaleX", Ty::Number}, {"scaleY", Ty::Number}, {"scaleZ", Ty::Number}, {"rotation", Ty::Number},
+        {"rotationX", Ty::Number}, {"rotationY", Ty::Number}, {"rotationZ", Ty::Number}, {"alpha", Ty::Number},
+        {"mouseX", Ty::Number}, {"mouseY", Ty::Number}, {"localX", Ty::Number}, {"localY", Ty::Number},
+        {"stageX", Ty::Number}, {"stageY", Ty::Number}, {"frameRate", Ty::Number},
+        {"numChildren", Ty::Int}, {"currentFrame", Ty::Int}, {"totalFrames", Ty::Int}, {"framesLoaded", Ty::Int},
+        {"tabIndex", Ty::Int}, {"stageWidth", Ty::Int}, {"stageHeight", Ty::Int}, {"keyCode", Ty::Uint},
+        {"charCode", Ty::Uint}, {"textColor", Ty::Uint},
+        {"visible", Ty::Boolean}, {"mouseEnabled", Ty::Boolean}, {"mouseChildren", Ty::Boolean},
+        {"buttonMode", Ty::Boolean}, {"useHandCursor", Ty::Boolean}, {"cacheAsBitmap", Ty::Boolean},
+        {"enabled", Ty::Boolean}, {"bubbles", Ty::Boolean}, {"cancelable", Ty::Boolean}, {"shiftKey", Ty::Boolean},
+        {"ctrlKey", Ty::Boolean}, {"altKey", Ty::Boolean}, {"buttonDown", Ty::Boolean},
+        {"name", Ty::String}, {"text", Ty::String}, {"htmlText", Ty::String}, {"type", Ty::String},
+        {"blendMode", Ty::String}, {"currentLabel", Ty::String},
+    };
+    auto found = types.find(name);
+    if (found != types.end()) return Ty::of(found->second);
+    static const std::map<std::string, std::string> objects = {
+        {"parent", "flash.display.DisplayObjectContainer"}, {"root", "flash.display.DisplayObject"},
+        {"stage", "flash.display.Stage"}, {"graphics", "flash.display.Graphics"},
+        {"loaderInfo", "flash.display.LoaderInfo"}, {"transform", "flash.geom.Transform"},
+    };
+    auto object = objects.find(name);
+    return object == objects.end() ? Ty() : Ty::instance(object->second);
+}
+
 // A comment of the source on a line of its own.
 struct Comment {
     int line = 0;
     std::vector<std::string> text;
+    bool used = false;
 };
+
+// The last line code is on, for the comments in it.
+int lastLine(Expression* e);
+int lastLine(Statement* s);
+
+int lastLine(Expression* e) {
+    if (!e) return 0;
+    int line = e->line;
+    const auto take = [&line](int other) { line = std::max(line, other); };
+    switch (e->kind) {
+        case EK::Binary: {
+            auto* b = static_cast<BinaryExpression*>(e);
+            take(lastLine(b->right.get()));
+            if (b->left && b->left->kind != EK::Binary) take(lastLine(b->left.get()));
+            break;
+        }
+        case EK::Unary: take(lastLine(static_cast<UnaryExpression*>(e)->operand.get())); break;
+        case EK::Conditional: {
+            auto* c = static_cast<ConditionalExpression*>(e);
+            take(lastLine(c->consequent.get()));
+            take(lastLine(c->alternate.get()));
+            break;
+        }
+        case EK::Assignment: take(lastLine(static_cast<AssignmentExpression*>(e)->right.get())); break;
+        case EK::Call: {
+            auto* c = static_cast<CallExpression*>(e);
+            take(lastLine(c->callee.get()));
+            for (auto& arg : c->arguments) take(lastLine(arg.get()));
+            break;
+        }
+        case EK::New:
+            for (auto& arg : static_cast<NewExpression*>(e)->arguments) take(lastLine(arg.get()));
+            break;
+        case EK::Member: take(lastLine(static_cast<MemberExpression*>(e)->object.get())); break;
+        case EK::Function: take(lastLine(static_cast<FunctionExpression*>(e)->body.get())); break;
+        case EK::Array:
+            for (auto& element : static_cast<ArrayExpression*>(e)->elements) take(lastLine(element.get()));
+            break;
+        case EK::Object:
+            for (auto& property : static_cast<ObjectExpression*>(e)->properties) take(lastLine(property.second.get()));
+            break;
+        case EK::Sequence:
+            for (auto& part : static_cast<SequenceExpression*>(e)->expressions) take(lastLine(part.get()));
+            break;
+        default: break;
+    }
+    return line;
+}
+
+int lastLine(Statement* stmt) {
+    if (!stmt) return 0;
+    int line = stmt->line;
+    const auto take = [&line](int other) { line = std::max(line, other); };
+    if (auto* block = dynamic_cast<BlockStatement*>(stmt)) {
+        for (auto& s : block->statements) take(lastLine(s.get()));
+    } else if (auto* expression = dynamic_cast<ExpressionStatement*>(stmt)) {
+        take(lastLine(expression->expression.get()));
+    } else if (auto* variables = dynamic_cast<VariableDefinition*>(stmt)) {
+        for (auto& decl : variables->declarations) take(lastLine(decl->init.get()));
+    } else if (auto* function = dynamic_cast<FunctionDefinition*>(stmt)) {
+        take(lastLine(function->body.get()));
+    } else if (auto* branch = dynamic_cast<IfStatement*>(stmt)) {
+        take(lastLine(branch->consequent.get()));
+        take(lastLine(branch->alternate.get()));
+    } else if (auto* loop = dynamic_cast<WhileStatement*>(stmt)) {
+        take(lastLine(loop->body.get()));
+    } else if (auto* doLoop = dynamic_cast<DoWhileStatement*>(stmt)) {
+        take(lastLine(doLoop->body.get()));
+    } else if (auto* forLoop = dynamic_cast<ForStatement*>(stmt)) {
+        take(lastLine(forLoop->body.get()));
+    } else if (auto* forIn = dynamic_cast<ForInStatement*>(stmt)) {
+        take(lastLine(forIn->body.get()));
+    } else if (auto* choice = dynamic_cast<SwitchStatement*>(stmt)) {
+        for (auto& clause : choice->cases) {
+            for (auto& s : clause->consequent) take(lastLine(s.get()));
+        }
+    } else if (auto* labeled = dynamic_cast<LabeledStatement*>(stmt)) {
+        take(lastLine(labeled->body.get()));
+    } else if (auto* attempt = dynamic_cast<TryStatement*>(stmt)) {
+        take(lastLine(attempt->block.get()));
+        for (auto& clause : attempt->catches) take(lastLine(clause.body.get()));
+        take(lastLine(attempt->finallyBody.get()));
+    } else if (auto* with = dynamic_cast<WithStatement*>(stmt)) {
+        take(lastLine(with->body.get()));
+    } else if (auto* result = dynamic_cast<ReturnStatement*>(stmt)) {
+        take(lastLine(result->argument.get()));
+    }
+    return line;
+}
 
 std::vector<Comment> scanComments(const std::string& source) {
     std::vector<Comment> comments;
@@ -324,7 +444,10 @@ private:
     Fn* fn = nullptr;
     Bindings* bindings = nullptr;
     std::vector<Comment> comments;
-    size_t commentAt = 0;
+    // The lines whose comments may go where code is being written: a
+    // class member's, while it is.
+    int commentLow = 0;
+    int commentHigh = 1 << 30;
     std::vector<std::string> sourceLines;
 
     // Classes: their subclasses, private names, method definitions.
@@ -334,6 +457,9 @@ private:
     // The instance methods' names of every class, for o.name of an o not
     // known.
     std::set<std::string> methodNames;
+    // The argument of a call being translated: a method of an object not
+    // known, passed, is bound.
+    Expression* argumentNode = nullptr;
 
     // Diagnostics
     void error(const std::string& message, int line = -1) { model.error(message, line); }
@@ -825,6 +951,7 @@ Translator::Ref Translator::resolve(const std::string& name) {
         ref.object = thisRef();
         ref.property = name;
         ref.text = dotted(ref.object, name);
+        if (hasRuntimeBase(cls)) ref.type = playerPropertyType(name);
         return ref;
     }
     ref.kind = Ref::Unknown;
@@ -1305,9 +1432,11 @@ std::string Translator::functionText(const std::vector<std::unique_ptr<Parameter
 
 void Translator::flushComments(Lines& out, int line) {
     if (!options.comments || line <= 0) return;
-    while (commentAt < comments.size() && comments[commentAt].line < line) {
-        for (const std::string& text : comments[commentAt].text) out.add(text);
-        ++commentAt;
+    for (Comment& comment : comments) {
+        if (comment.line >= line) break;
+        if (comment.used || comment.line <= commentLow || comment.line > commentHigh) continue;
+        for (const std::string& text : comment.text) out.add(text);
+        comment.used = true;
     }
 }
 
@@ -1735,6 +1864,9 @@ Ty builtinMemberType(const Ty& object, const std::string& name) {
         return Ty::of(object.kind == Ty::String ? Ty::Int : Ty::Uint);
     }
     if (object.isXml()) return Ty::instance("XMLList");
+    if (object.kind == Ty::Instance && (object.name.compare(0, 6, "flash.") == 0 || object.name.compare(0, 3, "fl.") == 0)) {
+        return playerPropertyType(name);
+    }
     return Ty();
 }
 
@@ -1819,10 +1951,8 @@ E Translator::coerce(E value, const Ty& target) {
             return make("as3.str(" + value.s + ")", P_Call, target);
         case Ty::Object:
         case Ty::Instance:
-            if (from.kind == Ty::Any && value.s != "undefined" && value.s.compare(0, 4, "new ") != 0) {
-                E made = make(paren(value, P_BitOr) + " ?? null", P_Coalesce, target);
-                return made;
-            }
+            // undefined stored is null; what may be undefined is kept as it
+            // is (both are == null).
             if (value.s == "undefined") return make("null", P_Primary, target);
             return value;
         default:
@@ -2338,7 +2468,10 @@ E Translator::incDec(Expression* operand, bool increment, bool postfix, bool dis
 std::string Translator::arguments(const ExpressionList& args, const std::vector<Ty>* types) {
     std::string out;
     for (size_t i = 0; i < args.size(); ++i) {
+        Expression* saved = argumentNode;
+        argumentNode = args[i].get();
         E value = expr(args[i].get());
+        argumentNode = saved;
         if (types && i < types->size()) value = coerce(value, (*types)[i]);
         out += (i ? ", " : "") + paren(value, P_Assign);
     }
@@ -2651,10 +2784,14 @@ E Translator::member(MemberExpression* e, bool callee) {
             return make(base + (isIdentifier(property) ? dot + property : "[" + quote(property) + "]"), P_Primary, type);
         }
     }
+    if (object.t.kind == Ty::Instance && object.t.cls && !callee && hasRuntimeBase(object.t.cls)) {
+        return make(e->optional ? base + "?." + name : dotted(base, name), P_Primary, playerPropertyType(name));
+    }
     if (object.t.isXml() && !callee && isXmlMethod(name)) {
         return make(base + dot + "child(" + quote(name) + ")", P_Call, Ty::instance("XMLList"));
     }
-    if (!callee && (object.t.kind == Ty::Any || object.t.kind == Ty::Object) && methodNames.count(name) && !e->optional) {
+    if (!callee && e == argumentNode && (object.t.kind == Ty::Any || object.t.kind == Ty::Object) && methodNames.count(name) &&
+        !e->optional) {
         return make("as3.bind(" + object.s + ", " + quote(name) + ")", P_Call, Ty::of(Ty::Function));
     }
     Ty type = builtinMemberType(object.t, name);
@@ -2838,6 +2975,28 @@ std::string Translator::translateClass(ClassModel& cls) {
     std::string superAlias;
     if (!root) superAlias = cls.superClass ? classRef(cls.superClass) : bind(cls.superName);
 
+    // Each member's comments: from the end of the one before to its own.
+    std::map<AstNode*, std::pair<int, int>> spans;
+    {
+        int previous = cls.line;
+        for (auto& node : cls.ast->members) {
+            auto* stmt = dynamic_cast<Statement*>(node.get());
+            const int last = stmt ? std::max(lastLine(stmt), stmt->line) : previous;
+            spans[node.get()] = {previous, last};
+            previous = std::max(previous, last);
+        }
+    }
+    const auto window = [&](AstNode* node) {
+        auto found = spans.find(node);
+        if (found == spans.end()) return;
+        commentLow = found->second.first;
+        commentHigh = found->second.second;
+    };
+    const auto anyWindow = [&]() {
+        commentLow = 0;
+        commentHigh = 1 << 30;
+    };
+
     // The class's members, in order.
     FunctionDefinition* constructor = nullptr;
     std::vector<std::pair<VariableDeclaration*, bool>> instanceFields;   // decl, isConst
@@ -2851,6 +3010,11 @@ std::string Translator::translateClass(ClassModel& cls) {
         }
         if (auto* variables = dynamic_cast<VariableDefinition*>(node.get())) {
             if (hasAttribute(variables->attributes, AttributeType::Static)) continue;
+            window(node.get());
+            Lines leading;
+            flushComments(leading, variables->line);
+            anyWindow();
+            for (const std::string& line : leading.lines()) fieldDefaults.push_back(line);
             for (auto& decl : variables->declarations) {
                 const Member& member = cls.instance[decl->id->name];
                 const std::string key = memberName(&cls, decl->id->name, member);
@@ -2883,7 +3047,10 @@ std::string Translator::translateClass(ClassModel& cls) {
         const auto& params = constructor ? constructor->parameters : none;
         Statement* code = constructor ? constructor->body.get() : nullptr;
         BlockStatement empty{std::vector<StatementPtr>()};
-        if (constructor) flushComments(body, constructor->line);
+        if (constructor) {
+            window(constructor);
+            flushComments(body, constructor->line);
+        }
         const auto prologue = [&](Lines& lines) {
             for (const auto& field : instanceFields) {
                 VariableDeclaration* decl = field.first;
@@ -2899,6 +3066,7 @@ std::string Translator::translateClass(ClassModel& cls) {
         body.add(functionText(params, code ? code : &empty, f, "$construct", false),
                  constructor ? constructor->line : cls.line);
         prologueHook = nullptr;
+        anyWindow();
     }
 
     // Methods, getters and setters; statics after the class; static code
@@ -2928,8 +3096,10 @@ std::string Translator::translateClass(ClassModel& cls) {
             const std::string key = methodKey(memberName(&cls, name, member));
             std::string head = std::string(isStatic ? "static " : "") + (function->isGetter ? "get " : function->isSetter ? "set " : "") + key;
             body.blank();
+            window(function);
             flushComments(body, function->line);
             body.add(functionText(function->parameters, function->body.get(), f, head, false), function->line);
+            anyWindow();
             // An accessor overriding half of one: the other half, as the
             // superclass has it.
             if (member.kind == Member::Accessor && !isStatic && !accessorsDone.count(name) &&
@@ -2958,11 +3128,10 @@ std::string Translator::translateClass(ClassModel& cls) {
                 Fn* saved = fn;
                 fn = &staticFn;
                 if (!literal.empty()) {
-                    after.add(dotted(cls.name, property) + " = " + coerce(make(literal, literal[0] == '-' ? P_Unary : P_Primary,
-                                                                              literal == "null" ? Ty::of(Ty::Null) : Ty()),
-                                                                         type)
-                                                                      .s +
-                                  ";",
+                    window(node.get());
+                    flushComments(after, variables->line);
+                    anyWindow();
+                    after.add(dotted(cls.name, property) + " = " + paren(coerce(expr(decl->init.get()), type), P_Assign) + ";",
                               decl->id->line > 0 ? decl->id->line : variables->line);
                 } else {
                     after.add(dotted(cls.name, property) + " = " + defaultValue(type) + ";", variables->line);
@@ -3202,7 +3371,8 @@ std::string Translator::translateFile(SourceFile& source) {
     model.currentFile = source.fileName;
     const std::string& text = sourceTexts[source.fileName];
     comments = options.comments ? scanComments(text) : std::vector<Comment>();
-    commentAt = 0;
+    commentLow = 0;
+    commentHigh = 1 << 30;
     sourceLines.clear();
     {
         std::istringstream in(text);
