@@ -1398,7 +1398,12 @@ void Compiler::compileForInStatement(ForInStatement* stmt, const std::vector<std
 
     // The key (or value) into the variable.
     if (auto* variables = dynamic_cast<VariableDefinition*>(stmt->left.get())) {
-        const std::string& name = variables->declarations.front()->id->name;
+        const auto& decl = variables->declarations.front();
+        const std::string& name = decl->id->name;
+        if (fs->isScript && !fs->vars.count(name)) {
+            // A script's var: its type known from here on.
+            fs->scriptVars[name] = coerceForType(decl->type ? decl->type->name : std::string());
+        }
         emitStore(resolve(name), name, false);
     } else if (auto* target = dynamic_cast<ExpressionStatement*>(stmt->left.get())) {
         Expression* expr = target->expression.get();
