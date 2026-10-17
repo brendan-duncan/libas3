@@ -1232,7 +1232,7 @@ private:
         block(body, out);
         _fn = saved;
         _withs = savedWiths;
-        const std::string head = "function" + (declaration || !name.empty() ? " " + localName(F(name)) : std::string()) + "(" + list + ") {";
+        const std::string head = "function" + (declaration || !name.empty() ? " " + localName(F(name)) : std::string(" ")) + "(" + list + ") {";
         if (out.lines.empty()) return head + "}";
         return head + "\n" + out.text() + "\n}";
     }
