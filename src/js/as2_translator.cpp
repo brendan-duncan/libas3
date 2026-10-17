@@ -1433,7 +1433,13 @@ private:
             case OperatorType::Add: {
                 const Kind lk = kindOf(l), rk = kindOf(r);
                 if (lk == Kind::Num && rk == Kind::Num) return {num(l) + " + " + num(r), Kind::Num, false};
-                if (lk == Kind::Str || rk == Kind::Str) return {str(l) + " + " + str(r), Kind::Str, false};
+                if (lk == Kind::Str || rk == Kind::Str) {
+                    // "a" + b + c: the left joins without parentheses.
+                    auto* chain = dynamic_cast<BinaryExpression*>(l);
+                    const std::string left =
+                        lk == Kind::Str && chain && chain->op == OperatorType::Add ? expression(l).t : str(l);
+                    return {left + " + " + str(r), Kind::Str, false};
+                }
                 return {"$.add(" + expression(l).t + ", " + expression(r).t + ")"};
             }
             case OperatorType::Subtract: return arithmetic("-");

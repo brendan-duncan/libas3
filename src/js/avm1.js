@@ -631,13 +631,41 @@ var avm1 = (function () {
     $.parseFloat = (s) => parseFloat($.s(s));
     $.isNaN = (v) => Number.isNaN($.n(v));
     $.isFinite = (v) => Number.isFinite($.n(v));
+    // A string's UTF-8 bytes, and back (no TextEncoder in every engine).
+    function utf8(text) {
+        const bytes = [];
+        for (const ch of text) {
+            const c = ch.codePointAt(0);
+            if (c < 0x80) bytes.push(c);
+            else if (c < 0x800) bytes.push(0xc0 | (c >> 6), 0x80 | (c & 63));
+            else if (c < 0x10000) bytes.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+            else bytes.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 63), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
+        }
+        return bytes;
+    }
+    function fromUtf8(bytes) {
+        let out = "";
+        for (let i = 0; i < bytes.length;) {
+            const b = bytes[i];
+            const more = b >= 0xf0 ? 3 : b >= 0xe0 ? 2 : b >= 0xc0 ? 1 : 0;
+            if (more === 0 || i + more >= bytes.length) {
+                out += String.fromCharCode(b);
+                i++;
+                continue;
+            }
+            let c = b & (0x3f >> more);
+            for (let k = 1; k <= more; k++) c = (c << 6) | (bytes[i + k] & 63);
+            out += String.fromCodePoint(c);
+            i += more + 1;
+        }
+        return out;
+    }
     // escape: what is not a letter or a digit as %XX of its UTF-8 bytes.
     $.escape = function (s) {
-        const bytes = new TextEncoder().encode($.s(s));
         let out = "";
-        for (const b of bytes) {
+        for (const b of utf8($.s(s))) {
             const c = String.fromCharCode(b);
-            out += /[A-Za-z0-9@*_+\-./]/.test(c) && b < 128 ? c : "%" + (b < 16 ? "0" : "") + b.toString(16).toUpperCase();
+            out += b < 128 && /[A-Za-z0-9@*_+\-./]/.test(c) ? c : "%" + (b < 16 ? "0" : "") + b.toString(16).toUpperCase();
         }
         return out;
     };
@@ -652,10 +680,10 @@ var avm1 = (function () {
             } else if (c < 128) {
                 bytes.push(c);
             } else {
-                for (const b of new TextEncoder().encode(text[i])) bytes.push(b);
+                for (const b of utf8(text[i])) bytes.push(b);
             }
         }
-        return new TextDecoder().decode(new Uint8Array(bytes));
+        return fromUtf8(bytes);
     };
 
     // ---- Timers: setInterval(f, ms, ...), setInterval(o, "name", ms, ...).
