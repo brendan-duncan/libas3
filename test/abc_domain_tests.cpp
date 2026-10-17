@@ -64,7 +64,7 @@ std::string runAbc(const std::string& code) {
     try {
         domain.runEntry();
     } catch (ScriptException& exception) {
-        throw std::runtime_error("ABC: " + vm.toString(exception.value) + "\n" + domain.lastErrorStack() +
+        throw std::runtime_error("ABC: " + vm.toString(exception.value) + "\n" + domain.takeErrorStack() +
                                  "Output so far:\n" + out);
     }
     return out;
@@ -425,7 +425,7 @@ package app {
         std::string error;
         if (!domain.load(bytes, error)) throw std::runtime_error(error);
         if (!vm.load("import app.Main; trace(Main.run(), new Main(), String(new Main()));", "use.as")) {
-            throw std::runtime_error(vm.getError() + "\n" + domain.lastErrorStack());
+            throw std::runtime_error(vm.getError() + "\n" + domain.takeErrorStack());
         }
         expect(out, "hi abc [Main] [Main]\n");
     });
@@ -480,7 +480,7 @@ package app {
             vm.callFunction(clip->frames[0], root, Args());
             vm.callFunction(clip->frames[1], root, Args());
         } catch (ScriptException& exception) {
-            throw std::runtime_error(vm.toString(exception.value) + "\n" + domain.lastErrorStack());
+            throw std::runtime_error(vm.toString(exception.value) + "\n" + domain.takeErrorStack());
         }
         expect(out, "frame 1 1\n(stop)\nframe 2 2 true\n");
     });
@@ -558,7 +558,7 @@ package flash.utils {
                 throw std::runtime_error(error);
             }
             if (!vm.load(use, "use.as")) {
-                throw std::runtime_error("ABC: " + vm.getError() + "\n" + domain.lastErrorStack());
+                throw std::runtime_error("ABC: " + vm.getError() + "\n" + domain.takeErrorStack());
             }
             std::cout << "    " << domain.instructionCount() << " ABC instructions" << std::endl;
         }
@@ -595,7 +595,7 @@ package flash.utils {
             }
         }
         for (const std::string& name : failed) {
-            if (name.rfind("fl.text.", 0) != 0) throw std::runtime_error(name + "\n" + domain.lastErrorStack());
+            if (name.rfind("fl.text.", 0) != 0) throw std::runtime_error(name + "\n" + domain.takeErrorStack());
         }
         std::shared_ptr<ClassInfo> box = vm.findClass("fl.controls.CheckBox");
         if (!box || !box->base || box->base->name != "fl.controls.LabelButton") {

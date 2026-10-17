@@ -658,6 +658,9 @@ void Domain::State::addTraits(File& file, const std::vector<Trait>& traits, as3:
     const std::string prefix = cls.name + "/";
     for (const Trait& trait : traits) {
         const std::string key = keyOf(file, trait.name);
+        const uint32_t nameIndex =
+            trait.name < file.abc.pool.multinames.size() ? file.abc.pool.multinames[trait.name].name : 0;
+        const std::string& local = poolString(file.abc, nameIndex);
         switch (trait.kind) {
             case TRAIT_Slot:
             case TRAIT_Const:
@@ -676,7 +679,7 @@ void Domain::State::addTraits(File& file, const std::vector<Trait>& traits, as3:
                                                                   : defaultFor(file, trait.typeName);
                     if (made.coerce != Coerce::None) initial = coerceValue(initial, made.coerce);
                 } else if (trait.kind == TRAIT_Function) {
-                    initial = makeMethod(file, trait.index, scope, owner, prefix + key);
+                    initial = makeMethod(file, trait.index, scope, owner, prefix + local);
                 } else {
                     initial = Val::null();
                 }
@@ -695,7 +698,7 @@ void Domain::State::addTraits(File& file, const std::vector<Trait>& traits, as3:
                 made.isFinal = (trait.attributes & ATTR_Final) != 0;
                 made.declaredBy = &cls;
                 made.isPublic = nsKind(file.abc, file.abc.pool.multinames[trait.name].ns) == NS_Package;
-                made.method = makeMethod(file, trait.index, scope, owner, prefix + key);
+                made.method = makeMethod(file, trait.index, scope, owner, prefix + local);
                 table[key] = made;
                 break;
             }
@@ -709,7 +712,7 @@ void Domain::State::addTraits(File& file, const std::vector<Trait>& traits, as3:
                 made.declaredBy = &cls;
                 made.isPublic = nsKind(file.abc, file.abc.pool.multinames[trait.name].ns) == NS_Package;
                 Val function = makeMethod(file, trait.index, scope, owner,
-                                          prefix + (trait.kind == TRAIT_Getter ? "get " : "set ") + key);
+                                          prefix + (trait.kind == TRAIT_Getter ? "get " : "set ") + local);
                 if (trait.kind == TRAIT_Getter) {
                     made.getter = function;
                     made.typeName = qualifiedOf(file, file.abc.methods[trait.index].returnType);
@@ -973,6 +976,27 @@ bool Domain::State::findInDomain(const Name& n, const std::string& local, Val& h
     if (n.vmFound && names == &n.qualified) {
         holder = domainObject;
         if (value) *value = n.vmValue;
+        return true;
+    }
+    // The global object's constants.
+    for (const std::string& qualified : *names) {
+        Val constant;
+        if (qualified == "undefined") {
+            constant = Val();
+        } else if (qualified == "NaN") {
+            constant = Val::number(std::nan(""));
+        } else if (qualified == "Infinity") {
+            constant = Val::number(HUGE_VAL);
+        } else {
+            continue;
+        }
+        holder = domainObject;
+        if (value) *value = constant;
+        if (names == &n.qualified) {
+            Name& kept = const_cast<Name&>(n);
+            kept.vmFound = true;
+            kept.vmValue = constant;
+        }
         return true;
     }
     for (int pass = 0; pass < 2; ++pass) {
@@ -1286,6 +1310,7 @@ bool Domain::State::handle(Frame& frame, const ScriptException& exception) {
         *frame.sp++ = exception.value;
         frame.pc = handler.target;
         errorStack.clear();
+        errorDepth = 0;
         return true;
     }
     return false;
@@ -2211,8 +2236,11 @@ std::vector<std::string> Domain::definitionNames() const {
     return _state->order;
 }
 
-const std::string& Domain::lastErrorStack() const {
-    return _state->errorStack;
+std::string Domain::takeErrorStack() {
+    std::string stack;
+    stack.swap(_state->errorStack);
+    _state->errorDepth = 0;
+    return stack;
 }
 
 uint64_t Domain::instructionCount() const {

@@ -60,10 +60,11 @@ public:
     // Every definition the files have, qualified, in the order defined.
     std::vector<std::string> definitionNames() const;
 
-    // The methods running, innermost first ("\tat fl.core::UIComponent/draw()"),
+    // The methods running, innermost first ("\tat fl.core.UIComponent/draw()[@12]"),
     // as they were when the last ActionScript error came out of one: what a
-    // debugger player's getStackTrace would have said of them.
-    const std::string& lastErrorStack() const;
+    // debugger player's getStackTrace would have said of them. Taken: the
+    // next call gives the next error's.
+    std::string takeErrorStack();
 
     // How many instructions have run, for tests and profiling.
     uint64_t instructionCount() const;

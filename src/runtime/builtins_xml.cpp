@@ -42,6 +42,16 @@ XmlSettings& settings() {
     return current;
 }
 
+Val settingsObject(VM& vm, const XmlSettings& set) {
+    Val object = vm.newObject();
+    vm.setProperty(object, "ignoreComments", Val::boolean(set.ignoreComments));
+    vm.setProperty(object, "ignoreProcessingInstructions", Val::boolean(set.ignoreProcessingInstructions));
+    vm.setProperty(object, "ignoreWhitespace", Val::boolean(set.ignoreWhitespace));
+    vm.setProperty(object, "prettyPrinting", Val::boolean(set.prettyPrinting));
+    vm.setProperty(object, "prettyIndent", Val::number(set.prettyIndent));
+    return object;
+}
+
 // Parsing
 
 class XmlReader {
@@ -947,6 +957,25 @@ void defineXmlBuiltins(VM& vm) {
         .staticGetter("prettyIndent", [](VM&, const Val&, Args) { return Val::number(settings().prettyIndent); })
         .staticSetter("prettyIndent", [](VM&, const Val&, Args args) {
             settings().prettyIndent = std::max(0, args[0].toInt32());
+            return Val();
+        })
+        // The five settings as an object, to keep and put back.
+        .staticMethod("settings", [](VM& vm, const Val&, Args) { return settingsObject(vm, settings()); })
+        .staticMethod("defaultSettings", [](VM& vm, const Val&, Args) { return settingsObject(vm, XmlSettings()); })
+        .staticMethod("setSettings", [](VM& vm, const Val&, Args args) {
+            XmlSettings made;
+            if (args[0].isObject()) {
+                const Val& from = args[0];
+                const auto flag = [&](const char* name, bool& to) {
+                    if (vm.hasProperty(from, name)) to = vm.getProperty(from, name).toBoolean();
+                };
+                flag("ignoreComments", made.ignoreComments);
+                flag("ignoreProcessingInstructions", made.ignoreProcessingInstructions);
+                flag("ignoreWhitespace", made.ignoreWhitespace);
+                flag("prettyPrinting", made.prettyPrinting);
+                if (vm.hasProperty(from, "prettyIndent")) made.prettyIndent = vm.getProperty(from, "prettyIndent").toInt32();
+            }
+            settings() = made;
             return Val();
         })
         .method("name", [](VM&, const Val& self, Args) {
