@@ -33,6 +33,9 @@ add_library(as3_parser
     src/abc/abc_file.cpp
     src/abc/abc_opcodes.cpp
     src/abc/abc_verifier.cpp
+    src/abc/abc_builder.cpp
+    src/abc/abc_player.cpp
+    src/abc/abc_compiler.cpp
 )
 
 target_include_directories(as3_parser PUBLIC
@@ -64,6 +67,7 @@ add_executable(as3_tests
     test/error_tests.cpp
     test/xml_tests.cpp
     test/abc_tests.cpp
+    test/abc_compiler_tests.cpp
 )
 
 target_include_directories(as3_tests PRIVATE
