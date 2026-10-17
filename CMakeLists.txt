@@ -30,6 +30,8 @@ add_library(as3_parser
     src/runtime/builtins_json.cpp
     src/runtime/builtins_utils.cpp
     src/runtime/builtins_xml.cpp
+    src/avm1/avm1_compiler.cpp
+    src/avm1/avm1_disassembler.cpp
 )
 
 target_include_directories(as3_parser PUBLIC
@@ -59,6 +61,7 @@ add_executable(as3_tests
     test/library_tests.cpp
     test/error_tests.cpp
     test/xml_tests.cpp
+    test/avm1_tests.cpp
 )
 
 target_include_directories(as3_tests PRIVATE
