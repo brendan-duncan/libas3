@@ -94,6 +94,71 @@ void Chunk::addLine(int line) {
     lines.push_back(line);
 }
 
+size_t Chunk::instructionLength(size_t offset) const {
+    const OpCode op = static_cast<OpCode>(code[offset]);
+    if (op == OpCode::OP_WITH_GET || op == OpCode::OP_WITH_SET || op == OpCode::OP_WITH_FIND) {
+        // A name, the locals of the with objects, and a jump.
+        return 1 + 2 + 1 + 2 * static_cast<size_t>(code[offset + 3]) + 4;
+    }
+    return 1 + static_cast<size_t>(getOpCodeOperandCount(op));
+}
+
+void Chunk::fuse() {
+    for (size_t at = 0; at < code.size();) {
+        const size_t next = at + instructionLength(at);
+        if (next >= code.size()) {
+            break;
+        }
+        const OpCode op = static_cast<OpCode>(code[at]);
+        const OpCode then = static_cast<OpCode>(code[next]);
+        const bool jumps = then == OpCode::OP_JUMP_IF_TRUE || then == OpCode::OP_JUMP_IF_FALSE;
+        OpCode fused = op;
+        switch (op) {
+            case OpCode::OP_GET_LOCAL:
+                if (then == OpCode::OP_CONSTANT) fused = OpCode::OP_GET_LOCAL_CONSTANT;
+                if (then == OpCode::OP_GET_LOCAL) fused = OpCode::OP_GET_LOCAL_LOCAL;
+                break;
+            case OpCode::OP_COERCE:
+                if (then == OpCode::OP_PUT_LOCAL) fused = OpCode::OP_COERCE_PUT_LOCAL;
+                break;
+            case OpCode::OP_SET_LOCAL_PROP:
+                if (then == OpCode::OP_POP) fused = OpCode::OP_SET_LOCAL_PROP_POP;
+                break;
+            case OpCode::OP_SET_THIS_PROP:
+                if (then == OpCode::OP_POP) fused = OpCode::OP_SET_THIS_PROP_POP;
+                break;
+            case OpCode::OP_LESS:
+                if (jumps) fused = OpCode::OP_LESS_JUMP;
+                break;
+            case OpCode::OP_GREATER:
+                if (jumps) fused = OpCode::OP_GREATER_JUMP;
+                break;
+            case OpCode::OP_LESS_EQUAL:
+                if (jumps) fused = OpCode::OP_LESS_EQUAL_JUMP;
+                break;
+            case OpCode::OP_GREATER_EQUAL:
+                if (jumps) fused = OpCode::OP_GREATER_EQUAL_JUMP;
+                break;
+            case OpCode::OP_EQUAL:
+                if (jumps) fused = OpCode::OP_EQUAL_JUMP;
+                break;
+            case OpCode::OP_NOT_EQUAL:
+                if (jumps) fused = OpCode::OP_NOT_EQUAL_JUMP;
+                break;
+            case OpCode::OP_STRICT_EQUAL:
+                if (jumps) fused = OpCode::OP_STRICT_EQUAL_JUMP;
+                break;
+            case OpCode::OP_STRICT_NOT_EQUAL:
+                if (jumps) fused = OpCode::OP_STRICT_NOT_EQUAL_JUMP;
+                break;
+            default:
+                break;
+        }
+        code[at] = static_cast<uint8_t>(fused);
+        at = next;
+    }
+}
+
 void Chunk::disassemble(const std::string& title) const {
     std::cout << "== " << title << " ==" << std::endl;
     for (size_t offset = 0; offset < code.size();) {
@@ -139,6 +204,7 @@ size_t Chunk::disassembleInstruction(size_t offset) const {
         case OpCode::OP_SET_SUPER:
         case OpCode::OP_GET_THIS_PROP:
         case OpCode::OP_SET_THIS_PROP:
+        case OpCode::OP_SET_THIS_PROP_POP:
         case OpCode::OP_CALL_THIS_PROP:
             std::cout << "'" << names[getU16(offset + 1)] << "'";
             if (op == OpCode::OP_CALL_PROP || op == OpCode::OP_CALL_NAME || op == OpCode::OP_CALL_SUPER ||
@@ -156,6 +222,7 @@ size_t Chunk::disassembleInstruction(size_t offset) const {
             break;
         case OpCode::OP_GET_LOCAL_PROP:
         case OpCode::OP_SET_LOCAL_PROP:
+        case OpCode::OP_SET_LOCAL_PROP_POP:
         case OpCode::OP_CALL_LOCAL_PROP:
             std::cout << "local " << getU16(offset + 1) << " '" << names[getU16(offset + 3)] << "'";
             break;

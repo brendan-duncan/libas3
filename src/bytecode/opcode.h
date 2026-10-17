@@ -145,6 +145,25 @@ enum class OpCode : uint8_t {
     OP_ITER_NEXT,       // [u16 iterator local][s32] pushes the next key (or value), or jumps when done
 
     OP_NOP,
+
+    // Two instructions in one, written over the first of a pair the
+    // compiler made (Chunk::fuse): the first's operands, then the second
+    // instruction as it was, which the fused one runs too. The second
+    // stays whole, so that a jump to it still finds it.
+    OP_GET_LOCAL_CONSTANT,      // GET_LOCAL, CONSTANT
+    OP_GET_LOCAL_LOCAL,         // GET_LOCAL, GET_LOCAL
+    OP_COERCE_PUT_LOCAL,        // COERCE, PUT_LOCAL
+    OP_SET_LOCAL_PROP_POP,      // SET_LOCAL_PROP, POP
+    OP_SET_THIS_PROP_POP,       // SET_THIS_PROP, POP
+    // A comparison, then JUMP_IF_TRUE or JUMP_IF_FALSE.
+    OP_LESS_JUMP,
+    OP_GREATER_JUMP,
+    OP_LESS_EQUAL_JUMP,
+    OP_GREATER_EQUAL_JUMP,
+    OP_EQUAL_JUMP,
+    OP_NOT_EQUAL_JUMP,
+    OP_STRICT_EQUAL_JUMP,
+    OP_STRICT_NOT_EQUAL_JUMP,
 };
 
 // Get human-readable name for opcode

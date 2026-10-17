@@ -938,22 +938,30 @@ void VM::run(size_t stopDepth) {
                         break;
                     }
                     case OpCode::OP_SET_LOCAL_PROP:
-                    case OpCode::OP_SET_THIS_PROP: {
-                        const uint16_t slot = op == OpCode::OP_SET_LOCAL_PROP ? READ_U16() : 0;
+                    case OpCode::OP_SET_THIS_PROP:
+                    case OpCode::OP_SET_LOCAL_PROP_POP:
+                    case OpCode::OP_SET_THIS_PROP_POP: {
+                        const bool onLocal = op == OpCode::OP_SET_LOCAL_PROP || op == OpCode::OP_SET_LOCAL_PROP_POP;
+                        const uint16_t slot = onLocal ? READ_U16() : 0;
                         const uint16_t name = READ_U16();
                         PropertyCache& cache = code->caches[READ_U16()];
                         const Val& object =
-                            op == OpCode::OP_SET_LOCAL_PROP
-                                ? base[slot]
-                                : (frame->scopeSelf().isUndefined() ? frame->thisVal : frame->scopeSelf());
+                            onLocal ? base[slot]
+                                    : (frame->scopeSelf().isUndefined() ? frame->thisVal : frame->scopeSelf());
                         frame->ip = ip;
                         const int done = cachedSet(object, cache, sp - 1);
                         if (done == 2) {
+                            // A setter runs; the POP after it, if any, when it returns.
                             RELOAD();
                             break;
                         }
                         if (done == 0) {
                             setProp(object, NAME(name), sp[-1], &cache);
+                        }
+                        if (op == OpCode::OP_SET_LOCAL_PROP_POP || op == OpCode::OP_SET_THIS_PROP_POP) {
+                            ++ip;
+                            --sp;
+                            if (sp->ref) sp->ref.reset();
                         }
                         break;
                     }
@@ -1171,13 +1179,13 @@ void VM::run(size_t stopDepth) {
                         *--sp = Val();
                         break;
                     }
-                    case OpCode::OP_COERCE: {
+                    case OpCode::OP_COERCE:
+                    case OpCode::OP_COERCE_PUT_LOCAL: {
                         const Coerce coerce = static_cast<Coerce>(READ_U8());
                         Val& a = sp[-1];
                         if (coerce == Coerce::Number && a.tag == Val::Tag::Number) {
-                            break;
-                        }
-                        if (coerce == Coerce::Int && a.tag == Val::Tag::Number) {
+                            // A number already.
+                        } else if (coerce == Coerce::Int && a.tag == Val::Tag::Number) {
                             if (!isInt32(a.num)) a.num = toInt32(a.num);
                         } else if (coerce == Coerce::Uint && a.tag == Val::Tag::Number) {
                             if (!isUint32(a.num)) a.num = toUint32(a.num);
@@ -1188,6 +1196,18 @@ void VM::run(size_t stopDepth) {
                             a = coerceValue(Val::number(toNumber(a)), coerce);
                         } else {
                             a = coerceValue(a, coerce);
+                        }
+                        if (op == OpCode::OP_COERCE_PUT_LOCAL) {
+                            ++ip;
+                            Val& local = base[READ_U16()];
+                            Val& top = *--sp;
+                            if (top.ref || local.ref) {
+                                local = std::move(top);
+                                if (top.ref) top.ref.reset();
+                            } else {
+                                local.tag = top.tag;
+                                local.num = top.num;
+                            }
                         }
                         break;
                     }
@@ -1559,6 +1579,72 @@ void VM::run(size_t stopDepth) {
                     }
                     case OpCode::OP_NOP:
                         break;
+
+                    // Fused (Chunk::fuse): the second instruction's
+                    // operands follow its opcode, after the first's.
+                    case OpCode::OP_GET_LOCAL_CONSTANT: {
+                        const Val& local = base[READ_U16()];
+                        ++ip;
+                        const Val& constant = constants[READ_U16()];
+                        // The places are free: no reference to let go of.
+                        sp[0].tag = local.tag;
+                        sp[0].num = local.num;
+                        if (local.ref) sp[0].ref = local.ref;
+                        sp[1].tag = constant.tag;
+                        sp[1].num = constant.num;
+                        if (constant.ref) sp[1].ref = constant.ref;
+                        sp += 2;
+                        break;
+                    }
+                    case OpCode::OP_GET_LOCAL_LOCAL: {
+                        const Val& first = base[READ_U16()];
+                        ++ip;
+                        const Val& second = base[READ_U16()];
+                        sp[0].tag = first.tag;
+                        sp[0].num = first.num;
+                        if (first.ref) sp[0].ref = first.ref;
+                        sp[1].tag = second.tag;
+                        sp[1].num = second.num;
+                        if (second.ref) sp[1].ref = second.ref;
+                        sp += 2;
+                        break;
+                    }
+#define COMPARE_JUMP(NUMBERS)                                                         \
+    {                                                                                 \
+        Val& a = sp[-2];                                                              \
+        Val& b = sp[-1];                                                              \
+        bool result;                                                                  \
+        if (a.tag == Val::Tag::Number && b.tag == Val::Tag::Number) {                 \
+            const double x = a.num;                                                   \
+            const double y = b.num;                                                   \
+            result = NUMBERS;                                                         \
+        } else {                                                                      \
+            result = compareForJump(op, a, b);                                        \
+            a = Val();                                                                \
+            b = Val();                                                                \
+        }                                                                             \
+        sp -= 2;                                                                      \
+        const bool whenTrue = static_cast<OpCode>(*ip) == OpCode::OP_JUMP_IF_TRUE;    \
+        ++ip;                                                                         \
+        const int32_t offset = READ_S32();                                            \
+        if (result == whenTrue) ip += offset;                                         \
+        break;                                                                        \
+    }
+                    case OpCode::OP_LESS_JUMP:
+                        COMPARE_JUMP(x < y)
+                    case OpCode::OP_GREATER_JUMP:
+                        COMPARE_JUMP(x > y)
+                    case OpCode::OP_LESS_EQUAL_JUMP:
+                        COMPARE_JUMP(x <= y)
+                    case OpCode::OP_GREATER_EQUAL_JUMP:
+                        COMPARE_JUMP(x >= y)
+                    case OpCode::OP_EQUAL_JUMP:
+                    case OpCode::OP_STRICT_EQUAL_JUMP:
+                        COMPARE_JUMP(x == y)
+                    case OpCode::OP_NOT_EQUAL_JUMP:
+                    case OpCode::OP_STRICT_NOT_EQUAL_JUMP:
+                        COMPARE_JUMP(x != y)
+#undef COMPARE_JUMP
                     default:
                         throwError("Error", "Unknown opcode", 0);
                 }
@@ -1590,6 +1676,34 @@ void VM::run(size_t stopDepth) {
         }
         pending.reset();
     }
+}
+
+bool VM::compareForJump(OpCode op, const Val& a, const Val& b) {
+    bool undefinedResult = false;
+    bool result;
+    switch (op) {
+        case OpCode::OP_LESS_JUMP:
+            result = lessThan(a, b, undefinedResult);
+            break;
+        case OpCode::OP_GREATER_JUMP:
+            result = lessThan(b, a, undefinedResult);
+            break;
+        case OpCode::OP_LESS_EQUAL_JUMP:
+            result = !lessThan(b, a, undefinedResult);
+            break;
+        case OpCode::OP_GREATER_EQUAL_JUMP:
+            result = !lessThan(a, b, undefinedResult);
+            break;
+        case OpCode::OP_EQUAL_JUMP:
+            return equalsLoosely(a, b);
+        case OpCode::OP_NOT_EQUAL_JUMP:
+            return !equalsLoosely(a, b);
+        case OpCode::OP_STRICT_EQUAL_JUMP:
+            return a.strictEquals(b);
+        default:
+            return !a.strictEquals(b);
+    }
+    return undefinedResult ? false : result;
 }
 
 // Inline caches

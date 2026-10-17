@@ -401,6 +401,9 @@ public:
     Val toPrimitive(const Val& value, bool preferNumber);
     double toNumber(const Val& value);
     bool lessThan(const Val& a, const Val& b, bool& undefinedResult);
+    // A comparison's result (a fused one's: LESS_JUMP...) on values that
+    // are not both numbers.
+    bool compareForJump(OpCode op, const Val& a, const Val& b);
     Val add(const Val& a, const Val& b);
     // == as scripts have it: looselyEqual, with an object's primitive value
     // found by running its valueOf or toString.

@@ -111,6 +111,19 @@ const char* getOpCodeName(OpCode op) {
         case OpCode::OP_ITER_INIT: return "ITER_INIT";
         case OpCode::OP_ITER_NEXT: return "ITER_NEXT";
         case OpCode::OP_NOP: return "NOP";
+        case OpCode::OP_GET_LOCAL_CONSTANT: return "GET_LOCAL_CONSTANT";
+        case OpCode::OP_GET_LOCAL_LOCAL: return "GET_LOCAL_LOCAL";
+        case OpCode::OP_COERCE_PUT_LOCAL: return "COERCE_PUT_LOCAL";
+        case OpCode::OP_SET_LOCAL_PROP_POP: return "SET_LOCAL_PROP_POP";
+        case OpCode::OP_SET_THIS_PROP_POP: return "SET_THIS_PROP_POP";
+        case OpCode::OP_LESS_JUMP: return "LESS_JUMP";
+        case OpCode::OP_GREATER_JUMP: return "GREATER_JUMP";
+        case OpCode::OP_LESS_EQUAL_JUMP: return "LESS_EQUAL_JUMP";
+        case OpCode::OP_GREATER_EQUAL_JUMP: return "GREATER_EQUAL_JUMP";
+        case OpCode::OP_EQUAL_JUMP: return "EQUAL_JUMP";
+        case OpCode::OP_NOT_EQUAL_JUMP: return "NOT_EQUAL_JUMP";
+        case OpCode::OP_STRICT_EQUAL_JUMP: return "STRICT_EQUAL_JUMP";
+        case OpCode::OP_STRICT_NOT_EQUAL_JUMP: return "STRICT_NOT_EQUAL_JUMP";
     }
     return "UNKNOWN";
 }
@@ -119,6 +132,8 @@ int getOpCodeOperandCount(OpCode op) {
     switch (op) {
         case OpCode::OP_CONSTANT:
         case OpCode::OP_GET_LOCAL:
+        case OpCode::OP_GET_LOCAL_CONSTANT:
+        case OpCode::OP_GET_LOCAL_LOCAL:
         case OpCode::OP_SET_LOCAL:
         case OpCode::OP_PUT_LOCAL:
         case OpCode::OP_GET_CELL:
@@ -143,6 +158,7 @@ int getOpCodeOperandCount(OpCode op) {
         case OpCode::OP_INC_LOCAL:
         case OpCode::OP_GET_THIS_PROP:
         case OpCode::OP_SET_THIS_PROP:
+        case OpCode::OP_SET_THIS_PROP_POP:
         case OpCode::OP_GET_NAME:
         case OpCode::OP_SET_NAME:
         case OpCode::OP_GET_PROP:
@@ -150,6 +166,7 @@ int getOpCodeOperandCount(OpCode op) {
         case OpCode::OP_NEW_REGEXP:
             return 4;
         case OpCode::OP_COERCE:
+        case OpCode::OP_COERCE_PUT_LOCAL:
         case OpCode::OP_CALL:
         case OpCode::OP_CALL_INDEX:
         case OpCode::OP_SUPER_CTOR:
@@ -165,6 +182,7 @@ int getOpCodeOperandCount(OpCode op) {
             return 5;
         case OpCode::OP_GET_LOCAL_PROP:
         case OpCode::OP_SET_LOCAL_PROP:
+        case OpCode::OP_SET_LOCAL_PROP_POP:
             return 6;
         case OpCode::OP_CALL_LOCAL_PROP:
             return 7;

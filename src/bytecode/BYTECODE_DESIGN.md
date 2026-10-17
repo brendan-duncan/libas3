@@ -66,9 +66,16 @@ Calls          CALL, CALL_PROP, CALL_NAME, CALL_INDEX, CALL_SUPER, CALL_THIS_PRO
 Context        THIS, SCOPE_THIS, OWNER_CLASS, CLOSURE
 Making         NEW_ARRAY, NEW_OBJECT, NEW_VECTOR, NEW_REGEXP, APPLY_TYPE, DEFINE_CLASS
 Other          THROW, ITER_INIT, ITER_NEXT, NOP
+Fused          GET_LOCAL_CONSTANT, GET_LOCAL_LOCAL, COERCE_PUT_LOCAL, SET_LOCAL_PROP_POP, SET_THIS_PROP_POP,
+               LESS_JUMP, GREATER_JUMP, LESS_EQUAL_JUMP, GREATER_EQUAL_JUMP, EQUAL_JUMP, NOT_EQUAL_JUMP,
+               STRICT_EQUAL_JUMP, STRICT_NOT_EQUAL_JUMP
 ```
 
 `int` and `uint` are not types of values: numbers are doubles, and `COERCE` (or `INC_LOCAL`'s coercion, or a field's trait) wraps what is stored where a type is declared.
+
+### Fused instructions
+
+When a function's code is complete, `Chunk::fuse` looks for pairs of instructions that often run together and writes a fused opcode over the first of each: a local and a constant pushed (`GET_LOCAL_CONSTANT`), a comparison and the jump after it (`LESS_JUMP`), a coercion and the store after it (`COERCE_PUT_LOCAL`), a property set as a statement and its `POP`. The fused instruction runs both, so the loop dispatches once instead of twice. Only the first opcode byte changes: the second instruction stays whole after it, so a jump to it still finds it, and no offset, line or handler range moves. Whatever can throw is in the first instruction of a pair, so an error is reported where it was before.
 
 ### Example
 
@@ -90,7 +97,7 @@ function loop():void {
 0000    3 GET_THIS_PROP             'x'
 0005    | GET_LOCAL                 0
 0008    | ADD
-0009    | SET_THIS_PROP             'x'
+0009    | SET_THIS_PROP_POP         'x'
 0014    | POP
 0015    | GET_THIS_PROP             'x'
 0020    | COERCE                    3
@@ -99,10 +106,10 @@ function loop():void {
 == loop ==
 0000    6 GET_NAME                  'Particle'
 0005    | NEW                       0
-0007    | COERCE                    6
+0007    | COERCE_PUT_LOCAL          6
 0009    | PUT_LOCAL                 0
 0012    7 ZERO
-0013    | COERCE                    1
+0013    | COERCE_PUT_LOCAL          1
 0015    | PUT_LOCAL                 1
 0018    | JUMP                      -> 41
 0023    | UNDEFINED
@@ -110,11 +117,11 @@ function loop():void {
 0027    | CALL_LOCAL_PROP           local 0 'step'
 0035    | POP
 0036    | INC_LOCAL                 1
-0041    | GET_LOCAL                 1
+0041    | GET_LOCAL_CONSTANT        1
 0044    | CONSTANT                  1 '1000'
-0047    | LESS
+0047    | LESS_JUMP
 0048    | JUMP_IF_TRUE              -> 23
 0053    | RETURN_UNDEFINED
 ```
 
-The `UNDEFINED` before the argument is the place `CALL_LOCAL_PROP`'s result goes (the object stays in its local). The loop's test is at its bottom, after a jump to it the first time.
+The `UNDEFINED` before the argument is the place `CALL_LOCAL_PROP`'s result goes (the object stays in its local). The loop's test is at its bottom, after a jump to it the first time. A fused instruction is listed with the second of its pair after it, which it runs too: the loop's test (`GET_LOCAL_CONSTANT`, `LESS_JUMP`) is two dispatches, not four.

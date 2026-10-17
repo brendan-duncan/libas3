@@ -617,7 +617,8 @@ inline bool isInt32(double value) {
            value == static_cast<double>(static_cast<int32_t>(value)) && (value != 0 || !std::signbit(value));
 }
 inline bool isUint32(double value) {
-    return value >= 0 && value <= 4294967295.0 && value == static_cast<double>(static_cast<uint32_t>(value)) &&
+    // Through int64_t: converting to it is one instruction, to uint32_t not.
+    return value >= 0 && value <= 4294967295.0 && value == static_cast<double>(static_cast<int64_t>(value)) &&
            (value != 0 || !std::signbit(value));
 }
 // The coercion applied to a value.

@@ -444,6 +444,44 @@ static void init_vm_tests() {
         }
     });
 
+    // What the compiler runs as one instruction (Chunk::fuse): setters
+    // assigned as statements, a string stored in an int, comparisons of
+    // what are not numbers jumping.
+    suite.addTest("Fused instructions", []() {
+        Parser parser("class Box {\n"
+                      "  private var _v:int = 0; public var log:String = '';\n"
+                      "  public function set v(x:int):void { _v = x; log += 's' + x; }\n"
+                      "  public function get v():int { return _v; }\n"
+                      "  public function run():String { v = 3; this.v = 4; return log; }\n"
+                      "}\n"
+                      "function f():String {\n"
+                      "  var b:Box = new Box(); b.v = 5; b.v = 6;\n"
+                      "  var n:int = '7';\n"
+                      "  var count:int = 0;\n"
+                      "  for (var i:int = 0; i < 3; i++) {\n"
+                      "    if ('a' < 'b') count++;\n"
+                      "    if (null == undefined) count++;\n"
+                      "    if ('1' == 1) count++;\n"
+                      "    if ('1' === 1) count--;\n"
+                      "    if (NaN < 1) count += 100;\n"
+                      "    if ('b' >= 'a') count++;\n"
+                      "  }\n"
+                      "  return b.log + b.run() + '|' + n + '|' + count + '|' + b.v;\n"
+                      "}\n"
+                      "var result = f();\n");
+        auto program = parser.parse();
+        Compiler compiler;
+        VM vm;
+        vm.execute(compiler.compile(program.get()));
+        if (vm.hasError()) {
+            throw std::runtime_error("Runtime error: " + vm.getError());
+        }
+        const std::string result = Val(vm.getGlobal("result")).toString();
+        if (result != "s5s6s5s6s3s4|7|12|4") {
+            throw std::runtime_error("got " + result);
+        }
+    });
+
     // A global read in a loop sees each new value given it, here or by a
     // parent VM.
     suite.addTest("Globals read after they change", []() {

@@ -44,6 +44,13 @@ public:
     // Disassembly
     void disassemble(const std::string& name) const;
     size_t disassembleInstruction(size_t offset) const;
+    // The length of the instruction there, its operands included.
+    size_t instructionLength(size_t offset) const;
+
+    // Pairs of instructions run often together (a comparison and its
+    // jump, a local and a constant pushed) made one, in place: once the
+    // code is complete.
+    void fuse();
 
     // The constant pool, for the VM.
     std::vector<Val> constants;

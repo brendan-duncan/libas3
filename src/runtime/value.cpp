@@ -267,7 +267,7 @@ int32_t toInt32(double value) {
 
 uint32_t toUint32(double value) {
     if (value >= 0 && value <= 4294967295.0) {
-        return static_cast<uint32_t>(value);
+        return static_cast<uint32_t>(static_cast<int64_t>(value));
     }
     if (std::isnan(value) || std::isinf(value)) {
         return 0;
