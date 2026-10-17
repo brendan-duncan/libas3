@@ -90,7 +90,7 @@ const prelude = fs.readFileSync(process.argv[4], "utf8");
 let all = "";
 for (let i = 0; i < cases.length; i++) {
     let out = "";
-    const context = vm.createContext({ setTimeout, clearTimeout, performance, TextEncoder });
+    const context = vm.createContext({ setTimeout, clearTimeout, performance, TextEncoder, require });
     context.print = (text) => { out += text + "\n"; };
     try {
         vm.runInContext(runtime, context, { filename: "as3.js" });
@@ -786,6 +786,28 @@ as3.trace(found["let x = 1;"], found["return x + 1;"], found["class A {"]);
         const std::string script = "const MAP = " + js::quote(map) + ";\nconst FILE = " + js::quote(out.files.at("p/A.js")) + ";\n" + check;
         const std::vector<std::string> got = runInNode({script});
         expect(got[0] == "4 5 2\n", "got " + got[0]);
+    });
+
+    suite.addTest("The ABC compiler's sources translate to JavaScript that parses", []() {
+        std::vector<std::string> checks;
+        std::string problems;
+        for (const auto& program : testPrograms("abc_compiler_tests.cpp", "compiled")) {
+            const js::Output out = translated(program.second);
+            if (!out.ok) {
+                problems += program.first + ":\n" + out.errorText();
+                continue;
+            }
+            // Parsed, not run: they use flash.* classes.
+            checks.push_back("new (require(\"vm\").Script)(" + js::quote(out.bundle) + "); as3.trace(\"parsed\");");
+        }
+        expect(problems.empty(), "\n" + problems);
+        expect(checks.size() >= 5, "only " + std::to_string(checks.size()) + " sources");
+        if (!nodeThere()) return;
+        std::vector<std::string> got = runInNode(checks, "globalThis.require = require;\n");
+        for (size_t i = 0; i < got.size(); ++i) {
+            if (got[i] != "parsed\n") problems += got[i];
+        }
+        expect(problems.empty(), "\n" + problems);
     });
 
     suite.addTest("Programs trace the same in the VM and in JavaScript", []() {
