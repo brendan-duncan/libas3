@@ -68,6 +68,30 @@ add_custom_command(
 target_sources(as3_parser PRIVATE ${AS3_JS_EMBEDDED} ${AVM1_JS_EMBEDDED})
 target_include_directories(as3_parser PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
+# Tracy zones (src/runtime/profile.h) on parsing, compiling and running
+# scripts, for a Tracy profiler of the same version to show. A host using
+# Tracy itself can point AS3_TRACY_SOURCE at its checkout.
+option(AS3_TRACY "Profile libas3 with Tracy" OFF)
+set(AS3_TRACY_SOURCE "" CACHE PATH "A Tracy checkout to use (else v0.14.1 is fetched)")
+if(AS3_TRACY)
+    if(NOT TARGET Tracy::TracyClient)
+        # Tracy's own switch (off by default since 0.12), unless set.
+        set(TRACY_ENABLE ON CACHE BOOL "Enable profiling")
+        if(AS3_TRACY_SOURCE)
+            add_subdirectory(${AS3_TRACY_SOURCE} ${CMAKE_CURRENT_BINARY_DIR}/tracy)
+        else()
+            include(FetchContent)
+            FetchContent_Declare(tracy
+                GIT_REPOSITORY https://github.com/wolfpld/tracy.git
+                GIT_TAG v0.14.1
+                GIT_SHALLOW TRUE)
+            FetchContent_MakeAvailable(tracy)
+        endif()
+    endif()
+    target_link_libraries(as3_parser PUBLIC Tracy::TracyClient)
+    target_compile_definitions(as3_parser PRIVATE AS3_TRACY)
+endif()
+
 target_include_directories(as3_parser PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ast

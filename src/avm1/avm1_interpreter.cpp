@@ -2,6 +2,7 @@
 
 #include "avm1_actions.h"
 #include "../bytecode/vm.h"
+#include "../runtime/profile.h"
 
 #include <algorithm>
 #include <cctype>
@@ -2600,6 +2601,8 @@ int Interpreter::version() const { return _machine->version; }
 void Interpreter::setVersion(int version) { _machine->version = version; }
 
 bool Interpreter::run(const Actions& actions, const Val& clip, const std::string& where) {
+    AS3_ZONE("AVM1 run");
+    AS3_ZONE_TEXT(where);
     return _machine->run(actions, clip, where);
 }
 
@@ -2647,6 +2650,8 @@ void Interpreter::setMember(const Val& object, const std::string& name, const Va
 }
 
 Val Interpreter::call(const Val& function, const Val& self, const std::vector<Val>& args, const std::string& where) {
+    AS3_ZONE("AVM1 call");
+    AS3_ZONE_TEXT(where);
     Machine& m = *_machine;
     if (m.runs == 0 && m.depth == 0) m.steps = 0;
     ++m.runs;
@@ -2674,6 +2679,8 @@ Val Interpreter::call(const Val& function, const Val& self, const std::vector<Va
 
 Val Interpreter::callMethod(const Val& object, const std::string& name, const std::vector<Val>& args,
                             const std::string& where) {
+    AS3_ZONE("AVM1 call method");
+    AS3_ZONE_TEXT(name);
     const Val function = getMember(object, name);
     if (!function.isFunction()) return Val();
     return call(function, object, args, where);

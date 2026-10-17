@@ -4,6 +4,7 @@
 #include "abc_verifier.h"
 
 #include "../bytecode/vm.h"
+#include "../runtime/profile.h"
 
 #include <algorithm>
 #include <cmath>
@@ -2208,10 +2209,12 @@ bool Domain::load(const std::vector<uint8_t>& bytes, std::string& error) {
 }
 
 bool Domain::load(AbcFile file, std::string& error) {
+    AS3_ZONE("ABC load");
     return _state->load(std::move(file), error);
 }
 
 void Domain::runEntry() {
+    AS3_ZONE("ABC run entry");
     if (_state->files.empty()) return;
     File& file = *_state->files.back();
     if (file.scripts.empty()) return;
@@ -2220,6 +2223,7 @@ void Domain::runEntry() {
 }
 
 void Domain::runAll() {
+    AS3_ZONE("ABC run all");
     _state->errorStack.clear();
     for (auto& file : _state->files) {
         for (auto& script : file->scripts) _state->start(*script);

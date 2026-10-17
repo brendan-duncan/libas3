@@ -216,11 +216,13 @@ Suites: Parser, Bytecode, VM, AS2, Language, Library, XML, NativeClasses, BunnyP
 
 ## Performance
 
-A stack-based interpreter with values that hold numbers in place, inline caches on property reads, writes and method calls (a class's field is a slot, found without a lookup by name once seen), fused instructions for `this.x` and `local.x`, call frames used again rather than made, and loops tested at the bottom. On a recent desktop (Release build):
+A stack-based interpreter with values that hold numbers in place and count their references to strings and objects without atomics, inline caches on property reads, writes and method calls (a class's field is a slot, found without a lookup by name once seen) and on names (a global by its slot), instructions for `this.x` and `local.x`, pairs of instructions fused into one (a comparison and its jump), dynamic properties kept in one sorted array, call frames used again rather than made, and loops tested at the bottom. On a recent desktop (Release build):
 
-- 1,000,000 iterations of arithmetic, a method call and a property read and write: about 100 ms
-- 320 by 320 pixels with ten native calls each (1,000,000 calls to a host's `getPixel32` and `setPixel32`): about 65 ms
+- 1,000,000 iterations of arithmetic, a method call and a property read and write: about 75 ms
+- 320 by 320 pixels with ten native calls each (1,000,000 calls to a host's `getPixel32` and `setPixel32`): about 52 ms
 - Making a VM with its built-in library: about 0.25 ms
+
+To see where a host's time goes in libas3, build it with `-DAS3_TRACY=ON` (see [docs/TESTING.md](docs/TESTING.md#profiling-with-tracy)).
 
 ## Bytecode Design
 

@@ -1,4 +1,5 @@
 #include "parser.h"
+#include "../runtime/profile.h"
 #include <sstream>
 #include <iostream>
 
@@ -372,6 +373,8 @@ bool Parser::readConfigCondition() {
 }
 
 std::unique_ptr<Program> Parser::parse() {
+    AS3_ZONE("AS3 parse");
+    AS3_ZONE_TEXT(_fileName);
     auto program = std::make_unique<Program>();
     program->fileName = _fileName;
 

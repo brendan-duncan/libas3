@@ -2,6 +2,7 @@
 #include "opcode.h"
 #include "compiler.h"
 #include "../parser/parser.h"
+#include "../runtime/profile.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -120,6 +121,7 @@ void VM::track(const ValuePtr& value) {
 }
 
 void VM::releaseObjects() {
+    AS3_ZONE("AS3 release objects");
     std::vector<ValuePtr> alive;
     alive.reserve(made.size());
     for (auto& weak : made) {
@@ -195,6 +197,7 @@ void VM::reportError(const ScriptException& exception) {
 // Running
 
 void VM::execute(std::shared_ptr<BytecodeFunction> function, ValuePtr scopeValue) {
+    AS3_ZONE("AS3 execute");
     clearError();
     if (!function) {
         return;
@@ -214,6 +217,8 @@ void VM::execute(std::shared_ptr<BytecodeFunction> function, ValuePtr scopeValue
 }
 
 bool VM::load(const std::string& source, const std::string& fileName, ValuePtr scope) {
+    AS3_ZONE("AS3 load");
+    AS3_ZONE_TEXT(fileName);
     clearError();
     Parser parser(source, fileName);
     if (includeResolver) {
@@ -248,8 +253,12 @@ bool VM::load(const std::string& source, const std::string& fileName, ValuePtr s
 }
 
 ValuePtr VM::call(ValuePtr function, const std::vector<ValuePtr>& args, ValuePtr thisValue, ValuePtr scopeValue) {
+    AS3_ZONE("AS3 call");
     clearError();
     Val fn(function);
+#ifdef AS3_TRACY
+    if (fn.isFunction() && fn->function) AS3_ZONE_TEXT(fn->function->name);
+#endif
     if (!fn.isFunction() && !fn.isClass()) {
         hadError = true;
         errorMessage = "Can only call functions";

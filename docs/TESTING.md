@@ -93,6 +93,24 @@ The Benchmark suite times small programs (arithmetic, loops, arrays, objects, bu
 ./build/Release/as3_tests benchmark
 ```
 
+### Profiling with Tracy
+
+With the CMake option `AS3_TRACY`, libas3 marks what a host asks of it as [Tracy](https://github.com/wolfpld/tracy) zones: parsing (`AS3 parse`), compiling (`AS3 compile`), running a script (`AS3 load`, `AS3 execute`), calling one from the host (`AS3 call`, with the function's name), running timers (`AS3 timers`), AVM1 actions (`AVM1 run`, `AVM1 call`, `AVM1 call method`, with where they came from) and ABC (`ABC load`, `ABC run entry`, `ABC run all`). Without the option the zones compile to nothing.
+
+```bash
+cmake -S . -B build -DAS3_TRACY=ON
+```
+
+Tracy v0.14.1 is fetched, and its `TRACY_ENABLE` turned on, unless the project already has a `Tracy::TracyClient` target or `AS3_TRACY_SOURCE` names a Tracy checkout to build. The profiler that reads the trace must be the same version as the client. Run the host and connect the Tracy profiler to it, or capture without the interface:
+
+```bash
+tracy-capture -o run.tracy -a 127.0.0.1    # waits for the program
+TRACY_NO_EXIT=1 ./my_host                   # stays until the trace is sent
+tracy-csvexport run.tracy                   # the zones, as CSV
+```
+
+The zones are on calls into libas3, not inside the interpreter loop: each costs some tens of nanoseconds, too much for every instruction or every call a script makes.
+
 ## Writing tests
 
 The runner is `test/test_runner.h`. A test is a function that throws (any `std::exception`) to fail:

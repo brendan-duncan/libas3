@@ -2,6 +2,7 @@
 // and native), conversions and errors.
 
 #include "vm.h"
+#include "../runtime/profile.h"
 #include "compiler.h"
 #include "../parser/parser.h"
 #include <algorithm>
@@ -1738,6 +1739,7 @@ Val NativeClassBuilder::define() {
 // Timers
 
 void VM::runTimers(double nowMs) {
+    AS3_ZONE("AS3 timers");
     for (;;) {
         auto due = std::min_element(timers.begin(), timers.end(),
                                     [](const TimerEntry& a, const TimerEntry& b) { return a.due < b.due; });

@@ -1,4 +1,5 @@
 #include "compiler.h"
+#include "../runtime/profile.h"
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -555,6 +556,7 @@ void Compiler::warning(const std::string& message) {
 // Programs
 
 std::shared_ptr<BytecodeFunction> Compiler::compile(Program* program) {
+    AS3_ZONE("AS3 compile");
     errors.clear();
     fileName = program ? program->fileName : std::string();
     auto script = std::make_shared<BytecodeFunction>("<script>", 0);
