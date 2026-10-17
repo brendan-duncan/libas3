@@ -469,7 +469,8 @@ private:
     // statics, the timeline, then the imports and the globals.
     bool lookupName(CallFrame& frame, const std::string& name, Val& value, Val* receiver,
                     PropertyCache* cache = nullptr);
-    void assignName(CallFrame& frame, const std::string& name, const Val& value);
+    // Assigns a name; the global's slot when that is what it was.
+    Val* assignName(CallFrame& frame, const std::string& name, const Val& value);
     bool findGlobal(const std::string& name, Val& value);
     Val* globalSlot(const std::string& name);
     void defineVar(CallFrame& frame, const std::string& name, const Val& value, bool onlyIfMissing);

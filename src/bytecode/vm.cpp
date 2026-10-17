@@ -50,6 +50,19 @@ inline double modulo(double x, double y) {
     return std::fmod(x, y);
 }
 
+// Whether a name's cache (GET_NAME, SET_NAME, CALL_NAME) still holds in
+// a frame: the names as they were when it was made, 'this' of the class
+// seen, with nothing of its own (a dynamic property, a host) that could
+// come before the name, and no timeline scope but itself.
+inline bool nameCacheHolds(const CallFrame& frame, const PropertyCache& cache, uint64_t version) {
+    if (cache.version != version) return false;
+    const Val& self = frame.scopeSelf();
+    const uint64_t selfClass = self.tag == Val::Tag::Object && self.ref->cls ? self.ref->cls->id : 0;
+    return selfClass == cache.classId &&
+           (self.tag != Val::Tag::Object || (!self.ref->host && self.ref->properties.empty())) &&
+           (frame.scope.isNullish() || frame.scope.ref == self.ref);
+}
+
 double nowMilliseconds() {
     using namespace std::chrono;
     return static_cast<double>(duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count()) / 1000.0;
@@ -730,16 +743,9 @@ void VM::run(size_t stopDepth) {
                         const uint16_t name = READ_U16();
                         PropertyCache& cache = code->caches[READ_U16()];
                         // A global found before, while the names are as they were.
-                        if (cache.version == namesVersion) {
-                            const Val& self = frame->scopeSelf();
-                            const uint64_t selfClass =
-                                self.tag == Val::Tag::Object && self.ref->cls ? self.ref->cls->id : 0;
-                            if (selfClass == cache.classId && (self.tag != Val::Tag::Object ||
-                                                           (!self.ref->host && self.ref->properties.empty())) &&
-                                (frame->scope.isNullish() || frame->scope.ref == self.ref)) {
-                                *sp++ = cache.slot ? *cache.slot : cache.value;
-                                break;
-                            }
+                        if (nameCacheHolds(*frame, cache, namesVersion)) {
+                            *sp++ = cache.slot ? *cache.slot : cache.value;
+                            break;
                         }
                         frame->ip = ip;
                         Val value;
@@ -751,9 +757,20 @@ void VM::run(size_t stopDepth) {
                     }
                     case OpCode::OP_SET_NAME: {
                         const uint16_t name = READ_U16();
-                        READ_U16();
+                        PropertyCache& cache = code->caches[READ_U16()];
+                        // A global assigned before, while the names are as they were.
+                        if (cache.slot && nameCacheHolds(*frame, cache, namesVersion)) {
+                            *cache.slot = sp[-1];
+                            break;
+                        }
                         frame->ip = ip;
-                        assignName(*frame, NAME(name), sp[-1]);
+                        if (Val* slot = assignName(*frame, NAME(name), sp[-1])) {
+                            const Val& self = frame->scopeSelf();
+                            cache.version = namesVersion;
+                            cache.classId = self.isObject() && self->cls ? self->cls->id : 0;
+                            cache.slot = slot;
+                            cache.value = Val();
+                        }
                         break;
                     }
                     case OpCode::OP_TYPEOF_NAME: {
@@ -1371,16 +1388,9 @@ void VM::run(size_t stopDepth) {
                         Val function;
                         Val receiver;
                         bool cached = false;
-                        if (cache.version == namesVersion) {
-                            const Val& self = frame->scopeSelf();
-                            const uint64_t selfClass =
-                                self.tag == Val::Tag::Object && self.ref->cls ? self.ref->cls->id : 0;
-                            if (selfClass == cache.classId && (self.tag != Val::Tag::Object ||
-                                                           (!self.ref->host && self.ref->properties.empty())) &&
-                                (frame->scope.isNullish() || frame->scope.ref == self.ref)) {
-                                function = cache.slot ? *cache.slot : cache.value;
-                                cached = true;
-                            }
+                        if (nameCacheHolds(*frame, cache, namesVersion)) {
+                            function = cache.slot ? *cache.slot : cache.value;
+                            cached = true;
                         }
                         if (!cached && !lookupName(*frame, NAME(name), function, &receiver, &cache)) {
                             undefinedNameError(NAME(name));
@@ -1833,10 +1843,11 @@ bool VM::compareForJump(OpCode op, const Val& a, const Val& b) {
 int VM::cachedGet(const Val& object, const PropertyCache& cache, Val* out) {
     if (object.tag != Val::Tag::Object) {
         // A string's, a number's or a boolean's: a native getter of its class.
-        if (object.tag <= Val::Tag::Null || !cache.trait || cache.onClass) return 0;
+        if (object.tag <= Val::Tag::Null) return 0;
         const ClassInfo* cls = classOf(object);
-        if (!cls || cls->id != cache.classId) return 0;
-        const Trait* trait = cache.trait;
+        const PropertyCache::Entry* seen = cls ? cache.find(cls->id) : nullptr;
+        if (!seen || !seen->trait || seen->onClass) return 0;
+        const Trait* trait = seen->trait;
         if (trait->kind == TraitKind::Accessor && trait->getter.isObject()) {
             const FunctionInfo& info = *trait->getter.ref->function;
             if (info.native && !info.code) {
@@ -1848,11 +1859,10 @@ int VM::cachedGet(const Val& object, const PropertyCache& cache, Val* out) {
         return 0;
     }
     Value* value = object.ref.get();
-    if (!value->cls || value->cls->id != cache.classId || !cache.trait || cache.onClass ||
-        value->type == ValueType::Class) {
-        return 0;
-    }
-    const Trait* trait = cache.trait;
+    if (!value->cls || value->type == ValueType::Class) return 0;
+    const PropertyCache::Entry* seen = cache.find(value->cls->id);
+    if (!seen || !seen->trait || seen->onClass) return 0;
+    const Trait* trait = seen->trait;
     if (trait->kind == TraitKind::Slot) {
         const Val& field = value->slots[trait->slot];
         if (out == &object) {
@@ -1885,11 +1895,10 @@ int VM::cachedGet(const Val& object, const PropertyCache& cache, Val* out) {
 int VM::cachedSet(const Val& object, const PropertyCache& cache, Val* value) {
     if (object.tag != Val::Tag::Object) return 0;
     Value* self = object.ref.get();
-    if (!self->cls || self->cls->id != cache.classId || !cache.trait || cache.onClass ||
-        self->type == ValueType::Class) {
-        return 0;
-    }
-    const Trait* trait = cache.trait;
+    if (!self->cls || self->type == ValueType::Class) return 0;
+    const PropertyCache::Entry* seen = cache.find(self->cls->id);
+    if (!seen || !seen->trait || seen->onClass) return 0;
+    const Trait* trait = seen->trait;
     if (trait->kind == TraitKind::Slot) {
         Val& slot = self->slots[trait->slot];
         if (trait->coerce == Coerce::None) {
@@ -1927,12 +1936,11 @@ int VM::cachedSet(const Val& object, const PropertyCache& cache, Val* value) {
 int VM::cachedCall(const Val& object, const PropertyCache& cache, Val* args, uint32_t argc, Val* result) {
     if (object.tag != Val::Tag::Object) {
         // A string's, a number's or a boolean's: a method of its class.
-        if (object.tag <= Val::Tag::Null || !cache.trait || cache.onClass || cache.trait->kind != TraitKind::Method) {
-            return 0;
-        }
+        if (object.tag <= Val::Tag::Null) return 0;
         const ClassInfo* cls = classOf(object);
-        if (!cls || cls->id != cache.classId) return 0;
-        const Val& method = cache.trait->method;
+        const PropertyCache::Entry* seen = cls ? cache.find(cls->id) : nullptr;
+        if (!seen || !seen->trait || seen->onClass || seen->trait->kind != TraitKind::Method) return 0;
+        const Val& method = seen->trait->method;
         FunctionInfo& info = *method.ref->function;
         if (info.code) {
             pushFrame(method, info, object, args, argc, result, kModeNormal, Val(), true);
@@ -1948,11 +1956,13 @@ int VM::cachedCall(const Val& object, const PropertyCache& cache, Val* args, uin
         return 0;
     }
     Value* value = object.ref.get();
-    if (!value->cls || value->cls->id != cache.classId || !cache.trait || cache.trait->kind != TraitKind::Method ||
-        cache.onClass != (value->type == ValueType::Class)) {
+    if (!value->cls) return 0;
+    const PropertyCache::Entry* seen = cache.find(value->cls->id);
+    if (!seen || !seen->trait || seen->trait->kind != TraitKind::Method ||
+        seen->onClass != (value->type == ValueType::Class)) {
         return 0;
     }
-    const Val& method = cache.trait->method;
+    const Val& method = seen->trait->method;
     FunctionInfo& info = *method.ref->function;
     if (info.code) {
         pushFrame(method, info, object, args, argc, result, kModeNormal, Val(), true);

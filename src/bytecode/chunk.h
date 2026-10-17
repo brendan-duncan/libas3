@@ -96,13 +96,32 @@ struct UpvalueSource {
 // An inline cache for a property instruction: the class last seen there
 // and its trait.
 struct PropertyCache {
-    // The class seen (by its id; 0 none) and its trait: none when the
-    // class has no trait by the name (a dynamic property, looked for
-    // without the lookup among the traits).
+    // The two classes seen last (by id; 0 none) and their traits: none
+    // when the class has no trait by the name (a dynamic property, looked
+    // for without the lookup among the traits). onClass: a static of the
+    // class (the object is the class itself).
+    struct Entry {
+        uint64_t classId = 0;
+        const Trait* trait = nullptr;
+        bool onClass = false;
+    };
+    Entry entries[2];
+
+    // Remembers a class's trait, keeping the class seen before as the second.
+    void remember(uint64_t id, const Trait* found, bool isStatic) {
+        if (entries[0].classId != id) entries[1] = entries[0];
+        entries[0].classId = id;
+        entries[0].trait = found;
+        entries[0].onClass = isStatic;
+    }
+    // What was remembered for a class, or nullptr when it was not seen.
+    const Entry* find(uint64_t id) const {
+        if (entries[0].classId == id) return &entries[0];
+        if (entries[1].classId == id) return &entries[1];
+        return nullptr;
+    }
+    // For names (GET_NAME, SET_NAME, CALL_NAME): the class 'this' was of.
     uint64_t classId = 0;
-    const Trait* trait = nullptr;
-    // A static of the class (the object is the class itself).
-    bool onClass = false;
     // For names: what it found, valid while the names are as they were
     // (version) and 'this' is of the class seen: a global by its slot (its
     // value may change), anything else by its value.

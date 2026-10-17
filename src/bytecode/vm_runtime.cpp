@@ -460,6 +460,16 @@ void VM::writeTrait(const Val& object, const Trait& trait, const Val& value, con
 
 // Properties
 
+namespace {
+
+// Whether a cache remembers the class as having no trait by the name.
+bool knownToHaveNoTrait(const PropertyCache* cache, const ClassInfo* cls) {
+    const PropertyCache::Entry* seen = cache ? cache->find(cls->id) : nullptr;
+    return seen && !seen->trait;
+}
+
+} // namespace
+
 bool VM::findOnObject(const Val& object, const std::string& name, Val& value, bool traitsOnly) {
     Value* self = object.ref.get();
     if (self->type == ValueType::Class) {
@@ -557,9 +567,7 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
             const ClassInfo* cls = classOf(object);
             if (const Trait* trait = cls->findTrait(name)) {
                 if (cache) {
-                    cache->classId = cls->id;
-                    cache->trait = trait;
-                    cache->onClass = false;
+                    cache->remember(cls->id, trait, false);
                 }
                 return readTrait(object, *trait, false);
             }
@@ -582,9 +590,7 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
         if (cls) {
             if (const Trait* trait = cls->findStatic(name)) {
                 if (cache) {
-                    cache->classId = cls->id;
-                    cache->trait = trait;
-                    cache->onClass = true;
+                    cache->remember(cls->id, trait, true);
                 }
                 return readTrait(object, *trait, true);
             }
@@ -608,20 +614,16 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
             return Val(found);
         }
     }
-    if (cls && !(cache && cache->classId == cls->id && !cache->trait)) {
+    if (cls && !knownToHaveNoTrait(cache, cls)) {
         if (const Trait* trait = cls->findTrait(name)) {
             if (cache && self->cls.get() == cls) {
-                cache->classId = cls->id;
-                cache->trait = trait;
-                cache->onClass = false;
+                cache->remember(cls->id, trait, false);
             }
             return readTrait(object, *trait, false);
         }
         if (cache && self->cls.get() == cls) {
             // No trait by the name: next time, straight to the properties.
-            cache->classId = cls->id;
-            cache->trait = nullptr;
-            cache->onClass = false;
+            cache->remember(cls->id, nullptr, false);
         }
     }
     if (self->host) {
@@ -661,9 +663,7 @@ void VM::setProp(const Val& object, const std::string& name, const Val& value, P
         if (cls) {
             if (const Trait* trait = cls->findStatic(name)) {
                 if (cache) {
-                    cache->classId = cls->id;
-                    cache->trait = trait;
-                    cache->onClass = true;
+                    cache->remember(cls->id, trait, true);
                 }
                 writeTrait(object, *trait, value, name, true);
                 return;
@@ -680,20 +680,16 @@ void VM::setProp(const Val& object, const std::string& name, const Val& value, P
     if (cls && cls->hostFirst && self->host && self->host->set(name, value)) {
         return;
     }
-    if (cls && !(cache && cache->classId == cls->id && !cache->trait)) {
+    if (cls && !knownToHaveNoTrait(cache, cls)) {
         if (const Trait* trait = cls->findTrait(name)) {
             if (cache && self->cls.get() == cls) {
-                cache->classId = cls->id;
-                cache->trait = trait;
-                cache->onClass = false;
+                cache->remember(cls->id, trait, false);
             }
             writeTrait(object, *trait, value, name, false);
             return;
         }
         if (cache && self->cls.get() == cls) {
-            cache->classId = cls->id;
-            cache->trait = nullptr;
-            cache->onClass = false;
+            cache->remember(cls->id, nullptr, false);
         }
     }
     if (const char* plain = plainName(name)) {
@@ -720,9 +716,7 @@ bool VM::callProp(const Val& object, const std::string& name, Val* args, uint32_
             const Trait* trait = cls ? cls->findStatic(name) : nullptr;
             if (trait && trait->kind == TraitKind::Method) {
                 if (cache) {
-                    cache->classId = cls->id;
-                    cache->trait = trait;
-                    cache->onClass = true;
+                    cache->remember(cls->id, trait, true);
                 }
                 function = trait->method;
             } else {
@@ -733,9 +727,7 @@ bool VM::callProp(const Val& object, const std::string& name, Val* args, uint32_
             const Trait* trait = cls ? cls->findTrait(name) : nullptr;
             if (trait && trait->kind == TraitKind::Method) {
                 if (cache && value->cls.get() == cls) {
-                    cache->classId = cls->id;
-                    cache->trait = trait;
-                    cache->onClass = false;
+                    cache->remember(cls->id, trait, false);
                 }
                 function = trait->method;
             } else {
@@ -747,9 +739,7 @@ bool VM::callProp(const Val& object, const std::string& name, Val* args, uint32_
         const Trait* trait = cls ? cls->findTrait(name) : nullptr;
         if (trait && trait->kind == TraitKind::Method) {
             if (cache) {
-                cache->classId = cls->id;
-                cache->trait = trait;
-                cache->onClass = false;
+                cache->remember(cls->id, trait, false);
             }
             function = trait->method;
         } else {
@@ -1082,38 +1072,40 @@ bool VM::lookupName(CallFrame& frame, const std::string& name, Val& value, Val* 
     return true;
 }
 
-void VM::assignName(CallFrame& frame, const std::string& name, const Val& value) {
+Val* VM::assignName(CallFrame& frame, const std::string& name, const Val& value) {
     const Val& self = frame.scopeSelf();
     if (self.isObject() && setOnObject(self, name, value, true)) {
-        return;
+        return nullptr;
     }
     for (ClassInfo* at = frame.owner; at; at = at->base.get()) {
         if (const Trait* trait = at->findStatic(name)) {
             writeTrait(classValue(at), *trait, value, name, true);
-            return;
+            return nullptr;
         }
     }
     if (frame.scope.isObject()) {
         // On a timeline: a global already there, else the timeline's.
         if (Val* global = globalSlot(name)) {
             *global = value;
-            return;
+            return global;
         }
         if (self.isObject() && self.ref != frame.scope.ref && setOnObject(self, name, value, false)) {
-            return;
+            return nullptr;
         }
         setProp(frame.scope, name, value, nullptr);
-        return;
+        return nullptr;
     }
     if (self.isObject() && setOnObject(self, name, value, false)) {
-        return;
+        return nullptr;
     }
     if (Val* global = globalSlot(name)) {
         *global = value;
-        return;
+        return global;
     }
-    globals[name] = value;
+    Val& made = globals[name];
+    made = value;
     ++namesVersion;
+    return &made;
 }
 
 void VM::defineVar(CallFrame& frame, const std::string& name, const Val& value, bool onlyIfMissing) {
