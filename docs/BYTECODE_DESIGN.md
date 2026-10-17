@@ -15,7 +15,9 @@ A **stack-based virtual machine** for ActionScript 3. The parser makes an AST; t
 
 `Val` (runtime/value.h) is what the stack, locals, fields and arrays hold: a tag, a number or boolean in place, and a `ValueRef` for a string or an object. Copying a number touches no reference count; copying a string or an object counts it on the `Value`, without atomics. While any `Val` holds a `Value`, the `Value` holds a `std::shared_ptr` to itself, so the host's `ValuePtr`s and `weak_ptr`s see it held as before.
 
-`Value` is the heap object: a string's text, an object's dynamic properties (`PropertyMap`, made on first use), an array's elements, an instance's fields (`slots`), a function's `FunctionInfo`, a class's `ClassInfo`, and the host's `HostObject`. Older host code uses `ValuePtr` (`std::shared_ptr<Value>`); `Val` converts to and from it.
+`Value` is the heap object: a string's text, an object's dynamic properties (`PropertyMap`, an array sorted by name), an array's elements, an instance's fields (`slots`), a function's `FunctionInfo`, a class's `ClassInfo`, and the host's `HostObject`. Older host code uses `ValuePtr` (`std::shared_ptr<Value>`); `Val` converts to and from it.
+
+Values, their properties, a closure's cells and its `FunctionInfo` come from free lists kept per size and per thread (`poolAllocate`), the heap beyond a few megabytes a size: what scripts make and let go of all the time is not a heap call each. What a VM makes is on a list the `Value` leaves when it dies, so that the VM can empty them all when it ends (`releaseObjects`, which breaks the cycles reference counting cannot). A string value's text is checked for being ASCII once, and its UTF-16 units made once, kept with the value for `charAt` and the rest.
 
 ## Classes
 
@@ -34,11 +36,15 @@ A call pushes a `CallFrame`: where its locals start on the stack (the arguments 
 
 Variables are function-scoped. A local that a closure uses is a `Cell`, shared by the function and its closures (so every closure made in a loop sees the one variable, as in ActionScript); the compiler works out which from the names the nested functions use.
 
-A name that is not a local, a captured variable or a member of the class being compiled is looked up when it runs (`OP_GET_NAME`): on the instance (inherited and native members), the class's statics and its superclasses', the timeline, the imports, the package, the globals, then the wildcard imports and the class resolver. What is found is cached at the instruction until a global or a definition is added (in any VM: the caches are in the code, which more than one VM may run); a global by its slot, so that giving it a new value keeps the cache.
+A name that is not a local, a captured variable or a member of the class being compiled is looked up when it runs (`OP_GET_NAME`): on the instance (inherited and native members), the class's statics and its superclasses', the timeline, the imports, the package, the globals, then the wildcard imports and the class resolver. What is found is cached at the instruction until a global or a definition is added (in any VM: the caches are in the code, which more than one VM may run); a global by its slot, so that giving it a new value keeps the cache. Assigning a name (`OP_SET_NAME`) caches the global's slot the same way.
+
+### The loop
+
+`VM::run` reads an opcode and switches on it. The instruction pointer stays in a register: an instruction that may call out or throw saves it to the frame first (so that a frame's line is right while an implicit call, a `valueOf` or `toString`, is in it), and the exception handler saves it for whatever threw. Every opcode was checked when the code was made (`Chunk::fuse`), so the switch has no range check in Release builds.
 
 ## Inline caches
 
-`OP_GET_PROP`, `OP_SET_PROP`, `OP_CALL_PROP` and their fused forms (`OP_GET_THIS_PROP`, `OP_GET_LOCAL_PROP`, `OP_SET_THIS_PROP`, `OP_SET_LOCAL_PROP`, `OP_CALL_THIS_PROP`, `OP_CALL_LOCAL_PROP`) keep the class last seen and its trait. When the object is of that class again, a field is read or written by its slot, a getter, setter or method runs at once (a script one in a frame of the same loop, a native one directly), with no lookup by name. The fused forms read the object from a local or the instance without putting it on the stack.
+`OP_GET_PROP`, `OP_SET_PROP`, `OP_CALL_PROP` and their fused forms (`OP_GET_THIS_PROP`, `OP_GET_LOCAL_PROP`, `OP_SET_THIS_PROP`, `OP_SET_LOCAL_PROP`, `OP_CALL_THIS_PROP`, `OP_CALL_LOCAL_PROP`) keep the two classes seen last and their traits. When the object is of one of them again, a field is read or written by its slot, a getter, setter or method runs at once (a script one in a frame of the same loop, a native one directly), with no lookup by name. A string's, a number's or a boolean's members (`s.length`, `s.charAt(i)`) are found the same way, through their classes. A cache also remembers that a class has no trait by the name, so a dynamic property is read without the lookup among the traits. The fused forms read the object from a local or the instance without putting it on the stack.
 
 ## Exceptions
 
@@ -68,14 +74,16 @@ Making         NEW_ARRAY, NEW_OBJECT, NEW_VECTOR, NEW_REGEXP, APPLY_TYPE, DEFINE
 Other          THROW, ITER_INIT, ITER_NEXT, NOP
 Fused          GET_LOCAL_CONSTANT, GET_LOCAL_LOCAL, COERCE_PUT_LOCAL, SET_LOCAL_PROP_POP, SET_THIS_PROP_POP,
                LESS_JUMP, GREATER_JUMP, LESS_EQUAL_JUMP, GREATER_EQUAL_JUMP, EQUAL_JUMP, NOT_EQUAL_JUMP,
-               STRICT_EQUAL_JUMP, STRICT_NOT_EQUAL_JUMP
+               STRICT_EQUAL_JUMP, STRICT_NOT_EQUAL_JUMP, LOCAL_CONSTANT_COMPARE_JUMP, LOCAL_LOCAL_COMPARE_JUMP
 ```
 
 `int` and `uint` are not types of values: numbers are doubles, and `COERCE` (or `INC_LOCAL`'s coercion, or a field's trait) wraps what is stored where a type is declared.
 
 ### Fused instructions
 
-When a function's code is complete, `Chunk::fuse` looks for pairs of instructions that often run together and writes a fused opcode over the first of each: a local and a constant pushed (`GET_LOCAL_CONSTANT`), a comparison and the jump after it (`LESS_JUMP`), a coercion and the store after it (`COERCE_PUT_LOCAL`), a property set as a statement and its `POP`. The fused instruction runs both, so the loop dispatches once instead of twice. Only the first opcode byte changes: the second instruction stays whole after it, so a jump to it still finds it, and no offset, line or handler range moves. Whatever can throw is in the first instruction of a pair, so an error is reported where it was before.
+When a function's code is complete, `Chunk::fuse` looks for pairs of instructions that often run together and writes a fused opcode over the first of each: a local and a constant pushed (`GET_LOCAL_CONSTANT`), a comparison and the jump after it (`LESS_JUMP`), a coercion and the store after it (`COERCE_PUT_LOCAL`), a property set as a statement and its `POP`. The fused instruction runs both, so the loop dispatches once instead of twice. Only the first opcode byte changes: the second instruction stays whole after it, so a jump to it still finds it, and no offset, line or handler range moves. A loop's test, a local and a constant (or another local) compared and jumped on, is one instruction (`LOCAL_CONSTANT_COMPARE_JUMP`), which reads the comparison from the third of them and compares the operands where they are, pushing nothing.
+
+Fusing arithmetic with its pushed operand (`x * 2`, `a + b`) was tried and left out: a dispatch is cheap once the branch predictor knows a loop, and the handlers cost the loop function (register pressure) more than they saved.
 
 ### Example
 
@@ -94,34 +102,34 @@ function loop():void {
 
 ```
 == step ==
-0000    3 GET_THIS_PROP             'x'
-0005    | GET_LOCAL                 0
+0000    3 GET_THIS_PROP               'x'
+0005    | GET_LOCAL                   0
 0008    | ADD
-0009    | SET_THIS_PROP_POP         'x'
+0009    | SET_THIS_PROP_POP           'x'
 0014    | POP
-0015    | GET_THIS_PROP             'x'
-0020    | COERCE                    3
+0015    | GET_THIS_PROP               'x'
+0020    | COERCE                      3
 0022    | RETURN
 0023    | RETURN_UNDEFINED
 == loop ==
-0000    6 GET_NAME                  'Particle'
-0005    | NEW                       0
-0007    | COERCE_PUT_LOCAL          6
-0009    | PUT_LOCAL                 0
+0000    6 GET_NAME                    'Particle'
+0005    | NEW                         0
+0007    | COERCE_PUT_LOCAL            6
+0009    | PUT_LOCAL                   0
 0012    7 ZERO
-0013    | COERCE_PUT_LOCAL          1
-0015    | PUT_LOCAL                 1
-0018    | JUMP                      -> 41
+0013    | COERCE_PUT_LOCAL            1
+0015    | PUT_LOCAL                   1
+0018    | JUMP                        -> 41
 0023    | UNDEFINED
-0024    | CONSTANT                  0 '0.25'
-0027    | CALL_LOCAL_PROP           local 0 'step'
+0024    | CONSTANT                    0 '0.25'
+0027    | CALL_LOCAL_PROP             local 0 'step'
 0035    | POP
-0036    | INC_LOCAL                 1
-0041    | GET_LOCAL_CONSTANT        1
-0044    | CONSTANT                  1 '1000'
+0036    | INC_LOCAL                   1
+0041    | LOCAL_CONSTANT_COMPARE_JUMP 1
+0044    | CONSTANT                    1 '1000'
 0047    | LESS_JUMP
-0048    | JUMP_IF_TRUE              -> 23
+0048    | JUMP_IF_TRUE                -> 23
 0053    | RETURN_UNDEFINED
 ```
 
-The `UNDEFINED` before the argument is the place `CALL_LOCAL_PROP`'s result goes (the object stays in its local). The loop's test is at its bottom, after a jump to it the first time. A fused instruction is listed with the second of its pair after it, which it runs too: the loop's test (`GET_LOCAL_CONSTANT`, `LESS_JUMP`) is two dispatches, not four.
+The `UNDEFINED` before the argument is the place `CALL_LOCAL_PROP`'s result goes (the object stays in its local). The loop's test is at its bottom, after a jump to it the first time. A fused instruction is listed with the instructions it runs after it: the loop's test (`LOCAL_CONSTANT_COMPARE_JUMP`, then `CONSTANT`, `LESS_JUMP` and `JUMP_IF_TRUE`, which it reads) is one dispatch, not four.
