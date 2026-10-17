@@ -1955,11 +1955,186 @@ as3.xmlFilter = function (list, test) {
     return makeList(kept);
 };
 
+// flash.utils.ByteArray: bytes, read and written at a position, in either
+// byte order; b[i] is a byte. (Not here: compress, and AMF's readObject and
+// writeObject.)
+
+const BYTES = Symbol("as3.bytes");
+
+function eofError() {
+    const EOFError = as3.use("flash.errors.EOFError");
+    return new EOFError("Error #2030: End of file was encountered.", 2030);
+}
+
+const byteArrayHandler = {
+    get(target, key, receiver) {
+        if (typeof key === "string" && isIndex(key)) {
+            const i = Number(key);
+            return i < target.length ? target[BYTES][i] : undefined;
+        }
+        return Reflect.get(target, key, receiver);
+    },
+    set(target, key, value, receiver) {
+        if (typeof key === "string" && isIndex(key)) {
+            const i = Number(key);
+            target.reserve(i + 1);
+            if (i >= target._length) target._length = i + 1;
+            target[BYTES][i] = value & 0xFF;
+            return true;
+        }
+        return Reflect.set(target, key, value, receiver);
+    },
+    has(target, key) {
+        if (typeof key === "string" && isIndex(key)) return Number(key) < target._length;
+        return key in target;
+    },
+};
+
+class ByteArray {
+    constructor(...args) {
+        Object.defineProperty(this, BYTES, { value: new Uint8Array(16), writable: true, enumerable: false });
+        Object.defineProperty(this, "_length", { value: 0, writable: true, enumerable: false });
+        Object.defineProperty(this, "_position", { value: 0, writable: true, enumerable: false });
+        Object.defineProperty(this, "_little", { value: false, writable: true, enumerable: false });
+        const proxy = new Proxy(this, byteArrayHandler);
+        if (new.target === ByteArray) proxy.$construct(...args);
+        return proxy;
+    }
+    $construct() {}
+    reserve(size) {
+        if (size <= this[BYTES].length) return;
+        let capacity = this[BYTES].length * 2;
+        while (capacity < size) capacity *= 2;
+        const grown = new Uint8Array(capacity);
+        grown.set(this[BYTES].subarray(0, this._length));
+        this[BYTES] = grown;
+    }
+    view(size) {
+        return new DataView(this[BYTES].buffer, this[BYTES].byteOffset + this._position, size);
+    }
+    // Room for size bytes at the position, the length past them.
+    room(size) {
+        this.reserve(this._position + size);
+        if (this._position + size > this._length) this._length = this._position + size;
+        const view = this.view(size);
+        this._position += size;
+        return view;
+    }
+    // size bytes to read at the position.
+    taken(size) {
+        if (this._position + size > this._length) throw eofError();
+        const view = this.view(size);
+        this._position += size;
+        return view;
+    }
+    get length() { return this._length; }
+    set length(value) {
+        const size = value >>> 0;
+        this.reserve(size);
+        if (size > this._length) this[BYTES].fill(0, this._length, size);
+        this._length = size;
+        if (this._position > size) this._position = size;
+    }
+    get position() { return this._position; }
+    set position(value) { this._position = value >>> 0; }
+    get bytesAvailable() { return Math.max(0, this._length - this._position); }
+    get endian() { return this._little ? "littleEndian" : "bigEndian"; }
+    set endian(value) { this._little = value === "littleEndian"; }
+    clear() {
+        this[BYTES] = new Uint8Array(16);
+        this._length = 0;
+        this._position = 0;
+    }
+    writeBoolean(value) { this.room(1).setUint8(0, value ? 1 : 0); }
+    writeByte(value) { this.room(1).setInt8(0, value); }
+    writeShort(value) { this.room(2).setInt16(0, value, this._little); }
+    writeInt(value) { this.room(4).setInt32(0, value, this._little); }
+    writeUnsignedInt(value) { this.room(4).setUint32(0, value >>> 0, this._little); }
+    writeFloat(value) { this.room(4).setFloat32(0, value, this._little); }
+    writeDouble(value) { this.room(8).setFloat64(0, value, this._little); }
+    writeUTFBytes(text) {
+        for (const b of utf8(as3.string(text))) this.room(1).setUint8(0, b);
+    }
+    writeUTF(text) {
+        const bytes = utf8(as3.string(text));
+        if (bytes.length > 65535) throw new as3.RangeError("Error #2006: The supplied index is out of bounds.", 2006);
+        this.writeShort(bytes.length);
+        for (const b of bytes) this.room(1).setUint8(0, b);
+    }
+    writeMultiByte(text, charSet) {
+        void charSet;
+        this.writeUTFBytes(text);
+    }
+    writeBytes(bytes, offset = 0, length = 0) {
+        const from = bytes[BYTES];
+        let count = length >>> 0;
+        if (count === 0) count = Math.max(0, bytes.length - offset);
+        if (offset + count > bytes.length) throw new as3.RangeError("Error #2006: The supplied index is out of bounds.", 2006);
+        const copy = from.slice(offset, offset + count);
+        for (const b of copy) this.room(1).setUint8(0, b);
+    }
+    readBoolean() { return this.taken(1).getUint8(0) !== 0; }
+    readByte() { return this.taken(1).getInt8(0); }
+    readUnsignedByte() { return this.taken(1).getUint8(0); }
+    readShort() { return this.taken(2).getInt16(0, this._little); }
+    readUnsignedShort() { return this.taken(2).getUint16(0, this._little); }
+    readInt() { return this.taken(4).getInt32(0, this._little); }
+    readUnsignedInt() { return this.taken(4).getUint32(0, this._little); }
+    readFloat() { return this.taken(4).getFloat32(0, this._little); }
+    readDouble() { return this.taken(8).getFloat64(0, this._little); }
+    readUTFBytes(length) {
+        const count = length >>> 0;
+        if (this._position + count > this._length) throw eofError();
+        const text = fromUtf8(this[BYTES].subarray(this._position, this._position + count));
+        this._position += count;
+        return text;
+    }
+    readUTF() { return this.readUTFBytes(this.readUnsignedShort()); }
+    readMultiByte(length, charSet) {
+        void charSet;
+        return this.readUTFBytes(length);
+    }
+    readBytes(bytes, offset = 0, length = 0) {
+        let count = length >>> 0;
+        if (count === 0) count = this.bytesAvailable;
+        if (this._position + count > this._length) throw eofError();
+        const copy = this[BYTES].slice(this._position, this._position + count);
+        this._position += count;
+        const at = bytes.position;
+        bytes.position = offset;
+        for (const b of copy) bytes.room(1).setUint8(0, b);
+        bytes.position = at;
+    }
+    toString() { return fromUtf8(this[BYTES].subarray(0, this._length)); }
+}
+
+function utf8(text) {
+    if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(text);
+    const out = [];
+    for (const c of unescape(encodeURIComponent(text))) out.push(c.charCodeAt(0));
+    return out;
+}
+
+function fromUtf8(bytes) {
+    if (typeof TextDecoder !== "undefined") return new TextDecoder().decode(bytes);
+    let text = "";
+    for (const b of bytes) text += String.fromCharCode(b);
+    return decodeURIComponent(escape(text));
+}
+
+as3.ByteArray = ByteArray;
+
+class Endian {}
+Endian.BIG_ENDIAN = "bigEndian";
+Endian.LITTLE_ENDIAN = "littleEndian";
+
 // flash.utils, unless the flash.* runtime has its own.
 for (const name of ["getTimer", "setTimeout", "setInterval", "clearTimeout", "clearInterval", "getDefinitionByName",
     "getQualifiedClassName", "getQualifiedSuperclassName", "describeType", "escapeMultiByte", "unescapeMultiByte"]) {
     if (!definitions.has("flash.utils." + name)) as3.register("flash.utils." + name, flashUtils[name]);
 }
 if (!definitions.has("flash.utils.Dictionary")) as3.register("flash.utils.Dictionary", Dictionary);
+if (!definitions.has("flash.utils.ByteArray")) as3.register("flash.utils.ByteArray", ByteArray);
+if (!definitions.has("flash.utils.Endian")) as3.register("flash.utils.Endian", Endian);
 
 })(typeof globalThis !== "undefined" ? globalThis : this);

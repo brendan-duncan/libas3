@@ -509,6 +509,8 @@ private:
     const Member* findInstance(ClassModel* cls, const std::string& name, ClassModel** owner, bool fromInside);
     const Member* findStatic(ClassModel* cls, const std::string& name, ClassModel** owner, bool fromInside);
     bool hasRuntimeBase(const ClassModel* cls) const;
+    // Whether a type is a display object's (a stage instance's may be).
+    bool isDisplayType(const Ty& type) const;
     FunctionDefinition* methodDefinition(const ClassModel* cls, const std::string& name, bool isStatic);
     Ty typeOf(const std::string& written, Unit* where = nullptr);
     Ty memberType(const ClassModel* owner, const Member& member);
@@ -659,6 +661,29 @@ std::string Translator::temp(const std::string& base) {
 bool Translator::hasRuntimeBase(const ClassModel* cls) const {
     for (const ClassModel* c = cls; c; c = c->superClass) {
         if (!c->superClass) return !c->superName.empty() && c->superName != "Object";
+    }
+    return false;
+}
+
+bool Translator::isDisplayType(const Ty& type) const {
+    if (type.kind != Ty::Instance) return false;
+    std::vector<std::string> chain;
+    if (type.cls) {
+        chain = model.superChain(type.cls);
+    } else {
+        std::string name = type.name;
+        for (int guard = 0; !name.empty() && guard < 64; ++guard) {
+            chain.push_back(name);
+            const abc::PlayerClass* player = abc::findPlayerClass(packageOf(name), shortOf(name));
+            if (!player) break;
+            name = player->superclass ? player->superclass : "";
+        }
+    }
+    for (const std::string& name : chain) {
+        if (name == "flash.display.DisplayObject" || name.compare(0, 12, "fl.controls.") == 0 ||
+            name.compare(0, 8, "fl.core.") == 0) {
+            return true;
+        }
     }
     return false;
 }
@@ -3170,6 +3195,9 @@ std::string Translator::translateClass(ClassModel& cls) {
                     value = defaultValue(type);
                     if (decl->init) instanceFields.emplace_back(decl.get(), variables->isConst);
                 }
+                // A display object's public field may be a stage instance
+                // the runtime has set already: kept.
+                if (!decl->init && member.access == Access::Public && isDisplayType(type)) value = dotted("this", key) + " ?? null";
                 fieldDefaults.push_back(dotted("this", key) + " = " + value + ";");
                 fields += (fields.empty() ? "" : ", ") + fieldKey(key) + ": " +
                           quote(fieldType(member, variables->isConst));
@@ -3359,10 +3387,14 @@ std::string Translator::translateTimeline(ClassModel& cls) {
     // Stage instances and frame variables: fields at their defaults.
     std::string fields;
     std::vector<std::string> fieldDefaults;
+    std::set<std::string> stageInstances;
+    for (const StageInstance& instance : cls.timeline->instances) stageInstances.insert(instance.name);
     for (const auto& entry : cls.instance) {
         if (entry.second.kind != Member::Var) continue;
         fields += (fields.empty() ? "" : ", ") + fieldKey(entry.first) + ": " + quote(fieldType(entry.second, false));
-        fieldDefaults.push_back(dotted("this", entry.first) + " = " + defaultValue(typeOf(entry.second.type)) + ";");
+        const std::string value = stageInstances.count(entry.first) ? dotted("this", entry.first) + " ?? null"
+                                                                     : defaultValue(typeOf(entry.second.type));
+        fieldDefaults.push_back(dotted("this", entry.first) + " = " + value + ";");
     }
     Lines body;
     body.indent();

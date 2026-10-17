@@ -286,7 +286,7 @@ js::Timeline paintTimeline() {
 
 // Stand-ins for the flash.* and fl.* classes and functions a bundle uses:
 // empty classes following the runtime's protocol ($construct), extending
-// what the player's do; ByteArray keeps floats, as BP_Random needs.
+// what the player's do.
 const char* kStandIns = R"js(
 (function () {
     const bases = {
@@ -339,19 +339,11 @@ const char* kStandIns = R"js(
         as3.register(name, cls);
     }
     globalThis.standIns = function (names) { names.forEach(stand); };
-    class ByteArray {
-        constructor(...args) { if (new.target === ByteArray) this.$construct(...args); }
-        $construct() { this.values = []; this.position = 0; }
-        writeFloat(v) { this.values.push(Math.fround(v)); this.position = this.values.length * 4; }
-        readFloat() { const i = this.position >> 2; this.position += 4; return i < this.values.length ? this.values[i] : 0; }
-        get length() { return this.values.length * 4; }
-    }
-    as3.register("flash.utils.ByteArray", ByteArray);
 })();
 )js";
 
-// BitmapData and ByteArray as JPGEncoder needs them: for the VM, and as
-// JavaScript.
+// BitmapData and ByteArray as JPGEncoder and as3corelib need them: for the
+// VM, and BitmapData as JavaScript (as3.js has ByteArray).
 struct Bitmap : HostObject {
     int width = 0;
     int height = 0;
@@ -507,61 +499,7 @@ const char* kImageClasses = R"js(
             if (x >= 0 && y >= 0 && x < this.w && y < this.h) this.pixels[y * this.w + x] = color >>> 0;
         }
     }
-    class ByteArray {
-        constructor(...args) {
-            if (new.target === ByteArray) this.$construct(...args);
-            // b[i], as a ByteArray has it.
-            return new Proxy(this, {
-                get(target, key, receiver) {
-                    if (typeof key === "string" && /^[0-9]+$/.test(key)) return target.bytes[Number(key)];
-                    const value = Reflect.get(target, key, receiver);
-                    return typeof value === "function" ? value.bind(target) : value;
-                },
-                set(target, key, value) {
-                    if (typeof key === "string" && /^[0-9]+$/.test(key)) {
-                        const i = Number(key);
-                        while (target.bytes.length < i) target.bytes.push(0);
-                        target.bytes[i] = value & 0xFF;
-                    } else {
-                        target[key] = value;
-                    }
-                    return true;
-                },
-            });
-        }
-        $construct() { this.bytes = []; this.position = 0; this.endian = "bigEndian"; }
-        put(b) {
-            while (this.bytes.length < this.position) this.bytes.push(0);
-            this.bytes[this.position++] = b & 0xFF;
-        }
-        take() { return this.position < this.bytes.length ? this.bytes[this.position++] : 0; }
-        writeByte(value) { this.put(value); }
-        readUnsignedByte() { return this.take(); }
-        readByte() { return (this.take() << 24) >> 24; }
-        writeInt(v) {
-            for (let i = 0; i < 4; i++) this.put(this.endian === "littleEndian" ? v >>> (8 * i) : v >>> (24 - 8 * i));
-        }
-        writeUnsignedInt(v) { this.writeInt(v); }
-        readUnsignedInt() {
-            let v = 0;
-            for (let i = 0; i < 4; i++) {
-                const b = this.take();
-                v |= this.endian === "littleEndian" ? b << (8 * i) : b << (24 - 8 * i);
-            }
-            return v >>> 0;
-        }
-        readInt() { return this.readUnsignedInt() | 0; }
-        writeUTFBytes(text) { for (const b of new TextEncoder().encode(String(text))) this.put(b); }
-        writeBytes(from, offset = 0, length = 0) {
-            const bytes = from.bytes;
-            if (length === 0 || offset + length > bytes.length) length = Math.max(0, bytes.length - offset);
-            for (const b of bytes.slice(offset, offset + length)) this.put(b);
-        }
-        get bytesAvailable() { return Math.max(0, this.bytes.length - this.position); }
-        get length() { return this.bytes.length; }
-    }
     as3.register("flash.display.BitmapData", BitmapData);
-    as3.register("flash.utils.ByteArray", ByteArray);
 })();
 )js";
 
@@ -1044,7 +982,7 @@ static void init_js_paint_tests() {
         const js::Output out = js::translate(withProgram);
         expect(out.ok, out.errorText());
         const std::vector<std::string> got = runInNode(
-            {out.bundle}, std::string(kImageClasses) + "as3.register(\"flash.utils.Endian\", { BIG_ENDIAN: \"bigEndian\", LITTLE_ENDIAN: \"littleEndian\" });\n");
+            {out.bundle}, kImageClasses);
         expect(got[0] == wanted && wanted.find("Error") == std::string::npos, "VM:\n" + wanted + "JavaScript:\n" + got[0]);
         if (std::getenv("AS3_JS_DUMP")) std::cout << wanted;
     });
