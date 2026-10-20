@@ -97,6 +97,10 @@ public:
     virtual void stopSounds() {}
     // Milliseconds since the movie started (getTimer).
     virtual double time() { return 0; }
+    // MMExecute: script for the authoring tool the movie is a panel of,
+    // and the value that comes back, as text. Empty where no tool holds
+    // the movie.
+    virtual std::string mmExecute(const std::string& code) { (void)code; return std::string(); }
 
     // The clip whose timeline bare calls to the VM's global functions
     // (gotoAndStop(), getProperty("", ...)) act on changed: tellTarget

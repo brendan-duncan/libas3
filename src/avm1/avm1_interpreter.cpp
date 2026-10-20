@@ -659,6 +659,13 @@ void Machine::setupGlobals() {
         if (!host.isClip(args[0])) return Val();
         return Val::string(host.targetPath(args[0]));
     }, 1));
+    // A panel's way to the authoring tool holding it: MMExecute runs script
+    // there, its value back as text; MMEndCommand ends a command the panel
+    // was opened for, which a panel left open has none of.
+    define("MMExecute", native("MMExecute", [this](VM&, const Val&, Args args) -> Val {
+        return Val::string(host.mmExecute(toString(args[0])));
+    }, 1));
+    define("MMEndCommand", native("MMEndCommand", [](VM&, const Val&, Args) { return Val(); }, 2));
     // setInterval(function, ms, ...) and setInterval(object, "method", ms,
     // ...), on the VM's timers.
     for (const bool repeat : {true, false}) {

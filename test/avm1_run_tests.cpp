@@ -206,6 +206,10 @@ public:
                             (loadTarget ? " target" : "") + (loadVariables ? " variables" : ""));
     }
     double time() override { return 1234.5; }
+    std::string mmExecute(const std::string& code) override {
+        movie.log.push_back("MMExecute " + code);
+        return "shot.fla";
+    }
     void targetChanged(const Val& value) override { movie.log.push_back("target " + targetPath(value)); }
 };
 
@@ -472,6 +476,12 @@ static void init_avm1_run_tests() {
                "hat gotoFrame 4\nhat nextFrame\ntarget _level0\n_level0 prevFrame\nbow play\n_level0 gotoFrame 7\n"
                "hat drag lock 1 2 3 4\nstopDrag\nhat duplicate hat2 5\n"
                "getURL FSCommand:quit  0\ngetURL other.swf hat 0 target\n");
+    });
+
+    suite.addTest("MMExecute reaches the tool holding the movie", []() {
+        Run run;
+        expect(run.script("trace(MMExecute('fl.getDocumentDOM().name'));\nMMEndCommand(true, '');"), "shot.fla\n");
+        expect(joined(run.movie.log), "MMExecute fl.getDocumentDOM().name\n");
     });
 
     suite.addTest("Properties by number, paths and targets", []() {
