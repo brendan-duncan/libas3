@@ -2670,7 +2670,10 @@ void Machine::opMovie(Activation& a, uint8_t op, size_t start, size_t next, size
             const uint8_t flags = start < next ? p[start] : 0;
             const std::string window = toString(pop(a));
             const std::string url = toString(pop(a));
-            host.getURL(url, window, flags >> 6, (flags & 0x02) != 0, (flags & 0x01) != 0);
+            // The method in the low two bits (3 is none), then a target to load
+            // a movie into (0x40) and variables (0x80).
+            const int method = (flags & 0x03) == 0x03 ? 0 : flags & 0x03;
+            host.getURL(url, window, method, (flags & 0x40) != 0, (flags & 0x80) != 0);
             break;
         }
         case ToggleQuality: host.toggleQuality(); break;

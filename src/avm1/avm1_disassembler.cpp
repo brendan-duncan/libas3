@@ -245,10 +245,10 @@ public:
                     break;
                 case GetURL2: {
                     const uint8_t flags = payload.u8();
-                    const int method = flags >> 6;
+                    const int method = flags & 0x03;
                     if (method) line += method == 1 ? " GET" : method == 2 ? " POST" : " ?";
-                    if (flags & 0x02) line += " target";
-                    if (flags & 0x01) line += " variables";
+                    if (flags & 0x40) line += " target";
+                    if (flags & 0x80) line += " variables";
                     break;
                 }
                 case GotoFrame2: {

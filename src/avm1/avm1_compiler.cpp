@@ -2538,7 +2538,8 @@ private:
         code().record(Action::GotoFrame2, payload);
     }
 
-    // "GET" and "POST" as GetURL2 numbers them.
+    // "GET" and "POST" as GetURL2 numbers them, in its low two bits (0x40
+    // loads a movie into the target, 0x80 variables).
     int methodOf(const ExpressionList& args, size_t at, int line) {
         if (args.size() <= at) return 0;
         const std::string* method = stringLiteral(args[at].get());
@@ -2689,7 +2690,7 @@ private:
             } else {
                 code().pushString("");
             }
-            getURL2(methodOf(args, 2, line) << 6);
+            getURL2(methodOf(args, 2, line));
             return 0;
         }
         if (name == "fscommand") {
@@ -2718,21 +2719,21 @@ private:
             needArguments(args, 2, 3, name, line);
             compileExpression(args[0].get());
             compileExpression(args[1].get());
-            getURL2((methodOf(args, 2, line) << 6) | 0x02 | (name == "loadVariables" ? 0x01 : 0x00));
+            getURL2(methodOf(args, 2, line) | 0x40 | (name == "loadVariables" ? 0x80 : 0x00));
             return 0;
         }
         if (name == "loadMovieNum" || name == "loadVariablesNum") {
             needArguments(args, 2, 3, name, line);
             compileExpression(args[0].get());
             pushLevel(args[1].get());
-            getURL2((methodOf(args, 2, line) << 6) | (name == "loadVariablesNum" ? 0x01 : 0x00));
+            getURL2(methodOf(args, 2, line) | (name == "loadVariablesNum" ? 0x80 : 0x00));
             return 0;
         }
         if (name == "unloadMovie") {
             needArguments(args, 1, 1, name, line);
             code().pushString("");
             compileExpression(args[0].get());
-            getURL2(0x02);
+            getURL2(0x40);
             return 0;
         }
         if (name == "unloadMovieNum") {
