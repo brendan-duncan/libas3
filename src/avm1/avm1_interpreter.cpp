@@ -385,6 +385,9 @@ public:
     Val noObject;
     Val objectProto;
     Val functionProto;
+    // The accessors running, by object and name: one read again from inside
+    // itself reads undefined, as the player has it, rather than recursing.
+    std::set<std::pair<const Value*, std::string>> runningAccessors;
     // ActionScript 1's own versions of the VM's array methods (join writes
     // undefined as the movie's version does), found before the VM's.
     std::map<std::string, Val> arrayMethods;
@@ -688,6 +691,23 @@ void Machine::setupGlobals() {
         }
         return Val();
     }, 4));
+    // ActionScript 1's escape keeps letters and digits only (ActionScript
+    // 3's keeps @-_.*+/ too): each other byte of the text as %XX.
+    vm.setGlobal("escape", native("escape", [this](VM&, const Val&, Args args) -> Val {
+        static const char* hex = "0123456789ABCDEF";
+        const std::string text = args.empty() ? std::string("undefined") : toString(args[0]);
+        std::string out;
+        for (const unsigned char c : text) {
+            if (std::isalnum(c)) {
+                out += static_cast<char>(c);
+            } else {
+                out += '%';
+                out += hex[c >> 4];
+                out += hex[c & 15];
+            }
+        }
+        return Val::string(out);
+    }, 1));
     define("$version", Val::string(kVersionText));
     define("getVersion", native("getVersion", [](VM&, const Val&, Args) { return Val::string(kVersionText); }));
     define("targetPath", native("targetPath", [this](VM&, const Val&, Args args) -> Val {
@@ -855,6 +875,17 @@ bool Machine::lookupOwn(const Val& at, const std::string& name, Val& out, const 
     if (d) {
         const auto accessor = d->accessors.find(name);
         if (accessor != d->accessors.end()) {
+            const std::pair<const Value*, std::string> running(receiver.isObject() ? receiver.get() : nullptr, name);
+            if (runningAccessors.count(running)) {
+                out = Val();
+                return true;
+            }
+            runningAccessors.insert(running);
+            struct Done {
+                std::set<std::pair<const Value*, std::string>>& set;
+                std::pair<const Value*, std::string> key;
+                ~Done() { set.erase(key); }
+            } done{runningAccessors, running};
             out = callValue(accessor->second.first, receiver, {});
             return true;
         }
