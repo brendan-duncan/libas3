@@ -60,6 +60,9 @@ public:
     bool protoSet = false;
     Val proto;
     std::map<std::string, std::pair<Val, Val>> accessors;
+    // Each accessor in the order they were added, with how many dynamic
+    // properties there were then: where for-in finds it among them.
+    std::vector<std::pair<std::string, size_t>> accessorOrder;
     std::set<std::string> hidden;
     std::vector<Val> interfaces;
     // A super object: the this of the method it is in, and the object the
@@ -75,6 +78,7 @@ public:
     virtual void clear() {
         proto = Val();
         accessors.clear();
+        accessorOrder.clear();
         interfaces.clear();
         superThis = Val();
         home = Val();
@@ -376,6 +380,9 @@ public:
     Val globalObject;
     Val objectProto;
     Val functionProto;
+    // ActionScript 1's own versions of the VM's array methods (join writes
+    // undefined as the movie's version does), found before the VM's.
+    std::map<std::string, Val> arrayMethods;
     std::map<std::string, Val> registered;
     std::mt19937 random{12345};
     int depth = 0;
@@ -620,6 +627,23 @@ void Machine::setupGlobals() {
     const auto define = [this](const std::string& name, const Val& value) {
         if (vm.getGlobal(name)->isUndefined()) vm.setGlobal(name, value);
     };
+    // An array as text: its elements as ActionScript 1 writes them (null as
+    // null, undefined as the movie's version has it), a separator between.
+    const auto joined = [this](const Val& self, const std::string& separator) -> std::string {
+        std::string out;
+        if (!self.isObject() || self->type != ValueType::Array) return out;
+        for (size_t i = 0; i < self->elements.size(); ++i) {
+            if (i) out += separator;
+            out += toString(self->elements[i]);
+        }
+        return out;
+    };
+    arrayMethods["join"] = native("join", [this, joined](VM&, const Val& self, Args args) -> Val {
+        return Val::string(joined(self, args.size() > 0 && !args[0].isUndefined() ? toString(args[0]) : ","));
+    }, 1);
+    arrayMethods["toString"] = native("toString", [joined](VM&, const Val& self, Args) -> Val {
+        return Val::string(joined(self, ","));
+    });
     // ASSetPropFlags(object, names, set, clear): bit 1 hides names from
     // for-in.
     define("ASSetPropFlags", native("ASSetPropFlags", [this](VM&, const Val&, Args args) -> Val {
@@ -727,6 +751,7 @@ void Machine::setupGlobals() {
         if (name.empty() || !args[1].isFunction()) return Val::boolean(false);
         ObjectData* d = attach(self);
         if (!d) return Val::boolean(false);
+        if (!d->accessors.count(name)) d->accessorOrder.emplace_back(name, self->properties.size());
         d->accessors[name] = {args[1], args[2].isFunction() ? args[2] : Val()};
         self->properties.erase(name);
         return Val::boolean(true);
@@ -834,6 +859,13 @@ bool Machine::lookupOwn(const Val& at, const std::string& name, Val& out, const 
     if (const Val* own = value->properties.lookup(name)) {
         out = *own;
         return true;
+    }
+    if (value->type == ValueType::Array && vmMembers) {
+        const auto method = arrayMethods.find(name);
+        if (method != arrayMethods.end()) {
+            out = method->second;
+            return true;
+        }
     }
     if (value->host && !d) {
         ValuePtr found = value->host->get(name);
@@ -978,20 +1010,31 @@ void Machine::setMember(const Val& object, const std::string& name, const Val& v
     try {
         vm.setProperty(object, key, value);
     } catch (const ScriptException&) {
-        // A read-only property, a sealed class: as the player, nothing.
+        // One the VM keeps read-only, such as Math.cos: ActionScript 1 can
+        // put its own over it, which is found first.
+        target->properties[key] = value;
     }
 }
 
 bool Machine::deleteMember(const Val& object, const std::string& name) {
     if (!object.isObject()) return false;
     if (ObjectData* d = data(object)) {
-        if (d->accessors.erase(name)) return true;
+        if (d->accessors.erase(name)) {
+            d->accessorOrder.erase(std::remove_if(d->accessorOrder.begin(), d->accessorOrder.end(),
+                                                  [&name](const auto& each) { return each.first == name; }),
+                                   d->accessorOrder.end());
+            return true;
+        }
     }
     return object->properties.erase(name) > 0;
 }
 
 std::vector<std::string> Machine::enumerate(const Val& object) {
-    std::vector<std::string> names;
+    // As the player does it: each object's names (the object's own, then
+    // its prototypes') pushed in the order they were made, then taken off
+    // the top, so the last made comes first, a prototype's before the
+    // object's own, and an array's last element first.
+    std::vector<std::string> pushed;
     std::set<std::string> seen;
     const auto add = [&](const std::string& name, const ObjectData* d) {
         if (name == "__proto__" || name == "__constructor__") return;
@@ -999,7 +1042,7 @@ std::vector<std::string> Machine::enumerate(const Val& object) {
             seen.insert(name);
             return;
         }
-        if (seen.insert(name).second) names.push_back(name);
+        if (seen.insert(name).second) pushed.push_back(name);
     };
     Val at = object;
     for (int guard = 0; at.isObject() && guard < kDepthLimit; ++guard) {
@@ -1018,13 +1061,24 @@ std::vector<std::string> Machine::enumerate(const Val& object) {
                 for (const Val& key : keys) add(toString(key), d);
             }
         }
-        for (const auto& [name, value] : at->properties) add(name, d);
-        if (d) {
-            for (const auto& [name, accessor] : d->accessors) add(name, d);
+        // The dynamic properties in order, each accessor where it was added.
+        size_t placed = 0;
+        size_t index = 0;
+        const auto accessorsUpTo = [&](size_t count) {
+            if (!d) return;
+            for (; placed < d->accessorOrder.size() && d->accessorOrder[placed].second <= count; ++placed) {
+                add(d->accessorOrder[placed].first, d);
+            }
+        };
+        for (const auto& [name, value] : at->properties) {
+            accessorsUpTo(index);
+            add(name, d);
+            ++index;
         }
+        accessorsUpTo(static_cast<size_t>(-1));
         at = protoOf(at);
     }
-    return names;
+    return std::vector<std::string>(pushed.rbegin(), pushed.rend());
 }
 
 // -- Conversions --------------------------------------------------------------
@@ -1092,6 +1146,9 @@ bool Machine::toBoolean(const Val& value) {
 bool Machine::looseEquals(const Val& a, const Val& b) {
     if (a.tag == b.tag) {
         if (a.isObject()) return a.ref == b.ref;
+        // Two numbers that are not numbers are equal here, as the player
+        // (7 and later) has them; a string that reads as NaN is not.
+        if (a.isNumber() && std::isnan(a.num) && std::isnan(b.num)) return true;
         return a.strictEquals(b);
     }
     if (a.isNullish() && b.isNullish()) return true;

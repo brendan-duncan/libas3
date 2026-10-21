@@ -510,7 +510,9 @@ static void init_avm1_run_tests() {
                               "Array.prototype.first = function () { return this[0]; };\ntrace([5, 6].first());\n"
                               "MovieClip.prototype.where = function () { return this._name; };\ntrace(hat.where());\n"
                               "var o = {}; o.__proto__ = p; trace(o.x);\nfor (var k in p) trace('own ' + k);"),
-               "5\ntrue\ntrue\ntrue\nhi\nhi\ntrue\nabab\n5\nhat\n2\nown x\nown y\nown sum\nown hello\n");
+               // for-in as the player has it: newest first, a prototype's
+               // names before the object's own.
+               "5\ntrue\ntrue\ntrue\nhi\nhi\ntrue\nabab\n5\nhat\n2\nown hello\nown sum\nown y\nown x\n");
     });
 
     suite.addTest("ActionScript 2 classes, interfaces, getters and setters", []() {

@@ -249,9 +249,10 @@ private:
 // (VM::throwError) to raise an ActionScript error.
 using NativeMethod = std::function<Val(VM& vm, const Val& self, Args args)>;
 
-// Dynamic properties by name, in the order of their names (as for-in
-// visits them): kept in one array, which an object with a few properties
-// searches quicker than a tree and makes with one allocation. A reference
+// Dynamic properties by name, in the order they were made (as for-in
+// visits them in ActionScript 1): kept in one array, which an object with a
+// few properties searches quicker than a tree and makes with one
+// allocation; past a few, an index sorted by name finds them. A reference
 // to a value lasts until a property is added or deleted.
 class PropertyMap {
 public:
@@ -261,61 +262,91 @@ public:
     using const_iterator = Map::const_iterator;
 
     Val& operator[](const std::string& key) {
+        const size_t at = position(key);
+        if (at != npos) return _entries[at].second;
         if (_entries.empty()) {
             _entries.reserve(4);
         }
-        auto it = lowerBound(key);
-        if (it != _entries.end() && it->first == key) {
-            return it->second;
+        _entries.emplace_back(key, Val());
+        const uint32_t added = static_cast<uint32_t>(_entries.size() - 1);
+        if (_entries.size() > kScanned) {
+            if (_index.size() + 1 != _entries.size()) {
+                rebuildIndex();
+            } else {
+                _index.insert(indexBound(key), added);
+            }
         }
-        return _entries.emplace(it, key, Val())->second;
+        return _entries.back().second;
     }
     size_t count(const std::string& key) const { return lookup(key) ? 1 : 0; }
     iterator find(const std::string& key) {
-        auto it = lowerBound(key);
-        return it != _entries.end() && it->first == key ? it : _entries.end();
+        const size_t at = position(key);
+        return at == npos ? _entries.end() : _entries.begin() + static_cast<std::ptrdiff_t>(at);
     }
     const_iterator find(const std::string& key) const {
-        auto it = lowerBound(key);
-        return it != _entries.end() && it->first == key ? it : _entries.end();
+        const size_t at = position(key);
+        return at == npos ? _entries.end() : _entries.begin() + static_cast<std::ptrdiff_t>(at);
     }
     iterator begin() { return _entries.begin(); }
     iterator end() { return _entries.end(); }
     const_iterator begin() const { return _entries.begin(); }
     const_iterator end() const { return _entries.end(); }
     size_t erase(const std::string& key) {
-        auto it = find(key);
-        if (it == _entries.end()) return 0;
-        _entries.erase(it);
+        const size_t at = position(key);
+        if (at == npos) return 0;
+        _entries.erase(_entries.begin() + static_cast<std::ptrdiff_t>(at));
+        if (_entries.size() <= kScanned) {
+            std::vector<uint32_t>().swap(_index);
+        } else if (!_index.empty()) {
+            _index.erase(std::remove(_index.begin(), _index.end(), static_cast<uint32_t>(at)), _index.end());
+            for (uint32_t& each : _index) {
+                if (each > at) --each;
+            }
+        }
         return 1;
     }
     size_t size() const { return _entries.size(); }
     bool empty() const { return _entries.empty(); }
-    void clear() { Map().swap(_entries); }
+    void clear() {
+        Map().swap(_entries);
+        std::vector<uint32_t>().swap(_index);
+    }
     // The value by that name, or nullptr.
     const Val* lookup(const std::string& key) const {
-        if (_entries.size() <= kScanned) {
-            for (const Entry& entry : _entries) {
-                if (entry.first == key) return &entry.second;
-            }
-            return nullptr;
-        }
-        auto it = lowerBound(key);
-        return it != _entries.end() && it->first == key ? &it->second : nullptr;
+        const size_t at = position(key);
+        return at == npos ? nullptr : &_entries[at].second;
     }
 
 private:
+    static constexpr size_t npos = static_cast<size_t>(-1);
     // Up to this many, looked through in turn.
     static constexpr size_t kScanned = 8;
     Map _entries;
+    // Past kScanned, the entries' places sorted by their names.
+    std::vector<uint32_t> _index;
 
-    iterator lowerBound(const std::string& key) {
-        return std::lower_bound(_entries.begin(), _entries.end(), key,
-                                [](const Entry& entry, const std::string& name) { return entry.first < name; });
+    size_t position(const std::string& key) const {
+        if (_entries.size() <= kScanned) {
+            for (size_t i = 0; i < _entries.size(); ++i) {
+                if (_entries[i].first == key) return i;
+            }
+            return npos;
+        }
+        auto it = std::lower_bound(_index.begin(), _index.end(), key, [this](uint32_t at, const std::string& name) {
+            return _entries[at].first < name;
+        });
+        return it != _index.end() && _entries[*it].first == key ? *it : npos;
     }
-    const_iterator lowerBound(const std::string& key) const {
-        return std::lower_bound(_entries.begin(), _entries.end(), key,
-                                [](const Entry& entry, const std::string& name) { return entry.first < name; });
+    std::vector<uint32_t>::iterator indexBound(const std::string& key) {
+        return std::lower_bound(_index.begin(), _index.end(), key, [this](uint32_t at, const std::string& name) {
+            return _entries[at].first < name;
+        });
+    }
+    void rebuildIndex() {
+        _index.resize(_entries.size());
+        for (size_t i = 0; i < _index.size(); ++i) _index[i] = static_cast<uint32_t>(i);
+        std::sort(_index.begin(), _index.end(),
+                  [this](uint32_t a, uint32_t b) { return _entries[a].first < _entries[b].first; });
     }
 };
 

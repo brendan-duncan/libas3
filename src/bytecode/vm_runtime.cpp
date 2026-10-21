@@ -1559,9 +1559,12 @@ Val VM::makeIterator(const Val& object, bool each) {
         if (self->host) {
             self->host->enumerate(state->elements);
         }
-        for (const auto& property : self->properties) {
-            state->elements.push_back(Val::string(property.first));
-        }
+        // By name, as ActionScript 3's for-in has always visited them here.
+        std::vector<const std::string*> names;
+        names.reserve(self->properties.size());
+        for (const auto& property : self->properties) names.push_back(&property.first);
+        std::sort(names.begin(), names.end(), [](const std::string* a, const std::string* b) { return *a < *b; });
+        for (const std::string* name : names) state->elements.push_back(Val::string(*name));
     }
     return Val(state);
 }
