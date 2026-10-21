@@ -979,9 +979,10 @@ void Machine::setMember(const Val& object, const std::string& name, const Val& v
         setMember(d->superThis, name, value);
         return;
     }
-    if (!d) {
-        // A setter addProperty put on its prototypes.
-        Val at = protoOf(object);
+    {
+        // A setter addProperty put on it or its prototypes, called here so
+        // that what it throws reaches the script.
+        Val at = d ? object : protoOf(object);
         for (int guard = 0; at.isObject() && guard < kDepthLimit; ++guard) {
             if (ObjectData* pd = data(at)) {
                 const auto found = pd->accessors.find(name);
