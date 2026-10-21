@@ -332,6 +332,46 @@ std::mt19937& randomEngine() {
 
 } // namespace
 
+namespace {
+
+// A class's prototype as scripts see it: what it has is the class's
+// prototype table (what its instances find after their own properties),
+// and its constructor is the class.
+struct PrototypeHost : HostObject {
+    VM& vm;
+    ClassInfo* cls;
+    PrototypeHost(VM& machine, ClassInfo* of) : vm(machine), cls(of) {}
+
+    ValuePtr get(const std::string& name) override {
+        const auto found = cls->prototype.find(name);
+        if (found != cls->prototype.end()) return ValuePtr(found->second);
+        if (name == "constructor") return ValuePtr(vm.classValue(cls));
+        return nullptr;
+    }
+    bool set(const std::string& name, ValuePtr value) override {
+        cls->prototype[name] = Val(value);
+        return true;
+    }
+    bool deleteIndex(const Val& key) override {
+        if (!key.isString()) return false;
+        cls->prototype.erase(key.str());
+        return true;
+    }
+};
+
+Val prototypeOf(VM& vm, const Val& cls) {
+    if (!cls.isObject() || !cls->cls) return vm.newObject();
+    ClassInfo* info = cls->cls.get();
+    if (!info->prototypeObject.isObject()) {
+        Val made = vm.newObject();
+        made->host = std::make_shared<PrototypeHost>(vm, info);
+        info->prototypeObject = made;
+    }
+    return info->prototypeObject;
+}
+
+} // namespace
+
 void defineCoreBuiltins(VM& vm) {
     VM::Builtins& core = vm.builtins();
 
@@ -399,7 +439,7 @@ void defineCoreBuiltins(VM& vm) {
     core.object = classOfValue(object);
 
     core.klass = classOfValue(vm.defineNativeClass("Class")
-                                  .getter("prototype", [](VM& vm, const Val&, Args) { return vm.newObject(); })
+                                  .getter("prototype", [](VM& vm, const Val& self, Args) { return prototypeOf(vm, self); })
                                   .define());
 
     Val function =

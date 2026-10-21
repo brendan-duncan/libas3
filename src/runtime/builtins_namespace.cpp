@@ -11,16 +11,39 @@ namespace as3 {
 
 namespace {
 
+// Each has its parts as properties of its own, which for-in visits.
 struct NamespaceHost : HostObject {
     // None: undefined (a prefix not known).
     std::optional<std::string> prefix;
     std::string uri;
+
+    ValuePtr get(const std::string& name) override {
+        if (name == "uri") return Value::makeString(uri);
+        if (name == "prefix") return prefix ? Value::makeString(*prefix) : Value::makeUndefined();
+        return nullptr;
+    }
+    bool enumerate(std::vector<Val>& keys) override {
+        keys.push_back(Val::string("uri"));
+        keys.push_back(Val::string("prefix"));
+        return true;
+    }
 };
 
 struct QNameHost : HostObject {
     std::string localName;
     // None: null, any namespace.
     std::optional<std::string> uri;
+
+    ValuePtr get(const std::string& name) override {
+        if (name == "uri") return uri ? Value::makeString(*uri) : Value::makeNull();
+        if (name == "localName") return Value::makeString(localName);
+        return nullptr;
+    }
+    bool enumerate(std::vector<Val>& keys) override {
+        keys.push_back(Val::string("uri"));
+        keys.push_back(Val::string("localName"));
+        return true;
+    }
 };
 
 // A name XML allows: a letter or _ first, then letters, digits, ., - and _.

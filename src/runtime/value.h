@@ -638,6 +638,9 @@ struct ClassInfo {
     // Methods instances find after their dynamic properties, as on a
     // prototype: Object's toString, which an object literal may replace.
     std::unordered_map<std::string, Val> prototype;
+    // Class.prototype: the object scripts reach that table through, made
+    // the first time.
+    Val prototypeObject;
 
     // The script constructor (field initializers, then the body), or the
     // native one.
