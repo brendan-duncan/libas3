@@ -320,21 +320,46 @@ std::string VM::toString(const Val& value) {
     return object->toString();
 }
 
+namespace {
+
+// Two texts end to end. Strings are UTF-8 here and UTF-16 in the player: a
+// character past the Basic Multilingual Plane split in two (charAt gives
+// each half) is made one again as the halves meet.
+std::string joinedText(const std::string& a, const std::string& b) {
+    std::string joined;
+    joined.reserve(a.size() + b.size());
+    joined += a;
+    const auto at = [](const std::string& s, size_t i) { return static_cast<unsigned char>(s[i]); };
+    if (a.size() >= 3 && b.size() >= 3 && at(a, a.size() - 3) == 0xED && (at(a, a.size() - 2) & 0xF0) == 0xA0 &&
+        at(b, 0) == 0xED && (at(b, 1) & 0xF0) == 0xB0) {
+        const uint32_t high = 0xD000 | ((at(a, a.size() - 2) & 0x3F) << 6) | (at(a, a.size() - 1) & 0x3F);
+        const uint32_t low = 0xD000 | ((at(b, 1) & 0x3F) << 6) | (at(b, 2) & 0x3F);
+        const uint32_t code = 0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00);
+        joined.resize(joined.size() - 3);
+        joined += static_cast<char>(0xF0 | (code >> 18));
+        joined += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
+        joined += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        joined += static_cast<char>(0x80 | (code & 0x3F));
+        joined.append(b, 3, std::string::npos);
+        return joined;
+    }
+    joined += b;
+    return joined;
+}
+
+} // namespace
+
 Val VM::add(const Val& a, const Val& b) {
     if (a.tag == Val::Tag::Number && b.tag == Val::Tag::Number) {
         return Val::number(a.num + b.num);
     }
     if (a.tag == Val::Tag::String && b.tag == Val::Tag::String) {
-        std::string joined;
-        joined.reserve(a.str().size() + b.str().size());
-        joined += a.str();
-        joined += b.str();
-        return Val::string(std::move(joined));
+        return Val::string(joinedText(a.str(), b.str()));
     }
     const Val x = toPrimitive(a, false);
     const Val y = toPrimitive(b, false);
     if (x.isString() || y.isString()) {
-        return Val::string(x.toString() + y.toString());
+        return Val::string(joinedText(x.toString(), y.toString()));
     }
     return Val::number(x.toNumber() + y.toNumber());
 }

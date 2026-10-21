@@ -313,7 +313,31 @@ struct Reader {
         need(size);
         std::string text(reinterpret_cast<const char*>(&bytes[at]), size);
         at += size;
-        return text;
+        return joinedSurrogates(text);
+    }
+    // A character past the Basic Multilingual Plane some compilers write
+    // as its two UTF-16 halves, each as three bytes: made one character,
+    // as the player reads it.
+    static std::string joinedSurrogates(const std::string& text) {
+        if (text.find(static_cast<char>(0xED)) == std::string::npos) return text;
+        std::string out;
+        for (size_t i = 0; i < text.size(); ++i) {
+            const auto byte = [&](size_t k) { return static_cast<unsigned char>(text[k]); };
+            if (i + 5 < text.size() && byte(i) == 0xED && (byte(i + 1) & 0xF0) == 0xA0 && byte(i + 3) == 0xED &&
+                (byte(i + 4) & 0xF0) == 0xB0) {
+                const uint32_t high = 0xD000 | ((byte(i + 1) & 0x3F) << 6) | (byte(i + 2) & 0x3F);
+                const uint32_t low = 0xD000 | ((byte(i + 4) & 0x3F) << 6) | (byte(i + 5) & 0x3F);
+                const uint32_t code = 0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00);
+                out += static_cast<char>(0xF0 | (code >> 18));
+                out += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
+                out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                out += static_cast<char>(0x80 | (code & 0x3F));
+                i += 5;
+                continue;
+            }
+            out += text[i];
+        }
+        return out;
     }
     // A count that cannot be more than the bytes left, to fail before
     // reserving room for a bad one.
