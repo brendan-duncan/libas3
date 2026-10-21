@@ -489,7 +489,8 @@ void defineStringBuiltins(VM& vm) {
                       },
                       1)
         .getter("length", [](VM& vm, const Val& self, Args) {
-            if (self.isString() && isAscii(self.str())) return Val::number(static_cast<double>(self.str().size()));
+            // Whether a string is ASCII is found once and kept with it, not
+            // looked for at each read (s.length in a loop's test).
             return Val::number(static_cast<double>(textOf(vm, self).length()));
         })
         .method("charAt",

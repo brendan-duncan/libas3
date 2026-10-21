@@ -920,6 +920,18 @@ void VM::run(size_t stopDepth) {
                                 sp -= 2;
                                 break;
                             }
+                            if (index == static_cast<double>(elements.size()) && elements.size() < 50000000) {
+                                // Appended: twice the room each time it runs out.
+                                if (elements.size() == elements.capacity()) {
+                                    elements.reserve(std::max<size_t>(16, elements.capacity() * 2));
+                                }
+                                elements.push_back(sp[-1]);
+                                sp[-3] = std::move(sp[-1]);
+                                sp[-2] = Val();
+                                sp[-1] = Val();
+                                sp -= 2;
+                                break;
+                            }
                         }
                         frame->ip = ip;
                         setIndexOf(object, key, sp[-1]);

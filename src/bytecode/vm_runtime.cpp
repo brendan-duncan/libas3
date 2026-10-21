@@ -876,7 +876,13 @@ void VM::setIndexOf(const Val& object, const Val& key, const Val& value) {
                     throwError("RangeError", "Error #1005: Array index is not a positive integer (" +
                                                  std::to_string(index) + ").", 1005);
                 }
-                self->elements.resize(index + 1);
+                // Filled from the end (a[a.length] = x): twice the room each
+                // time, so the elements move fewer times.
+                std::vector<Val>& elements = self->elements;
+                if (index >= elements.capacity()) {
+                    elements.reserve(std::max<size_t>(index + 1, std::max<size_t>(16, elements.capacity() * 2)));
+                }
+                elements.resize(index + 1);
             }
             self->elements[index] = value;
             return;

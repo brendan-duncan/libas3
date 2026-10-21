@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <functional>
+#include <initializer_list>
 #include <unordered_map>
 
 namespace as3 {
@@ -277,16 +278,27 @@ public:
     Val callFunction(const Val& function, const Val& thisValue, const std::vector<Val>& args) {
         return callFunction(function, thisValue, Args(args.data(), args.size()));
     }
+    // callFunction(f, self, {a, b}): the arguments on the C++ stack, not
+    // in a vector made for each call (a sort's comparison).
+    Val callFunction(const Val& function, const Val& thisValue, std::initializer_list<Val> args) {
+        return callFunction(function, thisValue, Args(args.begin(), args.size()));
+    }
     // obj.name(args), as a script calls it: the overriding method of a
     // subclass when there is one.
     Val callMethod(const Val& object, const std::string& name, Args args);
     Val callMethod(const Val& object, const std::string& name, const std::vector<Val>& args = {}) {
         return callMethod(object, name, Args(args.data(), args.size()));
     }
+    Val callMethod(const Val& object, const std::string& name, std::initializer_list<Val> args) {
+        return callMethod(object, name, Args(args.begin(), args.size()));
+    }
     // new cls(args).
     Val construct(const Val& cls, Args args);
     Val construct(const Val& cls, const std::vector<Val>& args = {}) {
         return construct(cls, Args(args.data(), args.size()));
+    }
+    Val construct(const Val& cls, std::initializer_list<Val> args) {
+        return construct(cls, Args(args.begin(), args.size()));
     }
     // An instance with its fields at their defaults, its constructor not
     // run: for the host to attach its state to, then construct.
