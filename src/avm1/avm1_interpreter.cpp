@@ -64,6 +64,8 @@ public:
     // properties there were then: where for-in finds it among them.
     std::vector<std::pair<std::string, size_t>> accessorOrder;
     std::set<std::string> hidden;
+    // Those delete leaves be (ASSetPropFlags's 2).
+    std::set<std::string> permanent;
     std::vector<Val> interfaces;
     // A super object: the this of the method it is in, and the object the
     // method was found on (its prototype is where super looks).
@@ -649,7 +651,7 @@ void Machine::setupGlobals() {
         return Val::string(joined(self, ","));
     });
     // ASSetPropFlags(object, names, set, clear): bit 1 hides names from
-    // for-in.
+    // for-in, bit 2 keeps them from delete.
     define("ASSetPropFlags", native("ASSetPropFlags", [this](VM&, const Val&, Args args) -> Val {
         ObjectData* d = attach(args[0]);
         if (!d) return Val();
@@ -677,6 +679,11 @@ void Machine::setupGlobals() {
                 d->hidden.insert(name);
             } else if (clear & 1) {
                 d->hidden.erase(name);
+            }
+            if (set & 2) {
+                d->permanent.insert(name);
+            } else if (clear & 2) {
+                d->permanent.erase(name);
             }
         }
         return Val();
@@ -1024,6 +1031,7 @@ void Machine::setMember(const Val& object, const std::string& name, const Val& v
 bool Machine::deleteMember(const Val& object, const std::string& name) {
     if (!object.isObject()) return false;
     if (ObjectData* d = data(object)) {
+        if (d->permanent.count(name)) return false;
         if (d->accessors.erase(name)) {
             d->accessorOrder.erase(std::remove_if(d->accessorOrder.begin(), d->accessorOrder.end(),
                                                   [&name](const auto& each) { return each.first == name; }),
