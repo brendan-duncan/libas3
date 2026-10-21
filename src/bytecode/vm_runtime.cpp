@@ -635,7 +635,7 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
                 return readTrait(object, *trait, true);
             }
         }
-        if (const Val* found = self->properties.lookup(name)) {
+        if (const Val* found = self->properties.lookup(name, hashFor(cache, name))) {
             return *found;
         }
         for (const ClassInfo* at = core.klass.get(); at; at = at->base.get()) {
@@ -671,7 +671,7 @@ Val VM::getProp(const Val& object, const std::string& name, PropertyCache* cache
             return Val(found);
         }
     }
-    if (const Val* found = self->properties.lookup(name)) {
+    if (const Val* found = self->properties.lookup(name, hashFor(cache, name))) {
         return *found;
     }
     for (const ClassInfo* at = cls; at; at = at->base.get()) {
@@ -713,7 +713,7 @@ void VM::setProp(const Val& object, const std::string& name, const Val& value, P
             setProp(object, plain, value, nullptr);
             return;
         }
-        self->properties[name] = value;
+        self->properties.get(name, hashFor(cache, name)) = value;
         return;
     }
     const ClassInfo* cls = classOf(object);
@@ -739,7 +739,7 @@ void VM::setProp(const Val& object, const std::string& name, const Val& value, P
     if (self->host && self->host->set(name, value)) {
         return;
     }
-    self->properties[name] = value;
+    self->properties.get(name, hashFor(cache, name)) = value;
 }
 
 bool VM::callProp(const Val& object, const std::string& name, Val* args, uint32_t argc, Val* result,

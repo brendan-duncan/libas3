@@ -249,11 +249,32 @@ private:
 // (VM::throwError) to raise an ActionScript error.
 using NativeMethod = std::function<Val(VM& vm, const Val& self, Args args)>;
 
+// The hash a name is found by in a PropertyMap (and an inline cache keeps
+// for its instruction's name): never 0.
+inline uint32_t nameHash(const char* text, size_t length) {
+    uint64_t h = 0x9E3779B97F4A7C15ull ^ (static_cast<uint64_t>(length) * 0xff51afd7ed558ccdull);
+    while (length >= 8) {
+        uint64_t word;
+        std::memcpy(&word, text, 8);
+        h = (h ^ word) * 0xbf58476d1ce4e5b9ull;
+        h ^= h >> 31;
+        text += 8;
+        length -= 8;
+    }
+    uint64_t rest = 0;
+    std::memcpy(&rest, text, length);
+    h = (h ^ rest) * 0x94d049bb133111ebull;
+    h ^= h >> 29;
+    const uint32_t hash = static_cast<uint32_t>(h ^ (h >> 32));
+    return hash ? hash : 1;
+}
+inline uint32_t nameHash(const std::string& name) { return nameHash(name.data(), name.size()); }
+
 // Dynamic properties by name, in the order they were made (as for-in
 // visits them in ActionScript 1): kept in one array, which an object with a
-// few properties searches quicker than a tree and makes with one
-// allocation; past a few, an index sorted by name finds them. A reference
-// to a value lasts until a property is added or deleted.
+// few properties searches quicker than any table and makes with one
+// allocation. Past a few, each name's hash is kept and a hash index finds
+// them. A reference to a value lasts until a property is added or deleted.
 class PropertyMap {
 public:
     using Entry = std::pair<std::string, Val>;
@@ -261,30 +282,37 @@ public:
     using iterator = Map::iterator;
     using const_iterator = Map::const_iterator;
 
-    Val& operator[](const std::string& key) {
-        const size_t at = position(key);
-        if (at != npos) return _entries[at].second;
-        if (_entries.empty()) {
-            _entries.reserve(4);
+    Val& operator[](const std::string& key) { return get(key, 0); }
+    // The value by that name, added (undefined) when there is none. The
+    // hash is nameHash(key), or 0 when the caller does not have it.
+    Val& get(const std::string& key, uint32_t hash) {
+        if (_hashed.empty()) {
+            const size_t at = scan(key);
+            if (at != npos) return _entries[at].second;
+            if (_entries.empty()) _entries.reserve(4);
+            _entries.emplace_back(key, Val());
+            if (_entries.size() > kScanned) rebuildIndex();
+            return _entries.back().second;
         }
+        if (!hash) hash = nameHash(key);
+        const size_t at = probe(key, hash);
+        if (at != npos) return _entries[at].second;
         _entries.emplace_back(key, Val());
-        const uint32_t added = static_cast<uint32_t>(_entries.size() - 1);
-        if (_entries.size() > kScanned) {
-            if (_index.size() + 1 != _entries.size()) {
-                rebuildIndex();
-            } else {
-                _index.insert(indexBound(key), added);
-            }
+        _hashed.push_back(hash);
+        if (_entries.size() * 2 > indexSize()) {
+            rebuildIndex();
+        } else {
+            place(static_cast<uint32_t>(_entries.size() - 1));
         }
         return _entries.back().second;
     }
     size_t count(const std::string& key) const { return lookup(key) ? 1 : 0; }
     iterator find(const std::string& key) {
-        const size_t at = position(key);
+        const size_t at = position(key, 0);
         return at == npos ? _entries.end() : _entries.begin() + static_cast<std::ptrdiff_t>(at);
     }
     const_iterator find(const std::string& key) const {
-        const size_t at = position(key);
+        const size_t at = position(key, 0);
         return at == npos ? _entries.end() : _entries.begin() + static_cast<std::ptrdiff_t>(at);
     }
     iterator begin() { return _entries.begin(); }
@@ -292,16 +320,14 @@ public:
     const_iterator begin() const { return _entries.begin(); }
     const_iterator end() const { return _entries.end(); }
     size_t erase(const std::string& key) {
-        const size_t at = position(key);
+        const size_t at = position(key, 0);
         if (at == npos) return 0;
         _entries.erase(_entries.begin() + static_cast<std::ptrdiff_t>(at));
         if (_entries.size() <= kScanned) {
-            std::vector<uint32_t>().swap(_index);
-        } else if (!_index.empty()) {
-            _index.erase(std::remove(_index.begin(), _index.end(), static_cast<uint32_t>(at)), _index.end());
-            for (uint32_t& each : _index) {
-                if (each > at) --each;
-            }
+            std::vector<uint32_t>().swap(_hashed);
+        } else {
+            _hashed.erase(_hashed.begin() + static_cast<std::ptrdiff_t>(1 + indexSize() + at));
+            rebuildIndex();
         }
         return 1;
     }
@@ -309,11 +335,15 @@ public:
     bool empty() const { return _entries.empty(); }
     void clear() {
         Map().swap(_entries);
-        std::vector<uint32_t>().swap(_index);
+        std::vector<uint32_t>().swap(_hashed);
     }
-    // The value by that name, or nullptr.
-    const Val* lookup(const std::string& key) const {
-        const size_t at = position(key);
+    // The value by that name, or nullptr. The hash as for get.
+    const Val* lookup(const std::string& key, uint32_t hash = 0) const {
+        const size_t at = position(key, hash);
+        return at == npos ? nullptr : &_entries[at].second;
+    }
+    Val* lookup(const std::string& key, uint32_t hash = 0) {
+        const size_t at = position(key, hash);
         return at == npos ? nullptr : &_entries[at].second;
     }
 
@@ -322,31 +352,54 @@ private:
     // Up to this many, looked through in turn.
     static constexpr size_t kScanned = 8;
     Map _entries;
-    // Past kScanned, the entries' places sorted by their names.
-    std::vector<uint32_t> _index;
+    // Past kScanned, in one array: the index's size (a power of two), the
+    // index (open addressing by hash; each place an entry's place plus one,
+    // 0 empty; at most half full), then each entry's name's hash in order.
+    // Empty up to kScanned.
+    std::vector<uint32_t> _hashed;
 
-    size_t position(const std::string& key) const {
-        if (_entries.size() <= kScanned) {
-            for (size_t i = 0; i < _entries.size(); ++i) {
-                if (_entries[i].first == key) return i;
-            }
-            return npos;
-        }
-        auto it = std::lower_bound(_index.begin(), _index.end(), key, [this](uint32_t at, const std::string& name) {
-            return _entries[at].first < name;
-        });
-        return it != _index.end() && _entries[*it].first == key ? *it : npos;
+    size_t indexSize() const { return _hashed[0]; }
+    uint32_t hashAt(size_t entry) const { return _hashed[1 + indexSize() + entry]; }
+
+    size_t position(const std::string& key, uint32_t hash) const {
+        if (_hashed.empty()) return scan(key);
+        return probe(key, hash ? hash : nameHash(key));
     }
-    std::vector<uint32_t>::iterator indexBound(const std::string& key) {
-        return std::lower_bound(_index.begin(), _index.end(), key, [this](uint32_t at, const std::string& name) {
-            return _entries[at].first < name;
-        });
+    size_t scan(const std::string& key) const {
+        const size_t n = _entries.size();
+        for (size_t i = 0; i < n; ++i) {
+            if (_entries[i].first == key) return i;
+        }
+        return npos;
+    }
+    size_t probe(const std::string& key, uint32_t hash) const {
+        const uint32_t* index = _hashed.data() + 1;
+        const uint32_t* hashes = index + indexSize();
+        const size_t mask = indexSize() - 1;
+        for (size_t at = hash & mask;; at = (at + 1) & mask) {
+            const uint32_t place = index[at];
+            if (!place) return npos;
+            if (hashes[place - 1] == hash && _entries[place - 1].first == key) return place - 1;
+        }
+    }
+    void place(uint32_t entry) {
+        uint32_t* index = _hashed.data() + 1;
+        const size_t mask = indexSize() - 1;
+        size_t at = hashAt(entry) & mask;
+        while (index[at]) at = (at + 1) & mask;
+        index[at] = entry + 1;
     }
     void rebuildIndex() {
-        _index.resize(_entries.size());
-        for (size_t i = 0; i < _index.size(); ++i) _index[i] = static_cast<uint32_t>(i);
-        std::sort(_index.begin(), _index.end(),
-                  [this](uint32_t a, uint32_t b) { return _entries[a].first < _entries[b].first; });
+        uint32_t size = 32;
+        while (size < _entries.size() * 4) size *= 2;
+        std::vector<uint32_t> hashed(1 + size + _entries.size(), 0);
+        hashed[0] = size;
+        const bool had = !_hashed.empty();
+        for (size_t i = 0; i < _entries.size(); ++i) {
+            hashed[1 + size + i] = had && i < _hashed.size() - 1 - indexSize() ? hashAt(i) : nameHash(_entries[i].first);
+        }
+        _hashed.swap(hashed);
+        for (uint32_t i = 0; i < _entries.size(); ++i) place(i);
     }
 };
 

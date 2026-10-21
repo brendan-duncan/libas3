@@ -451,6 +451,23 @@ static void init_language_tests() {
                "1 NaN false null undefined\n");
     });
 
+    suite.addTest("Objects with many properties: found, deleted, added again, enumerated", []() {
+        expect(run("var o:Object = {};\n"
+                   "for (var i:int = 0; i < 200; i++) o['k' + i] = i;\n"
+                   "var sum:int = 0;\n"
+                   "for (i = 0; i < 200; i++) sum += o['k' + i];\n"
+                   "for (i = 0; i < 200; i += 3) delete o['k' + i];\n"
+                   "var left:int = 0; var missing:int = 0;\n"
+                   "for (i = 0; i < 200; i++) { if (o['k' + i] === undefined) missing++; else left += o['k' + i]; }\n"
+                   "o.k3 = 1000; o.extra = 5;\n"
+                   "var keys:Array = []; for (var k:String in o) keys.push(k);\n"
+                   "trace(sum, left, missing, keys.length, keys[0], keys[keys.length - 1], o.k3, ('k6' in o), ('k7' in o));\n"
+                   "for (i = 0; i < 200; i++) delete o['k' + i];\n"
+                   "keys = []; for (k in o) keys.push(k);\n"
+                   "trace(keys.join(','), o.extra, o.k5);"),
+               "19900 13267 67 135 extra k98 1000 false true\nextra 5 undefined\n");
+    });
+
     suite.addTest("Number formatting", []() {
         expect(run("trace(0.1 + 0.2, 1e21, 1e-7, 123456789012, -0, 1/3, 100, 2.5e-5, (255).toString(16), (3.14159).toFixed(2), (0.5).toFixed(0), (1234.5678).toPrecision(6));"),
                "0.30000000000000004 1e+21 1e-7 123456789012 0 0.3333333333333333 100 0.000025 ff 3.14 1 1234.57\n");

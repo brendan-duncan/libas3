@@ -128,7 +128,19 @@ struct PropertyCache {
     uint64_t version = 0;
     Val* slot = nullptr;
     Val value;
+    // The hash of the instruction's name (nameHash), found the first time.
+    uint32_t nameHash = 0;
+    uint32_t hashOf(const std::string& name) {
+        if (!nameHash) nameHash = as3::nameHash(name);
+        return nameHash;
+    }
 };
+
+// The hash of a name a lookup has, from its instruction's cache when it
+// has one.
+inline uint32_t hashFor(PropertyCache* cache, const std::string& name) {
+    return cache ? cache->hashOf(name) : nameHash(name);
+}
 
 struct ClassTemplate;
 
