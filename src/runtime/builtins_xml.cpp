@@ -82,8 +82,24 @@ private:
     const std::string& _text;
     size_t _at = 0;
 
-    [[noreturn]] void fail(const char* what) {
-        _vm.throwError("TypeError", std::string("Error #1090: XML parser failure: ") + what + ".", 1090);
+    // The parser's errors, by the number the player gives each.
+    [[noreturn]] void fail(const char* what, int id = 1090) {
+        _vm.throwError("TypeError", "Error #" + std::to_string(id) + ": XML parser failure: " + what + ".", id);
+    }
+    [[noreturn]] void unclosed(const std::string& name) {
+        _vm.throwError("TypeError",
+                       "Error #1085: The element type \"" + name + "\" must be terminated by the matching end-tag \"</" +
+                           name + ">\".",
+                       1085);
+    }
+    // A name with a colon at either end is no qualified name.
+    void checkQName(const std::string& name) {
+        if (!name.empty() && (name.front() == ':' || name.back() == ':')) {
+            _vm.throwError("TypeError",
+                           "Error #1084: Element or attribute (\"" + name +
+                               "\") does not match QName production: QName::=(NCName':')?NCName.",
+                           1084);
+        }
     }
 
     static bool isNameChar(char c) {
@@ -169,7 +185,7 @@ private:
         }
         if (_text.compare(_at, 4, "<!--") == 0) {
             const size_t end = _text.find("-->", _at);
-            if (end == std::string::npos) fail("unterminated comment");
+            if (end == std::string::npos) fail("Unterminated comment", 1094);
             if (!settings().ignoreComments) {
                 auto node = std::make_shared<XmlNode>();
                 node->kind = XmlNode::Kind::Comment;
@@ -182,14 +198,14 @@ private:
         }
         if (_text.compare(_at, 9, "<![CDATA[") == 0) {
             const size_t end = _text.find("]]>", _at);
-            if (end == std::string::npos) fail("unterminated CDATA section");
+            if (end == std::string::npos) fail("Unterminated CDATA section", 1091);
             addText(into, parent, _text.substr(_at + 9, end - _at - 9), true);
             _at = end + 3;
             return;
         }
         if (_text.compare(_at, 2, "<?") == 0) {
             const size_t end = _text.find("?>", _at);
-            if (end == std::string::npos) fail("unterminated processing instruction");
+            if (end == std::string::npos) fail("Unterminated processing instruction", 1097);
             if (!settings().ignoreProcessingInstructions) {
                 auto node = std::make_shared<XmlNode>();
                 node->kind = XmlNode::Kind::Instruction;
@@ -204,13 +220,17 @@ private:
             return;
         }
         if (_text.compare(_at, 2, "</") == 0) {
-            fail("unexpected end tag");
+            // An end tag with nothing open: past the root element.
+            _vm.throwError("TypeError",
+                           "Error #1088: The markup in the document following the root element must be well-formed.",
+                           1088);
         }
         ++_at;  // <
         auto element = std::make_shared<XmlNode>();
         element->kind = XmlNode::Kind::Element;
         element->parent = parent;
         element->name = readName();
+        checkQName(element->name);
         for (;;) {
             skipSpace();
             if (_at >= _text.size()) fail("element is malformed");
@@ -225,31 +245,29 @@ private:
                 break;
             }
             const std::string name = readName();
+            checkQName(name);
             skipSpace();
-            if (_at >= _text.size() || _text[_at] != '=') fail("attribute is malformed");
+            if (_at >= _text.size() || _text[_at] != '=') fail("element is malformed");
             ++_at;
             skipSpace();
-            if (_at >= _text.size() || (_text[_at] != '"' && _text[_at] != '\'')) fail("attribute is malformed");
+            if (_at >= _text.size() || (_text[_at] != '"' && _text[_at] != '\'')) fail("element is malformed");
             const char quote = _text[_at++];
             const size_t end = _text.find(quote, _at);
-            if (end == std::string::npos) fail("attribute is malformed");
+            if (end == std::string::npos) fail("Unterminated attribute", 1095);
             element->attributes.emplace_back(name, decode(_text.substr(_at, end - _at)));
             _at = end + 1;
         }
-        // The children, to </name>.
+        // The children, to </name> (anything after the name before > let
+        // be, as the player lets it).
         for (;;) {
-            if (_at >= _text.size()) fail("element is not closed");
+            if (_at >= _text.size()) unclosed(element->name);
             if (_text.compare(_at, 2, "</") == 0) {
                 _at += 2;
                 const std::string name = readName();
-                skipSpace();
-                if (name != element->name || _at >= _text.size() || _text[_at] != '>') {
-                    _vm.throwError("TypeError",
-                                   "Error #1085: The element type \"" + element->name +
-                                       "\" must be terminated by the matching end-tag \"</" + element->name + ">\".",
-                                   1085);
-                }
-                ++_at;
+                if (name != element->name) unclosed(element->name);
+                const size_t close = _text.find('>', _at);
+                if (close == std::string::npos) fail("element is malformed");
+                _at = close + 1;
                 break;
             }
             readNode(element->children, element);
