@@ -250,9 +250,10 @@ size_t Chunk::disassembleInstruction(size_t offset) const {
         case OpCode::OP_SET_THIS_PROP:
         case OpCode::OP_SET_THIS_PROP_POP:
         case OpCode::OP_CALL_THIS_PROP:
+        case OpCode::OP_CALL_MATH:
             std::cout << "'" << names[getU16(offset + 1)] << "'";
             if (op == OpCode::OP_CALL_PROP || op == OpCode::OP_CALL_NAME || op == OpCode::OP_CALL_SUPER ||
-                op == OpCode::OP_CALL_THIS_PROP) {
+                op == OpCode::OP_CALL_THIS_PROP || op == OpCode::OP_CALL_MATH) {
                 std::cout << " (" << static_cast<int>(code[offset + 3]) << " args)";
             }
             break;

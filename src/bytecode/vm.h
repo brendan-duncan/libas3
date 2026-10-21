@@ -388,6 +388,9 @@ private:
     std::set<std::string> missing;
     std::set<std::string> loading;
     Builtins core;
+    // The Math class's value: CALL_MATH does Math's work itself when the
+    // object it has is this one.
+    Value* mathClassValue = nullptr;
     bool hadError = false;
     bool looseNames = false;
     std::string errorMessage;

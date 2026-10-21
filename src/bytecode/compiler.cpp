@@ -1,4 +1,5 @@
 #include "compiler.h"
+#include "../runtime/math_functions.h"
 #include "../runtime/profile.h"
 #include <algorithm>
 #include <cmath>
@@ -472,6 +473,24 @@ void Compiler::emitCallProp(const std::string& name, int argc) {
     emitU8(static_cast<uint8_t>(argc));
     emitU16(newCache());
     adjust(-argc);
+}
+
+bool Compiler::emitCallMath(MemberExpression* member, int argc) {
+    if (member->computed || !member->object || member->object->kind != Expression::ExpressionKind::Identifier ||
+        static_cast<Identifier*>(member->object.get())->name != "Math" || resolve("Math").kind != NameKind::Global) {
+        return false;
+    }
+    const MathFunction function = mathFunctionNamed(member->property->name);
+    if (!mathTakes(function, static_cast<size_t>(argc))) {
+        return false;
+    }
+    emitOp(OpCode::OP_CALL_MATH);
+    emitU16(nameIndex(propertyKey(member->property->name)));
+    emitU8(static_cast<uint8_t>(argc));
+    emitU16(newCache());
+    emitU8(static_cast<uint8_t>(function));
+    adjust(-argc);
+    return true;
 }
 
 void Compiler::emitThisProp(OpCode op, const std::string& name) {
@@ -2556,7 +2575,9 @@ void Compiler::compileCallExpression(CallExpression* expr) {
             return;
         }
         const int argc = compileArguments(expr->arguments);
-        emitCallProp(member->property->name, argc);
+        if (!emitCallMath(member, argc)) {
+            emitCallProp(member->property->name, argc);
+        }
         return;
     }
     if (callee->kind == Expression::ExpressionKind::Identifier && !fs->withLocals.empty() && !calleeOutsideWith) {

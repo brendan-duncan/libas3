@@ -461,11 +461,36 @@ static void init_language_tests() {
                    "for (i = 0; i < 200; i++) { if (o['k' + i] === undefined) missing++; else left += o['k' + i]; }\n"
                    "o.k3 = 1000; o.extra = 5;\n"
                    "var keys:Array = []; for (var k:String in o) keys.push(k);\n"
+                   "keys.sort();\n"
                    "trace(sum, left, missing, keys.length, keys[0], keys[keys.length - 1], o.k3, ('k6' in o), ('k7' in o));\n"
                    "for (i = 0; i < 200; i++) delete o['k' + i];\n"
                    "keys = []; for (k in o) keys.push(k);\n"
                    "trace(keys.join(','), o.extra, o.k5);"),
                "19900 13267 67 135 extra k98 1000 false true\nextra 5 undefined\n");
+    });
+
+    suite.addTest("Math called directly gives what Math's methods give", []() {
+        // Math.f(...) on the Math class with numbers is done without a call
+        // (CALL_MATH); through another name it is a call. Both the same.
+        const std::string calls =
+            "[M.max(1, NaN), M.max(-0, 0), 1 / M.max(-0, 0), 1 / M.min(0, -0), M.max(), M.min(), M.max(7),\n"
+            " M.round(-0.5), 1 / M.round(-0.4), M.round(2.5), M.round(-2.5), M.abs(-3), M.pow(1, Infinity),\n"
+            " M.pow(NaN, 0), M.pow(2, 10), M.atan2(1, 1), M.floor('3.7'), M.max(1, '5', 3), M.min(4, 2, 8, 1, 9),\n"
+            " M.sqrt(-1), M.ceil(-0.5), 1 / M.ceil(-0.5), M.sin(0), M.cos(0), M.exp(1), M.log(Math.E), M.tan(0),\n"
+            " M.asin(1), M.acos(1), M.atan(1), M.floor(-0)].join(' ')";
+        std::string direct = calls;
+        for (size_t at = 0; (at = direct.find("M.", at)) != std::string::npos; at += 5) direct.replace(at, 2, "Math.");
+        const std::string out = run("function viaCall():String { var M:Object = Math; return " + calls + "; }\n"
+                                    "function direct():String { return " + direct + "; }\n"
+                                    "function shadowed():Number { var Math:Object = {floor: function(x:*):Number { return 42; }};"
+                                    " return Math.floor(1.5); }\n"
+                                    "trace(viaCall()); trace(direct()); trace(shadowed());");
+        const size_t first = out.find('\n');
+        const size_t second = out.find('\n', first + 1);
+        if (out.substr(0, first) != out.substr(first + 1, second - first - 1)) {
+            throw std::runtime_error("direct and called differ:\n" + out);
+        }
+        expect(out.substr(second + 1), "42\n");
     });
 
     suite.addTest("Number formatting", []() {

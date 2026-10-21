@@ -121,6 +121,10 @@ enum class OpCode : uint8_t {
     OP_CALL_SUPER,      // [u16 name][u8 argc] args... -> result
     OP_CALL_THIS_PROP,  // [u16 name][u8 argc][u16 cache] place args... -> result
     OP_CALL_LOCAL_PROP, // [u16 slot][u16 name][u8 argc][u16 cache] place args... -> result
+    // Math.f(args): CALL_PROP's operands, then the function (MathFunction).
+    // Done at once when the object is Math itself and the arguments are
+    // numbers; otherwise as CALL_PROP. [u16 name][u8 argc][u16 cache][u8 function]
+    OP_CALL_MATH,
     OP_SUPER_CTOR,      // [u8 argc] args... -> undefined
     OP_NEW,             // [u8 argc] class args... -> instance
     OP_RETURN,

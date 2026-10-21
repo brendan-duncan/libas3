@@ -2,6 +2,7 @@
 #include "opcode.h"
 #include "compiler.h"
 #include "../parser/parser.h"
+#include "../runtime/math_functions.h"
 #include "../runtime/profile.h"
 #include <algorithm>
 #include <chrono>
@@ -80,6 +81,9 @@ VM::VM()
     growStack(stackBase + 1024);
     started = nowMilliseconds();
     setupBuiltins();
+    if (core.math) {
+        if (ValuePtr math = core.math->classObject.lock()) mathClassValue = math.get();
+    }
 }
 
 VM::VM(VM* parentVM)
@@ -95,6 +99,7 @@ VM::VM(VM* parentVM)
     if (parent) {
         core = parent->core;
         classResolver = parent->classResolver;
+        mathClassValue = parent->mathClassValue;
     }
 }
 
@@ -1381,6 +1386,37 @@ void VM::run(size_t stopDepth) {
                         const uint8_t argc = READ_U8();
                         PropertyCache& cache = code->caches[READ_U16()];
                         Val* object = sp - argc - 1;
+                        frame->ip = ip;
+                        const int done = cachedCall(*object, cache, object + 1, argc, object);
+                        if (done == 2) {
+                            RELOAD();
+                            break;
+                        }
+                        if (done == 0 && callProp(*object, NAME(name), object + 1, argc, object, &cache)) {
+                            RELOAD();
+                        }
+                        break;
+                    }
+                    case OpCode::OP_CALL_MATH: {
+                        const uint16_t name = READ_U16();
+                        const uint8_t argc = READ_U8();
+                        PropertyCache& cache = code->caches[READ_U16()];
+                        const MathFunction function = static_cast<MathFunction>(READ_U8());
+                        Val* object = sp - argc - 1;
+                        if (object->tag == Val::Tag::Object && object->ref.get() == mathClassValue) {
+                            double numbers[8];
+                            uint8_t i = 0;
+                            while (i < argc && object[1 + i].tag == Val::Tag::Number) {
+                                numbers[i] = object[1 + i].num;
+                                ++i;
+                            }
+                            if (i == argc) {
+                                // Numbers above it: nothing to let go of but Math.
+                                *object = Val::number(mathCall(function, numbers, argc));
+                                sp = object + 1;
+                                break;
+                            }
+                        }
                         frame->ip = ip;
                         const int done = cachedCall(*object, cache, object + 1, argc, object);
                         if (done == 2) {

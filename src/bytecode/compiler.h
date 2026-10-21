@@ -136,6 +136,8 @@ private:
     void emitGetProp(const std::string& name);
     void emitSetProp(const std::string& name);
     void emitCallProp(const std::string& name, int argc);
+    // Math.f(args) on the Math class found by its global name.
+    bool emitCallMath(MemberExpression* member, int argc);
     void emitCoerce(Coerce coerce);
     // A WITH_GET, WITH_SET or WITH_FIND for the with blocks around: where
     // its jump is, to patch.

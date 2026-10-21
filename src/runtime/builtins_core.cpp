@@ -2,6 +2,7 @@
 // classes and the top-level functions.
 
 #include "builtins.h"
+#include "math_functions.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -12,6 +13,24 @@
 #include <random>
 
 namespace as3 {
+
+MathFunction mathFunctionNamed(const std::string& name) {
+    static const struct {
+        const char* name;
+        MathFunction function;
+    } kFunctions[] = {
+        {"abs", MathFunction::Abs},     {"acos", MathFunction::Acos},   {"asin", MathFunction::Asin},
+        {"atan", MathFunction::Atan},   {"ceil", MathFunction::Ceil},   {"cos", MathFunction::Cos},
+        {"exp", MathFunction::Exp},     {"floor", MathFunction::Floor}, {"log", MathFunction::Log},
+        {"round", MathFunction::Round}, {"sin", MathFunction::Sin},     {"sqrt", MathFunction::Sqrt},
+        {"tan", MathFunction::Tan},     {"atan2", MathFunction::Atan2}, {"pow", MathFunction::Pow},
+        {"max", MathFunction::Max},     {"min", MathFunction::Min},
+    };
+    for (const auto& each : kFunctions) {
+        if (name == each.name) return each.function;
+    }
+    return MathFunction::None;
+}
 
 namespace {
 
@@ -603,44 +622,34 @@ void defineCoreBuiltins(VM& vm) {
             .constant("PI", Val::number(3.141592653589793))
             .constant("SQRT1_2", Val::number(0.7071067811865476))
             .constant("SQRT2", Val::number(1.4142135623730951));
-        const auto unary = [&math](const char* name, double (*f)(double)) {
+        // The functions themselves are math_functions.h's, which CALL_MATH
+        // runs too.
+        const auto unary = [&math](const char* name) {
+            const MathFunction f = mathFunctionNamed(name);
             math.staticMethod(name, [f](VM& vm, const Val&, Args args) {
-                return Val::number(f(args.empty() ? kNaN : vm.toNumber(args[0])));
+                return Val::number(mathUnary(f, args.empty() ? kNaN : vm.toNumber(args[0])));
             }, 1);
         };
-        unary("abs", [](double x) { return std::fabs(x); });
-        unary("acos", [](double x) { return std::acos(x); });
-        unary("asin", [](double x) { return std::asin(x); });
-        unary("atan", [](double x) { return std::atan(x); });
-        unary("ceil", [](double x) { return std::ceil(x); });
-        unary("cos", [](double x) { return std::cos(x); });
-        unary("exp", [](double x) { return std::exp(x); });
-        unary("floor", [](double x) { return std::floor(x); });
-        unary("log", [](double x) { return std::log(x); });
-        unary("round", [](double x) {
-            if (std::isnan(x) || std::isinf(x)) return x;
-            return std::floor(x + 0.5);
-        });
-        unary("sin", [](double x) { return std::sin(x); });
-        unary("sqrt", [](double x) { return std::sqrt(x); });
-        unary("tan", [](double x) { return std::tan(x); });
+        for (const char* name : {"abs", "acos", "asin", "atan", "ceil", "cos", "exp", "floor", "log", "round", "sin",
+                                 "sqrt", "tan"}) {
+            unary(name);
+        }
         math.staticMethod("atan2", [](VM& vm, const Val&, Args args) {
             return Val::number(std::atan2(vm.toNumber(args[0]), vm.toNumber(args[1])));
         }, 2);
         math.staticMethod("pow", [](VM& vm, const Val&, Args args) {
             const double x = vm.toNumber(args[0]);
             const double y = vm.toNumber(args[1]);
-            if (std::isnan(y)) return Val::number(kNaN);
-            if (y == 0) return Val::number(1);
-            if ((x == 1 || x == -1) && std::isinf(y)) return Val::number(kNaN);
-            return Val::number(std::pow(x, y));
+            return Val::number(mathPow(x, y));
         }, 2);
         math.staticMethod("max", [](VM& vm, const Val&, Args args) {
             double best = -kInfinity;
             for (const Val& arg : args) {
+                // One at a time: a NaN stops it before the next is converted.
                 const double x = vm.toNumber(arg);
-                if (std::isnan(x)) return Val::number(kNaN);
-                if (x > best || (x == 0 && best == 0 && !std::signbit(x))) best = x;
+                const double pair[2] = {best, x};
+                best = mathMax(pair, 2);
+                if (std::isnan(best)) return Val::number(kNaN);
             }
             return Val::number(best);
         }, 2);
@@ -648,8 +657,9 @@ void defineCoreBuiltins(VM& vm) {
             double best = kInfinity;
             for (const Val& arg : args) {
                 const double x = vm.toNumber(arg);
-                if (std::isnan(x)) return Val::number(kNaN);
-                if (x < best || (x == 0 && best == 0 && std::signbit(x))) best = x;
+                const double pair[2] = {best, x};
+                best = mathMin(pair, 2);
+                if (std::isnan(best)) return Val::number(kNaN);
             }
             return Val::number(best);
         }, 2);

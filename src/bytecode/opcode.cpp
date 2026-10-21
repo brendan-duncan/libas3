@@ -49,6 +49,7 @@ const char* getOpCodeName(OpCode op) {
         case OpCode::OP_GET_THIS_PROP: return "GET_THIS_PROP";
         case OpCode::OP_SET_THIS_PROP: return "SET_THIS_PROP";
         case OpCode::OP_CALL_THIS_PROP: return "CALL_THIS_PROP";
+        case OpCode::OP_CALL_MATH: return "CALL_MATH";
         case OpCode::OP_CALL_LOCAL_PROP: return "CALL_LOCAL_PROP";
         case OpCode::OP_ADD: return "ADD";
         case OpCode::OP_SUBTRACT: return "SUBTRACT";
@@ -188,6 +189,7 @@ int getOpCodeOperandCount(OpCode op) {
         case OpCode::OP_GET_LOCAL_PROP:
         case OpCode::OP_SET_LOCAL_PROP:
         case OpCode::OP_SET_LOCAL_PROP_POP:
+        case OpCode::OP_CALL_MATH:
             return 6;
         case OpCode::OP_CALL_LOCAL_PROP:
             return 7;
