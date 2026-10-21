@@ -4,6 +4,7 @@
 #include "abc_verifier.h"
 
 #include "../bytecode/vm.h"
+#include "../runtime/builtins.h"
 #include "../runtime/profile.h"
 
 #include <algorithm>
@@ -652,8 +653,8 @@ Val Domain::State::constant(File& file, uint8_t kind, uint32_t index) {
         case CONSTANT_Undefined:
             return Val();
         default:
-            // A namespace: its URI.
-            return Val::string(nsUri(file.abc, index));
+            // A namespace: a Namespace of its URI.
+            return makeNamespaceValue(vm, nsUri(file.abc, index));
     }
 }
 
@@ -1622,7 +1623,7 @@ Val Domain::State::loop(Frame& frame) {
                 push(Val::string(poolString(file.abc, in.a)));
                 break;
             case OP_pushnamespace:
-                push(Val::string(nsUri(file.abc, in.a)));
+                push(makeNamespaceValue(vm, nsUri(file.abc, in.a)));
                 break;
 
             // The stack

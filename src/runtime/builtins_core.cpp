@@ -727,6 +727,7 @@ void VM::setupBuiltins() {
     defineJsonBuiltins(*this);
     defineUtilsBuiltins(*this);
     defineXmlBuiltins(*this);
+    defineNamespaceBuiltins(*this);
 }
 
 } // namespace as3

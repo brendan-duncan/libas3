@@ -30,6 +30,7 @@ add_library(as3_parser
     src/runtime/builtins_json.cpp
     src/runtime/builtins_utils.cpp
     src/runtime/builtins_xml.cpp
+    src/runtime/builtins_namespace.cpp
     src/abc/abc_file.cpp
     src/abc/abc_opcodes.cpp
     src/abc/abc_verifier.cpp

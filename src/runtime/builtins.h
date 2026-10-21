@@ -16,6 +16,10 @@ void defineDateBuiltins(VM& vm);
 void defineJsonBuiltins(VM& vm);
 void defineUtilsBuiltins(VM& vm);
 void defineXmlBuiltins(VM& vm);
+// Namespace and QName (builtins_namespace.cpp); a Namespace of a URI, as
+// a namespace constant is.
+void defineNamespaceBuiltins(VM& vm);
+Val makeNamespaceValue(VM& vm, const std::string& uri);
 
 // Strings are kept as UTF-8; ActionScript counts in UTF-16 units.
 std::u16string toUtf16(const std::string& text);
