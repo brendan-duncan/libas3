@@ -160,6 +160,10 @@ public:
     // Whether \a object or a prototype of it has \a name, a value or an
     // accessor.
     bool hasMember(const Val& object, const std::string& name);
+    // The names for-in visits on \a object, in its order; and whether a
+    // name is a property addProperty made (on it or a prototype).
+    std::vector<std::string> forInNames(const Val& object);
+    bool isAccessor(const Val& object, const std::string& name);
     void setMember(const Val& object, const std::string& name, const Val& value);
     Val call(const Val& function, const Val& self, const std::vector<Val>& args,
              const std::string& where = std::string());

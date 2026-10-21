@@ -2703,6 +2703,26 @@ void Interpreter::applyClass(const Val& clip, const Val& constructor) {
     call(constructor, clip, {}, "class " + (constructor->function ? constructor->function->name : std::string()));
 }
 
+std::vector<std::string> Interpreter::forInNames(const Val& object) {
+    try {
+        return _machine->enumerate(object);
+    } catch (const ScriptException&) {
+        return {};
+    }
+}
+
+bool Interpreter::isAccessor(const Val& object, const std::string& name) {
+    Val at = object;
+    for (int guard = 0; at.isObject() && guard < kDepthLimit; ++guard) {
+        if (const ObjectData* d = _machine->data(at)) {
+            if (d->accessors.count(name)) return true;
+        }
+        if (at->properties.count(name)) return false;
+        at = _machine->protoOf(at);
+    }
+    return false;
+}
+
 bool Interpreter::hasMember(const Val& object, const std::string& name) {
     Val out;
     try {
