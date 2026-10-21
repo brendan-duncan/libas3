@@ -141,6 +141,9 @@ public:
 
     // _global.
     Val global();
+    // A value a constructor returns for new to give undefined rather than
+    // the object made, as a player's own classes do when given too little.
+    Val noObject();
     // A constructor's prototype (MovieClip.prototype), made the first time
     // for a native one.
     Val prototypeOf(const Val& constructor);
@@ -154,6 +157,9 @@ public:
     // from the host (onEnterFrame, a listener's method), an error told to
     // the host rather than thrown.
     Val getMember(const Val& object, const std::string& name);
+    // Whether \a object or a prototype of it has \a name, a value or an
+    // accessor.
+    bool hasMember(const Val& object, const std::string& name);
     void setMember(const Val& object, const std::string& name, const Val& value);
     Val call(const Val& function, const Val& self, const std::vector<Val>& args,
              const std::string& where = std::string());

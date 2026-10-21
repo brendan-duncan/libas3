@@ -378,6 +378,9 @@ public:
     // The values given ObjectData, emptied when the movie is done.
     std::vector<std::weak_ptr<Value>> attached;
     Val globalObject;
+    // Returned from a constructor, new gives undefined (as a player's own
+    // class does when given too little to make one).
+    Val noObject;
     Val objectProto;
     Val functionProto;
     // ActionScript 1's own versions of the VM's array methods (join writes
@@ -609,6 +612,7 @@ Machine::Machine(VM& vm, Host& host, int version)
     constructorOf("Function", functionProto);
     globalObject = vm.newObject();
     globalObject->host = std::make_shared<GlobalData>(life);
+    noObject = vm.newObject();
     setupGlobals();
 }
 
@@ -1387,6 +1391,7 @@ Val Machine::construct(const Val& constructor, const std::vector<Val>& args) {
             hide(made, "constructor");
         }
         const Val result = callAvm1(*f, constructor, made, args, proto);
+        if (result.isObject() && result.ref == noObject.ref) return Val();
         return result.isObject() ? result : made;
     }
     Val objectClass;
@@ -2680,6 +2685,8 @@ Val Interpreter::handler(const Actions& actions, const std::string& where) {
 
 Val Interpreter::global() { return _machine->globalObject; }
 
+Val Interpreter::noObject() { return _machine->noObject; }
+
 Val Interpreter::prototypeOf(const Val& constructor) { return _machine->prototypeOf(constructor); }
 
 Val Interpreter::registeredClass(const std::string& linkage) {
@@ -2693,6 +2700,15 @@ void Interpreter::applyClass(const Val& clip, const Val& constructor) {
     const Val proto = m.prototypeOf(constructor);
     m.setMember(clip, "__proto__", proto);
     call(constructor, clip, {}, "class " + (constructor->function ? constructor->function->name : std::string()));
+}
+
+bool Interpreter::hasMember(const Val& object, const std::string& name) {
+    Val out;
+    try {
+        return _machine->lookup(object, name, out, nullptr);
+    } catch (const ScriptException&) {
+        return false;
+    }
 }
 
 Val Interpreter::getMember(const Val& object, const std::string& name) {
