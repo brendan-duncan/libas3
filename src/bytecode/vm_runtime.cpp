@@ -142,17 +142,32 @@ void VM::nullError(const Val& object, const std::string&) {
 
 std::string VM::stackTrace() {
     std::string trace;
-    for (size_t i = frames.size(); i-- > 0;) {
-        const CallFrame& frame = frames[i];
+    size_t outer = outerFrames.size();
+    for (size_t i = frames.size() + 1; i-- > 0;) {
+        // The outer frames entered over the VM's first i frames.
+        while (outer > 0 && outerFrames[outer - 1].first >= i) {
+            trace += "\tat " + *outerFrames[outer - 1].second + "()\n";
+            --outer;
+        }
+        if (i == 0) break;
+        const CallFrame& frame = frames[i - 1];
         if (!frame.code) continue;
         std::string name = frame.code->qualifiedName.empty() ? frame.code->name : frame.code->qualifiedName;
         if (name.empty()) name = "Function/<anonymous>";
         if (frame.code->isScript) name = "global$init";
+        // A class in a package as the player writes it: flash.geom::Matrix3D.
+        const size_t slash = name.find('/');
+        const size_t dot = name.rfind('.', slash == std::string::npos ? std::string::npos : slash);
+        if (dot != std::string::npos && name.find("::") == std::string::npos) {
+            name = name.substr(0, dot) + "::" + name.substr(dot + 1);
+        }
         const size_t offset = static_cast<size_t>(frame.ip - frame.codeStart);
         const int line = frame.code->chunk.getLine(offset > 0 ? offset - 1 : 0);
         trace += "\tat " + name + "()";
+        // Where, for code from a file; a host's library code has none, as
+        // the player's own classes have none.
         const std::string file = frame.code->unit ? frame.code->unit->fileName : std::string();
-        if (!file.empty() || line > 0) {
+        if (!file.empty()) {
             trace += "[" + file + ":" + std::to_string(line) + "]";
         }
         trace += "\n";

@@ -137,6 +137,60 @@ struct Script {
     std::unordered_map<std::string, std::string> uriOf;
 };
 
+// A QName's namespace (its package, for a package's) and local name.
+std::pair<std::string, std::string> qualifiedParts(const AbcFile& file, uint32_t multiname) {
+    if (multiname == 0 || multiname >= file.pool.multinames.size()) return {std::string(), std::string("*")};
+    const Multiname& name = file.pool.multinames[multiname];
+    const auto text = [&file](uint32_t string) {
+        return string < file.pool.strings.size() ? file.pool.strings[string] : std::string();
+    };
+    std::string ns;
+    if ((name.kind == MN_QName || name.kind == MN_QNameA) && name.ns < file.pool.namespaces.size()) {
+        const Namespace& space = file.pool.namespaces[name.ns];
+        if (space.kind == NS_Package || space.kind == NS_PackageInternal) ns = text(space.name);
+    }
+    return {ns, text(name.name)};
+}
+
+// Each method's name as the player writes it in a stack trace.
+std::vector<std::string> traceNames(const AbcFile& file) {
+    std::vector<std::string> names(file.methods.size());
+    const auto name = [&names](uint32_t method, const std::string& text) {
+        if (method < names.size() && names[method].empty()) names[method] = text;
+    };
+    const auto className = [&file](uint32_t multiname) {
+        const auto parts = qualifiedParts(file, multiname);
+        return parts.first.empty() ? parts.second : parts.first + "::" + parts.second;
+    };
+    const auto traits = [&](const std::vector<Trait>& list, const std::string& owner) {
+        for (const Trait& trait : list) {
+            if (trait.kind == TRAIT_Method || trait.kind == TRAIT_Getter || trait.kind == TRAIT_Setter ||
+                trait.kind == TRAIT_Function) {
+                const char* prefix = trait.kind == TRAIT_Getter ? "get " : trait.kind == TRAIT_Setter ? "set " : "";
+                const std::string local = qualifiedParts(file, trait.name).second;
+                name(trait.index, owner.empty() ? local : owner + "/" + prefix + local);
+            }
+        }
+    };
+    for (size_t i = 0; i < file.instances.size(); ++i) {
+        const std::string owner = className(file.instances[i].name);
+        name(file.instances[i].iinit, owner);
+        traits(file.instances[i].traits, owner);
+        if (i < file.classes.size()) {
+            name(file.classes[i].cinit, owner + "$cinit");
+            traits(file.classes[i].traits, owner + "$");
+        }
+    }
+    for (const ScriptInfo& script : file.scripts) {
+        name(script.init, "global$init");
+        traits(script.traits, std::string());
+    }
+    for (std::string& each : names) {
+        if (each.empty()) each = "Function/<anonymous>";
+    }
+    return names;
+}
+
 struct File {
     AbcFile abc;
     std::vector<Name> names;
@@ -146,6 +200,9 @@ struct File {
     // private one, a prefix of its own.
     std::vector<std::string> privatePrefix;
     std::vector<std::string> methodNames;
+    // Each method's name as a stack trace gives it: pkg::Class/method,
+    // Class$/static, Class (the constructor), Function/<anonymous>.
+    std::vector<std::string> traceNames;
     std::vector<std::unique_ptr<ClassRecord>> classes;
     std::vector<std::unique_ptr<Script>> scripts;
     // Each method's parameters' coercions and its result's, worked out
@@ -343,6 +400,7 @@ bool Domain::State::load(AbcFile abc, std::string& error) {
     file->code.resize(a.bodies.size());
     file->coercions.resize(a.methods.size());
     file->methodNames = methodNames(a);
+    file->traceNames = traceNames(a);
     if (a.instances.size() != a.classes.size()) {
         error = "the file has " + std::to_string(a.instances.size()) + " instances for " +
                 std::to_string(a.classes.size()) + " classes";
@@ -1234,6 +1292,7 @@ Val Domain::State::invoke(const MethodRef& method, const Val& self, Args args) {
         int exceptions;
         ~Guard() {
             if (std::uncaught_exceptions() > exceptions) state.noteUnwind(frame, nullptr);
+            state.vm.leaveOuterFrame();
             state.running.pop_back();
             --state.depth;
             state.arena.give(frame.regs, size);
@@ -1241,6 +1300,7 @@ Val Domain::State::invoke(const MethodRef& method, const Val& self, Args args) {
     } guard{*this, frame, size, std::uncaught_exceptions()};
     ++depth;
     running.push_back(&frame);
+    vm.enterOuterFrame(&file.traceNames[method.method]);
 
     // this, the parameters (coerced to their types, the missing ones their
     // defaults), then the rest or the arguments.

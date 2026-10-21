@@ -454,6 +454,9 @@ static void init_language_tests() {
     suite.addTest("Number formatting", []() {
         expect(run("trace(0.1 + 0.2, 1e21, 1e-7, 123456789012, -0, 1/3, 100, 2.5e-5, (255).toString(16), (3.14159).toFixed(2), (0.5).toFixed(0), (1234.5678).toPrecision(6));"),
                "0.30000000000000004 1e+21 1e-7 123456789012 0 0.3333333333333333 100 0.000025 ff 3.14 1 1234.57\n");
+        // Large numbers to fifteen digits, cut; a digit halfway rounds up.
+        expect(run("trace(1e50 + 1e50 + 1e50, 966.67828369140625, 1.5e300);"),
+               "3.00000000000000e+50 966.6782836914063 1.5e+300\n");
     });
 }
 

@@ -640,7 +640,10 @@ void defineCoreBuiltins(VM& vm) {
             .getter("errorID", [](VM& vm, const Val& self, Args) { return vm.getProperty(self, "$errorID"); })
             .method("getStackTrace",
                     [](VM& vm, const Val& self, Args) {
-                        return Val::string(vm.toString(self) + "\n" + vm.getProperty(self, "$stack").toString());
+                        // As the player gives it: no line break after the last frame.
+                        std::string stack = vm.getProperty(self, "$stack").toString();
+                        while (!stack.empty() && stack.back() == '\n') stack.pop_back();
+                        return Val::string(stack.empty() ? vm.toString(self) : vm.toString(self) + "\n" + stack);
                     })
             .prototypeMethod("toString",
                              [](VM& vm, const Val& self, Args) {

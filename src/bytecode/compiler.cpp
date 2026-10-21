@@ -974,7 +974,11 @@ void Compiler::compileClass(ClassDefinition* definition, const std::shared_ptr<C
                 made.function = compileFunction(made.name, function->parameters, function->returnType.get(),
                                                  function->body.get(), &context, made.isStatic, !made.isStatic,
                                                  false, function->line);
-                made.function->qualifiedName = klass->qualifiedName + "/" + made.name;
+                // As the player names them in a stack trace: Class/method,
+                // Class$/staticMethod, Class/get prop.
+                made.function->qualifiedName = klass->qualifiedName + (made.isStatic ? "$/" : "/") +
+                                               (function->isGetter ? "get " : function->isSetter ? "set " : "") +
+                                               made.name;
             }
             klass->members.push_back(std::move(made));
         } else if (auto* variables = dynamic_cast<VariableDefinition*>(member.get())) {

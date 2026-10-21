@@ -411,8 +411,35 @@ as3.typeOf = function (value) {
     return type;
 };
 
+// A number as ActionScript writes it: the fewest digits that read back as
+// it, a digit halfway rounded up (JavaScript rounds to even), and a large
+// number to fifteen digits, cut.
+function numberText(n) {
+    if (n === 0 || !Number.isFinite(n)) return n === 0 ? "0" : String(n);
+    if (Number.isInteger(n) && Math.abs(n) < 1e21) return String(n);
+    const magnitude = Math.abs(n);
+    const shortest = magnitude.toExponential();
+    const count = shortest.split("e")[0].replace(".", "").length;
+    let text = magnitude.toExponential(count - 1);
+    if (Number(text) !== magnitude) text = shortest;
+    const [mantissa, power] = text.split("e");
+    const digits = mantissa.replace(".", "").replace(/0+$/, "") || "0";
+    const k = digits.length, at = Number(power) + 1;
+    let out;
+    if (k <= at && at <= 21) out = digits + "0".repeat(at - k);
+    else if (0 < at && at <= 21) out = digits.slice(0, at) + "." + digits.slice(at);
+    else if (-6 < at && at <= 0) out = "0." + "0".repeat(-at) + digits;
+    else {
+        let m = digits[0] + (k > 1 ? "." + digits.slice(1) : "");
+        if (at - 1 > 0 && m.length > 16) m = m.slice(0, 16);
+        out = m + "e" + (at - 1 >= 0 ? "+" : "-") + Math.abs(at - 1);
+    }
+    return n < 0 ? "-" + out : out;
+}
+
 // String(x), as ActionScript has it.
 as3.string = function (value) {
+    if (typeof value === "number") return numberText(value);
     if (value === undefined) return "undefined";
     if (value === null) return "null";
     if (typeof value === "function") {

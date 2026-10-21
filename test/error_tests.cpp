@@ -121,9 +121,26 @@ static void init_error_tests() {
                 "new app.Deep().outer();\n",
                 "Deep.as");
         const std::string stack = vm.getErrorStack();
-        expectContains(stack, "at app.Deep/inner()[Deep.as:8]");
-        expectContains(stack, "at app.Deep/outer()[Deep.as:4]");
+        expectContains(stack, "at app::Deep/inner()[Deep.as:8]");
+        expectContains(stack, "at app::Deep/outer()[Deep.as:4]");
         if (vm.getErrorLine() != 8) throw std::runtime_error("line " + std::to_string(vm.getErrorLine()));
+    });
+
+    suite.addTest("Stack traces name static methods and accessors as the player does", []() {
+        VM vm;
+        vm.load("package app {\n"
+                "  public class Kit {\n"
+                "    public static function make():String { return new Kit().text; }\n"
+                "    public function get text():String { return new Error('where').getStackTrace(); }\n"
+                "  }\n"
+                "}\n"
+                "var result:String = app.Kit.make();\n",
+                "");
+        if (vm.hasError()) throw std::runtime_error(vm.getError());
+        const std::string stack = Val(vm.getGlobal("result")).toString();
+        expectContains(stack, "Error: where\n\tat app::Kit/get text()\n\tat app::Kit$/make()");
+        // No file named, no place in it; and no line break after the last.
+        if (stack.find('[') != std::string::npos || stack.back() == '\n') throw std::runtime_error(stack);
     });
 
     suite.addTest("Runaway recursion is an error, and the VM goes on", []() {

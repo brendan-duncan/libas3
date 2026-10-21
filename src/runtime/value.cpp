@@ -403,7 +403,30 @@ std::string numberToString(double value) {
             digits += *p;
         }
     }
-    const int exponent = std::atoi(p + 1);
+    int exponent = std::atoi(p + 1);
+    // Halfway between two of these digits, the player rounds up where the
+    // C library rounds to even: 966.67828369140625 is ...063, not ...062.
+    {
+        char exact[96];
+        std::snprintf(exact, sizeof(exact), "%.70e", magnitude);
+        std::string all;
+        for (const char* q = exact; *q && *q != 'e'; ++q) {
+            if (*q >= '0' && *q <= '9') all += *q;
+        }
+        const size_t at = digits.size();
+        if (all.size() > at && all.compare(0, at, digits) == 0 && all[at] == '5' &&
+            all.find_first_not_of('0', at + 1) == std::string::npos) {
+            size_t i = at;
+            while (i > 0 && digits[i - 1] == '9') digits[--i] = '0';
+            if (i == 0) {
+                digits.insert(digits.begin(), '1');
+                digits.pop_back();
+                ++exponent;
+            } else {
+                ++digits[i - 1];
+            }
+        }
+    }
     while (digits.size() > 1 && digits.back() == '0') {
         digits.pop_back();
     }
@@ -417,10 +440,13 @@ std::string numberToString(double value) {
     } else if (-6 < n && n <= 0) {
         out += "0." + std::string(static_cast<size_t>(-n), '0') + digits;
     } else {
-        out += digits.substr(0, 1);
+        std::string mantissa = digits.substr(0, 1);
         if (k > 1) {
-            out += "." + digits.substr(1);
+            mantissa += "." + digits.substr(1);
         }
+        // The player shows large numbers to fifteen digits, cut, not rounded.
+        if (n - 1 > 0 && mantissa.size() > 16) mantissa.resize(16);
+        out += mantissa;
         out += "e";
         out += (n - 1 >= 0) ? "+" : "-";
         out += std::to_string(std::abs(n - 1));

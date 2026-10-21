@@ -314,6 +314,11 @@ public:
     bool isType(const Val& value, const Val& type);
     // The functions running, innermost first, as getStackTrace gives them.
     std::string stackTrace();
+    // Code another engine runs (a movie's ABC) tells of each function it
+    // enters and leaves, by its name as a stack trace gives it, so traces
+    // have its frames among the VM's own.
+    void enterOuterFrame(const std::string* name) { outerFrames.emplace_back(frames.size(), name); }
+    void leaveOuterFrame() { if (!outerFrames.empty()) outerFrames.pop_back(); }
 
     // The built-in classes.
     struct Builtins {
@@ -360,6 +365,8 @@ private:
     Val* stackBuilt = nullptr;
     Val* sp = nullptr;
     FrameStack frames;
+    // Each outer frame: how many of the VM's frames were under it, and its name.
+    std::vector<std::pair<size_t, const std::string*>> outerFrames;
     void growStack(Val* needed);
     std::unordered_map<std::string, Val> globals;
     std::unordered_map<std::string, Val> definitions;
