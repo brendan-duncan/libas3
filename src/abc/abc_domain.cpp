@@ -2262,7 +2262,8 @@ Val Domain::State::loop(Frame& frame) {
                 }
                 Val key = keys[i];
                 if (in.op == OP_nextname) {
-                    push(key.isNumber() ? Val::string(key.toString()) : key);
+                    // An array's index as a number, as the player gives it.
+                    push(key);
                 } else {
                     push(vm.getIndex(object, key));
                 }
