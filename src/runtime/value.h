@@ -563,6 +563,34 @@ public:
         (void)keys;
         return false;
     }
+
+    // An object that answers for every name its class does not declare
+    // (flash.utils.Proxy): it is asked whether it has one, is called by
+    // name, and is enumerated an index at a time (from 0; 0 back for no
+    // more).
+    virtual bool answersEveryName() const { return false; }
+    virtual bool has(const Val& key) {
+        (void)key;
+        return false;
+    }
+    virtual bool call(const std::string& name, Args args, Val& out) {
+        (void)name;
+        (void)args;
+        (void)out;
+        return false;
+    }
+    virtual double nextIndex(double index) {
+        (void)index;
+        return 0;
+    }
+    virtual Val nextName(double index) {
+        (void)index;
+        return Val();
+    }
+    virtual Val nextValue(double index) {
+        (void)index;
+        return Val();
+    }
 };
 
 template <class T>

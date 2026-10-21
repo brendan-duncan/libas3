@@ -53,9 +53,9 @@ struct Name {
     // an attribute.
     std::string local;
     std::string key;
-    // For a private namespace among its namespaces: the key of a member in
-    // it ("pkg.Class::name").
-    std::string privateKey;
+    // For each private namespace among its namespaces (a class's, a
+    // file's): the key of a member in it ("pkg.Class::name").
+    std::vector<std::string> privateKeys;
     // The namespaces' URIs, and those of them that are packages (public or
     // internal), the top level last.
     std::vector<std::string> uris;
@@ -346,7 +346,7 @@ struct Domain::State : std::enable_shared_from_this<Domain::State> {
     // -- Names ------------------------------------------------------------------
 
     std::string runtimeKey(const Name& n, const Val& name);
-    bool scopeHas(const Val& object, bool with, const Name& n, const std::string& key, const std::string* priv);
+    bool scopeHas(const Val& object, bool with, const Name& n, const std::string& key);
     bool findInDomain(const Name& n, const std::string& local, Val& holder, Val* value);
     Val findProperty(Frame& frame, const Name& n, const std::string& key, bool strict);
     Val getProperty(const Val& object, const Name& n, const std::string& key, const Val* runtimeName);
@@ -463,6 +463,20 @@ bool Domain::State::load(AbcFile abc, std::string& error) {
     return true;
 }
 
+// The flash_proxy namespace's: kept apart from public names of the same
+// local name (a Proxy's callProperty is not its public callProperty).
+const char* const kProxyUri = "http://www.adobe.com/2006/actionscript/flash/proxy";
+
+// The member of \a cls (a static one with \a statics) one of a name's
+// private namespaces has.
+const as3::Trait* privateTrait(const as3::ClassInfo* cls, const Name& n, bool statics) {
+    if (!cls) return nullptr;
+    for (const std::string& key : n.privateKeys) {
+        if (const as3::Trait* trait = statics ? cls->findStatic(key) : cls->findTrait(key)) return trait;
+    }
+    return nullptr;
+}
+
 std::string Domain::State::keyOf(File& file, uint32_t qname) {
     const AbcFile& a = file.abc;
     if (qname == 0 || qname >= a.pool.multinames.size()) return std::string();
@@ -471,6 +485,7 @@ std::string Domain::State::keyOf(File& file, uint32_t qname) {
     if (m.ns < a.pool.namespaces.size() && a.pool.namespaces[m.ns].kind == NS_Private) {
         return file.privatePrefix[m.ns] + local;
     }
+    if (nsUri(a, m.ns) == kProxyUri) return "flash_proxy::" + local;
     return m.isAttribute() ? "@" + local : local;
 }
 
@@ -506,8 +521,8 @@ const Name& Domain::State::name(File& file, uint32_t index) {
         const std::string uri = nsUri(a, ns);
         const uint8_t kind = nsKind(a, ns);
         n.uris.push_back(uri);
-        if (kind == NS_Private && n.privateKey.empty() && ns < file.privatePrefix.size()) {
-            n.privateKey = file.privatePrefix[ns];
+        if (kind == NS_Private && ns < file.privatePrefix.size()) {
+            n.privateKeys.push_back(file.privatePrefix[ns]);
         } else if (isPackage(kind)) {
             n.packages.push_back(uri);
         }
@@ -559,8 +574,9 @@ const Name& Domain::State::name(File& file, uint32_t index) {
     Name& self = file.names[index];
     // The top level last: a name in a package found before an alias of it.
     std::stable_partition(self.packages.begin(), self.packages.end(), [](const std::string& uri) { return !uri.empty(); });
-    if (!self.privateKey.empty()) self.privateKey += self.local;
+    for (std::string& key : self.privateKeys) key += self.local;
     self.key = self.attribute ? "@" + self.local : self.local;
+    if (self.uris.size() == 1 && self.uris[0] == kProxyUri && !self.attribute) self.key = "flash_proxy::" + self.local;
     if (!self.runtimeName) {
         for (const std::string& uri : self.packages) self.qualified.push_back(joinName(uri, self.local));
     }
@@ -971,21 +987,20 @@ std::string Domain::State::runtimeKey(const Name& n, const Val& name) {
     return n.attribute ? "@" + text : text;
 }
 
-bool Domain::State::scopeHas(const Val& object, bool with, const Name& n, const std::string& key,
-                             const std::string* priv) {
+bool Domain::State::scopeHas(const Val& object, bool with, const Name& n, const std::string& key) {
     if (!object.isObject()) return false;
     Value* self = object.ref.get();
     if (with) return VMAccess::hasKey(vm, object, Val::string(key));
     if (self->type == ValueType::Class) {
         const as3::ClassInfo* cls = self->cls.get();
         if (!cls) return false;
-        if (priv && cls->findStatic(*priv)) return true;
+        if (privateTrait(cls, n, true)) return true;
         return cls->findStatic(key) != nullptr;
     }
     const as3::ClassInfo* cls = self->cls.get();
     auto global = cls ? globalClasses.find(cls) : globalClasses.end();
     if (global != globalClasses.end()) {
-        if (priv && cls->findTrait(*priv)) return true;
+        if (privateTrait(cls, n, false)) return true;
         if (cls->findTrait(key)) {
             // A script's definition, in a namespace the name has.
             if (n.uris.empty() || n.runtimeNs) return true;
@@ -1000,7 +1015,7 @@ bool Domain::State::scopeHas(const Val& object, bool with, const Name& n, const 
     }
     const as3::ClassInfo* of = vm.classOf(object);
     if (of) {
-        if (priv && of->findTrait(*priv)) return true;
+        if (privateTrait(of, n, false)) return true;
         if (of->findTrait(key)) return true;
     }
     if (self->properties.count(key)) return true;
@@ -1085,15 +1100,14 @@ Val Domain::State::globalOf(Frame& frame) {
 }
 
 Val Domain::State::findProperty(Frame& frame, const Name& n, const std::string& key, bool strict) {
-    const std::string* priv = n.privateKey.empty() ? nullptr : &n.privateKey;
     for (uint32_t i = frame.scopeDepth; i-- > 0;) {
         const bool with = ((frame.withMask >> std::min<uint32_t>(i, 63)) & 1) != 0;
-        if (scopeHas(frame.scopes[i], with, n, key, priv)) return frame.scopes[i];
+        if (scopeHas(frame.scopes[i], with, n, key)) return frame.scopes[i];
     }
     if (frame.method && frame.method->scope) {
         const ScopeChain& chain = *frame.method->scope;
         for (size_t i = chain.size(); i-- > 0;) {
-            if (scopeHas(chain[i].object, chain[i].with, n, key, priv)) return chain[i].object;
+            if (scopeHas(chain[i].object, chain[i].with, n, key)) return chain[i].object;
         }
     }
     Val holder;
@@ -1114,11 +1128,10 @@ Val Domain::State::getProperty(const Val& object, const Name& n, const std::stri
             if (findInDomain(n, n.runtimeName ? key : n.local, holder, &value)) return value;
             referenceError(key);
         }
-        if (!n.privateKey.empty()) {
+        if (!n.privateKeys.empty()) {
             const bool isClass = self->type == ValueType::Class;
             const as3::ClassInfo* cls = isClass ? self->cls.get() : vm.classOf(object);
-            const as3::Trait* trait = cls ? (isClass ? cls->findStatic(n.privateKey) : cls->findTrait(n.privateKey)) : nullptr;
-            if (trait) return vm.readTrait(object, *trait, isClass);
+            if (const as3::Trait* trait = privateTrait(cls, n, isClass)) return vm.readTrait(object, *trait, isClass);
         }
     }
     if (runtimeName && !runtimeName->isString() && !n.attribute) return vm.getIndex(object, *runtimeName);
@@ -1128,12 +1141,11 @@ Val Domain::State::getProperty(const Val& object, const Name& n, const std::stri
 
 void Domain::State::setProperty(const Val& object, const Name& n, const std::string& key, const Val* runtimeName,
                                 const Val& value) {
-    if (object.isObject() && !n.privateKey.empty()) {
+    if (object.isObject() && !n.privateKeys.empty()) {
         Value* self = object.ref.get();
         const bool isClass = self->type == ValueType::Class;
         const as3::ClassInfo* cls = isClass ? self->cls.get() : vm.classOf(object);
-        const as3::Trait* trait = cls ? (isClass ? cls->findStatic(n.privateKey) : cls->findTrait(n.privateKey)) : nullptr;
-        if (trait) {
+        if (const as3::Trait* trait = privateTrait(cls, n, isClass)) {
             vm.writeTrait(object, *trait, value, key, isClass);
             return;
         }
@@ -1167,12 +1179,19 @@ Val Domain::State::callProperty(const Val& object, const Name& n, const std::str
             found = true;
         } else if (cls) {
             const as3::Trait* trait = nullptr;
-            if (!n.privateKey.empty()) trait = isClass ? cls->findStatic(n.privateKey) : cls->findTrait(n.privateKey);
+            trait = privateTrait(cls, n, isClass);
             if (!trait && !runtimeName) trait = isClass ? cls->findStatic(key) : cls->findTrait(key);
             if (trait) {
                 function = trait->kind == as3::TraitKind::Method ? trait->method : vm.readTrait(object, *trait, isClass);
                 found = true;
             }
+        }
+    }
+    // A proxy is asked to call one it does not declare.
+    if (!found && object.isObject() && object->host && object->host->answersEveryName()) {
+        Val out;
+        if (object->host->call(runtimeName && !runtimeName->isString() ? vm.toString(*runtimeName) : key, args, out)) {
+            return out;
         }
     }
     if (!found) function = getProperty(object, n, key, runtimeName);
@@ -1433,7 +1452,11 @@ Val Domain::State::loop(Frame& frame) {
         } else {
             p.key = p.n->key;
         }
-        if (p.n->runtimeNs) pop();
+        if (p.n->runtimeNs) {
+            // A runtime namespace: only flash_proxy changes which property.
+            const Val ns = pop();
+            if (!p.hasRuntime && ns.isObject() && vm.toString(ns) == kProxyUri) p.key = "flash_proxy::" + p.n->local;
+        }
         return p;
     };
     const auto compare = [&](const Val& a, const Val& b, int how) -> bool {
@@ -2175,6 +2198,19 @@ Val Domain::State::loop(Frame& frame) {
                     push(Val::boolean(false));
                     break;
                 }
+                // A proxy says its next index itself.
+                if (object->host && object->host->answersEveryName()) {
+                    const double next = object->host->nextIndex(position);
+                    if (next == 0) {
+                        at = Val::number(0);
+                        object = Val::null();
+                        push(Val::boolean(false));
+                    } else {
+                        at = Val::number(next);
+                        push(Val::boolean(true));
+                    }
+                    break;
+                }
                 Iteration& iterating = iteration(frame, object, position == 0);
                 const size_t keys = iterating.keys->elements.size();
                 if (position < 0 || position >= static_cast<double>(keys)) {
@@ -2195,6 +2231,10 @@ Val Domain::State::loop(Frame& frame) {
                     push(Val::number(0));
                     break;
                 }
+                if (object->host && object->host->answersEveryName()) {
+                    push(Val::number(object->host->nextIndex(position)));
+                    break;
+                }
                 Iteration& iterating = iteration(frame, object, position == 0);
                 const size_t keys = iterating.keys->elements.size();
                 push(Val::number(position >= 0 && position < static_cast<double>(keys) ? position + 1 : 0));
@@ -2207,6 +2247,10 @@ Val Domain::State::loop(Frame& frame) {
                 const double position = num(vm, at);
                 if (!object.isObject()) {
                     push(Val());
+                    break;
+                }
+                if (object->host && object->host->answersEveryName()) {
+                    push(in.op == OP_nextname ? object->host->nextName(position) : object->host->nextValue(position));
                     break;
                 }
                 Iteration& iterating = iteration(frame, object, false);

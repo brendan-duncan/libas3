@@ -400,7 +400,9 @@ void defineCoreBuiltins(VM& vm) {
                                      const Trait* trait = cls->findTrait(name);
                                      if (trait && trait->kind != TraitKind::Method) return Val::boolean(true);
                                  }
-                                 if (value->host && (value->host->get(name) || value->host->hasIndex(args[0]))) {
+                                 // (A proxy is not asked.)
+                                 if (value->host && !value->host->answersEveryName() &&
+                                     (value->host->get(name) || value->host->hasIndex(args[0]))) {
                                      return Val::boolean(true);
                                  }
                                  return Val::boolean(false);
@@ -765,9 +767,9 @@ void VM::setupBuiltins() {
     defineStringBuiltins(*this);
     defineDateBuiltins(*this);
     defineJsonBuiltins(*this);
+    defineNamespaceBuiltins(*this);
     defineUtilsBuiltins(*this);
     defineXmlBuiltins(*this);
-    defineNamespaceBuiltins(*this);
 }
 
 } // namespace as3

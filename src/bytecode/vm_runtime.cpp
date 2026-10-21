@@ -745,6 +745,14 @@ bool VM::callProp(const Val& object, const std::string& name, Val* args, uint32_
                     cache->remember(cls->id, trait, false);
                 }
                 function = trait->method;
+            } else if (!trait && value->host && value->host->answersEveryName()) {
+                Val out;
+                std::vector<Val> list(args, args + argc);
+                if (value->host->call(name, Args(list.data(), list.size()), out)) {
+                    if (result) *result = out;
+                    return true;
+                }
+                function = getProp(self, name, nullptr);
             } else {
                 function = getProp(self, name, nullptr);
             }
@@ -887,6 +895,10 @@ bool VM::hasKey(const Val& object, const Val& key) {
         return true;
     }
     const std::string name = key.isObject() ? toString(key) : key.toString();
+    if (self->host && self->host->answersEveryName()) {
+        const ClassInfo* declaring = classOf(object);
+        return (declaring && declaring->findTrait(name)) || self->host->has(key);
+    }
     if (self->properties.count(name)) {
         return true;
     }
@@ -937,6 +949,10 @@ Val VM::callMethod(const Val& object, const std::string& name, Args args) {
     Val function;
     const ClassInfo* cls = object.isObject() && object->type == ValueType::Class ? nullptr : classOf(object);
     const Trait* trait = cls ? cls->findTrait(name) : nullptr;
+    if (!trait && object.isObject() && object->host && object->host->answersEveryName()) {
+        Val out;
+        if (object->host->call(name, args, out)) return out;
+    }
     if (trait && trait->kind == TraitKind::Method) {
         function = trait->method;
     } else {

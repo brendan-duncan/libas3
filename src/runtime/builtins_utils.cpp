@@ -10,6 +10,80 @@ namespace as3 {
 
 namespace {
 
+// A flash.utils.Proxy: each name its class does not declare is asked of
+// the overridden flash_proxy methods (getProperty, callProperty...), named
+// by a QName.
+struct ProxyHost : HostObject {
+    VM& vm;
+    std::weak_ptr<Value> self;
+    explicit ProxyHost(VM& machine) : vm(machine) {}
+
+    Val object() const { return Val(ValuePtr(self.lock())); }
+    Val nameOf(const std::string& name) const {
+        return vm.construct(Val(vm.getGlobal("QName")), std::vector<Val>{Val::string(""), Val::string(name)});
+    }
+    // Its flash_proxy method (an override of one written without the
+    // namespace, as a class compiled from source has it, if there is one).
+    Val ask(const char* method, std::vector<Val> args) {
+        const Val it = object();
+        if (!it.isObject()) return Val();
+        const ClassInfo* cls = vm.classOf(it);
+        const Trait* plain = cls ? cls->findTrait(method) : nullptr;
+        const std::string key = plain && plain->kind == TraitKind::Method ? std::string(method)
+                                                                           : std::string("flash_proxy::") + method;
+        return vm.callMethod(it, key, Args(args.data(), args.size()));
+    }
+
+    bool answersEveryName() const override { return true; }
+    ValuePtr get(const std::string& name) override {
+        return ValuePtr(ask("getProperty", {nameOf(name)}));
+    }
+    bool set(const std::string& name, ValuePtr value) override {
+        ask("setProperty", {nameOf(name), Val(value)});
+        return true;
+    }
+    // A key as the methods are given it: a QName as it is, anything else
+    // as a QName of its text.
+    Val keyOf(const Val& key) const {
+        if (key.isObject() && key->cls && key->cls->name == "QName") return key;
+        return nameOf(key.isString() ? key.str() : vm.toString(key));
+    }
+    static bool isQName(const Val& key) { return key.isObject() && key->cls && key->cls->name == "QName"; }
+    bool getIndex(const Val& key, Val& out) override {
+        if (!isQName(key)) return false;
+        out = ask("getProperty", {key});
+        return true;
+    }
+    bool setIndex(const Val& key, const Val& value) override {
+        if (!isQName(key)) return false;
+        ask("setProperty", {key, value});
+        return true;
+    }
+    bool deleteIndex(const Val& key) override {
+        ask("deleteProperty", {keyOf(key)});
+        return true;
+    }
+    // Asked as given: "x" in p asks of a String.
+    bool has(const Val& key) override {
+        return ask("hasProperty", {key.isString() ? key : Val::string(vm.toString(key))}).toBoolean();
+    }
+    bool call(const std::string& name, Args args, Val& out) override {
+        std::vector<Val> list = {nameOf(name)};
+        list.insert(list.end(), args.begin(), args.end());
+        out = ask("callProperty", std::move(list));
+        return true;
+    }
+    double nextIndex(double index) override { return vm.toNumber(ask("nextNameIndex", {Val::number(index)})); }
+    Val nextName(double index) override { return ask("nextName", {Val::number(index)}); }
+    Val nextValue(double index) override { return ask("nextValue", {Val::number(index)}); }
+    bool enumerate(std::vector<Val>& keys) override {
+        for (double at = nextIndex(0); at != 0 && keys.size() < 1000000; at = nextIndex(at)) {
+            keys.push_back(nextName(at));
+        }
+        return true;
+    }
+};
+
 // A Dictionary's entries: objects as keys by identity, other keys by
 // their text.
 struct DictionaryState : HostObject {
@@ -127,6 +201,41 @@ Val clearTimer(VM& vm, const Val&, Args args) {
 } // namespace
 
 void defineUtilsBuiltins(VM& vm) {
+    // flash.utils.Proxy, and the namespace its methods are in. Each method
+    // not overridden throws.
+    const auto unimplemented = [](const char* method, int id) {
+        return [method, id](VM& vm, const Val&, Args) -> Val {
+            vm.throwError("Error", "Error #" + std::to_string(id) + ": The Proxy class does not implement " + method +
+                                       ". It must be overridden by a subclass.", id);
+        };
+    };
+    vm.defineNativeClass("flash.utils.Proxy")
+        .dynamic()
+        .constructor([](VM& vm, const Val& self, Args) {
+            auto host = std::make_shared<ProxyHost>(vm);
+            host->self = self.ref;
+            self->host = host;
+            return Val();
+        })
+        .method("flash_proxy::getProperty", unimplemented("getProperty", 2088), 1)
+        .method("flash_proxy::setProperty", unimplemented("setProperty", 2089), 2)
+        .method("flash_proxy::callProperty", unimplemented("callProperty", 2090), 1)
+        .method("flash_proxy::hasProperty", unimplemented("hasProperty", 2091), 1)
+        .method("flash_proxy::deleteProperty", unimplemented("deleteProperty", 2092), 1)
+        .method("flash_proxy::getDescendants", unimplemented("getDescendants", 2093), 1)
+        .method("flash_proxy::nextNameIndex", unimplemented("nextNameIndex", 2105), 1)
+        .method("flash_proxy::nextName", unimplemented("nextName", 2106), 1)
+        .method("flash_proxy::nextValue", unimplemented("nextValue", 2107), 1)
+        .method("flash_proxy::isAttribute", [](VM&, const Val&, Args) { return Val::boolean(false); }, 1)
+        // Its own hasOwnProperty asks hasProperty, of the name as given.
+        .method("hasOwnProperty", [](VM&, const Val& self, Args args) {
+            ProxyHost* proxy = self.host<ProxyHost>();
+            if (!proxy) return Val::boolean(false);
+            return Val::boolean(proxy->has(args[0]));
+        }, 1)
+        .define();
+    vm.defineValue("flash.utils.flash_proxy", makeNamespaceValue(vm, "http://www.adobe.com/2006/actionscript/flash/proxy"));
+
     vm.builtins().dictionary =
         vm.defineNativeClass("flash.utils.Dictionary")
             .dynamic()
